@@ -68,10 +68,14 @@ static std::string group_thousands(uint64_t n) {
     return s;
 }
 
-/* Target slider: log scale from 1% to 400% of the input polygons */
+/* Target slider: linear, the full width is 100% of the input polygons
+   (higher targets are typed; the handle then stays at the right end) */
 static Float slider_from_percent(Float percent) {
-    const Float v = std::log(std::max(percent, (Float) 1e-3)) / std::log((Float) 400);
-    return std::min((Float) 1, std::max((Float) 0, v));
+    return std::min((Float) 1, std::max((Float) 0, percent / 100));
+}
+
+static Float percent_from_slider(Float value) {
+    return std::max(value * 100, (Float) 0.1);
 }
 
 static nanogui::Label *section(nanogui::Widget *parent, const std::string &caption) {
@@ -469,13 +473,14 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     mTargetSlider->setId("targetSlider");
     mTargetSlider->setFixedWidth(218);
     mTargetSlider->setHighlightColor(Color(248, 113, 113, 110));
-    mTargetSlider->setTooltip("1% to 400% of the input polygons. The red range needs a finer input (it will be subdivided)");
+    mTargetSlider->setTooltip("0 to 100% of the input polygons (type a value for more). "
+                              "The red range needs a finer input (it will be subdivided)");
     mTargetSlider->setCallback([&](Float value) {
-        mTargetFaces = targetReference() * std::exp(value * std::log((Float) 400)) / 100;
+        mTargetFaces = targetReference() * percent_from_slider(value) / 100;
         refreshTargetUI();
     });
     mTargetSlider->setFinalCallback([&](Float value) {
-        applyTargetFaces(targetReference() * std::exp(value * std::log((Float) 400)) / 100, true);
+        applyTargetFaces(targetReference() * percent_from_slider(value) / 100, true);
     });
 
     Widget *presetPanel = new Widget(window);

@@ -25,7 +25,7 @@ from reportlab.lib.enums import TA_CENTER
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "InstantMeshes_Documentation.pdf")
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 PRODUCT = "Instant Meshes"
 REPO = "github.com/MattRM2/instant-meshes"
 
@@ -438,8 +438,9 @@ def build(cover_image=None):
               Spacer(1, 2 * mm)]
     story += bullets([
         "<b>Presets</b> 25 / 50 / 75 / 100% apply a percentage in one click.",
-        "The <b>slider</b> covers 1% to 400% on a logarithmic scale. Its <b>red range</b> marks targets the "
-        "input is too coarse for: choosing one proposes to subdivide the input first.",
+        "The <b>slider</b> spans 0 to 100% of the loaded polygons: its right end is the input face count. "
+        "For more than 100%, type the value. Its <b>red range</b> marks targets the input is too coarse for: "
+        "choosing one proposes to subdivide the input first.",
         "The target is the <b>final</b> face count: with <b>Pure quad output</b> the extraction aims at a "
         "quarter, the subdivision brings it back to the target.",
     ])

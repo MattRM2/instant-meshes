@@ -156,6 +156,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/main.cpp src/common.h
   src/meshio.h src/meshio.cpp
   src/ogawa.h src/ogawa.cpp
+  src/abc.h src/abc.cpp
   src/normal.h src/normal.cpp
   src/adjacency.h src/adjacency.cpp
   src/meshstats.h src/meshstats.cpp
@@ -201,15 +202,16 @@ if (UNIX AND NOT ${U_CMAKE_BUILD_TYPE} MATCHES DEBUG)
   add_custom_command(TARGET InstantMeshes POST_BUILD COMMAND strip $<TARGET_FILE:InstantMeshes>)
 endif()
 
-# Unit tests (mesh I/O, Ogawa container): build 'im_tests', run with ctest
+# Unit tests (mesh I/O, Ogawa container, Alembic): build 'im_tests', run with ctest
 if (INSTANT_MESHES_TESTS)
   enable_testing()
   add_executable(im_tests
     tests/test_common.h tests/test_main.cpp
-    tests/test_meshio.cpp tests/test_ogawa.cpp
+    tests/test_meshio.cpp tests/test_ogawa.cpp tests/test_abc.cpp
     src/meshio.h src/meshio.cpp
     src/normal.h src/normal.cpp
     src/ogawa.h src/ogawa.cpp
+    src/abc.h src/abc.cpp
     ext/rply/rply.c)
   target_include_directories(im_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(im_tests tbb_static nanogui ${NANOGUI_EXTRA_LIBS})

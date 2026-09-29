@@ -11,7 +11,7 @@ world-space vertex/face counts, face-size histogram and Y-up bounding box
 of every polygon mesh, plus the non-mesh objects it must skip.
 
 Usage (Blender 5.x, headless, no user addons):
-    blender -b --factory-startup --python tests/make_reference_data.py -- tests/data
+    blender -b --factory-startup --python tests/make_reference_data.py -- tests/data [case ...]
 """
 
 import bpy
@@ -176,6 +176,39 @@ def case_animated():
     scene.frame_set(1)
 
 
+def case_instances():
+    """A collection instanced twice: exported as Alembic instances
+    (".instanceSource"), written out twice in the OBJ."""
+    reset_scene()
+    coll = bpy.data.collections.new("PillarSet")
+    mesh = bpy.data.meshes.new("PillarMesh")
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, segments=8, radius1=0.5, radius2=0.5, depth=1,
+                          cap_ends=True)
+    bm.to_mesh(mesh)
+    bm.free()
+    pillar = bpy.data.objects.new("Pillar", mesh)
+    coll.objects.link(pillar)
+    for name, loc, rot, scale in (("InstA", (-1.5, 0, 0), 0, (1, 1, 1)),
+                                  ("InstB", (1.5, 0.5, 0), 30, (1, 1, 2))):
+        empty = bpy.data.objects.new(name, None)
+        empty.instance_type = 'COLLECTION'
+        empty.instance_collection = coll
+        empty.location = loc
+        empty.rotation_euler = (0, 0, math.radians(rot))
+        empty.scale = scale
+        bpy.context.scene.collection.objects.link(empty)
+
+
+def case_subd():
+    """Exported with the SubD schema: not a polygon mesh for the reader."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cube_add(size=2)
+    obj = bpy.context.object
+    obj.name = obj.data.name = "SubdCube"
+    obj.modifiers.new("subd", 'SUBSURF').levels = 1
+
+
 CASES = {
     "cube_quads": case_cube_quads,
     "ngon_cylinder": case_ngon_cylinder,
@@ -183,38 +216,65 @@ CASES = {
     "hierarchy": case_hierarchy,
     "scene_ab": case_scene_ab,
     "animated": case_animated,
+    "instances": case_instances,
+    "subd": case_subd,
 }
+
+# Per-case Alembic export overrides
+ABC_OPTIONS = {
+    "subd": {"subdiv_schema": True},
+}
+
+# Cases whose Alembic re-import cannot match the evaluated scene (Blender
+# imports a SubD object as its base cage, without the subdivision)
+NO_ROUNDTRIP = {"subd"}
 
 # ---------------------------------------------------------------------------
 # Export + manifest
 # ---------------------------------------------------------------------------
 
-def describe_scene():
+def evaluated_meshes():
+    """Yields (name, object, world matrix, mesh) for every evaluated mesh,
+    collection instances included. The mesh is only valid until the next
+    iteration (an instanced object is evaluated once, shared by instances)."""
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    meshes, skipped = [], []
-    for obj in sorted(bpy.context.scene.objects, key=lambda o: o.name):
+    items = []
+    for inst in depsgraph.object_instances:
+        obj = inst.object
         if obj.type != 'MESH':
-            if obj.type != 'EMPTY':
-                skipped.append({"name": obj.name, "type": obj.type})
             continue
-        ev = obj.evaluated_get(depsgraph)
-        me = ev.to_mesh()
-        world = Z_UP_TO_Y_UP @ ev.matrix_world
+        name = obj.name
+        if inst.is_instance:
+            name = inst.parent.name + "/" + obj.name
+        items.append((name, obj, inst.matrix_world.copy()))
+    for name, obj, matrix in sorted(items, key=lambda r: r[0]):
+        me = obj.to_mesh()
+        yield name, obj, matrix, me
+        obj.to_mesh_clear()
+
+
+def describe_scene():
+    meshes = []
+    for name, obj, matrix, me in evaluated_meshes():
+        world = Z_UP_TO_Y_UP @ matrix
         pts = [world @ v.co for v in me.vertices]
         lo = [min(p[i] for p in pts) for i in range(3)]
         hi = [max(p[i] for p in pts) for i in range(3)]
         sizes = Counter(len(p.vertices) for p in me.polygons)
+        original = obj.original
         meshes.append({
-            "name": obj.name,
-            "parent": obj.parent.name if obj.parent else None,
+            "name": name,
+            "parent": original.parent.name if original.parent else None,
             "vertices": len(me.vertices),
             "faces": len(me.polygons),
             "face_sizes": {str(k): v for k, v in sorted(sizes.items())},
             "triangles": sum(n - 2 for n in (len(p.vertices) for p in me.polygons)),
-            "materials": [m.name for m in obj.data.materials if m],
+            "materials": [m.name for m in original.data.materials if m],
             "bbox_yup": [[round(x, 6) for x in lo], [round(x, 6) for x in hi]],
         })
-        ev.to_mesh_clear()
+    skipped = [{"name": o.name, "type": o.type}
+               for o in sorted(bpy.context.scene.objects, key=lambda o: o.name)
+               if o.type not in ('MESH', 'EMPTY')]
     return meshes, skipped
 
 
@@ -231,13 +291,15 @@ def export_case(name, outdir):
         export_uv=False, export_normals=False, export_materials=False,
         export_triangulated_mesh=False,
         forward_axis='NEGATIVE_Z', up_axis='Y')
-    bpy.ops.wm.alembic_export(
+    options = dict(
         filepath=base + ".abc", check_existing=False,
         start=scene.frame_start, end=scene.frame_end,
         init_scene_frame_range=False,
         face_sets=True, triangulate=False, apply_subdiv=False,
         subdiv_schema=False, export_hair=False, export_particles=False,
         evaluation_mode='VIEWPORT')
+    options.update(ABC_OPTIONS.get(name, {}))
+    bpy.ops.wm.alembic_export(**options)
     meshes, skipped = describe_scene()
     return {
         "frames": [scene.frame_start, scene.frame_end],
@@ -252,31 +314,40 @@ def verify_roundtrip(name, outdir, expected):
     """Re-import the .abc in Blender: counts must match what we exported."""
     reset_scene()
     bpy.ops.wm.alembic_import(filepath=os.path.join(outdir, name + ".abc"))
-    got = {o.name: (len(o.data.vertices), len(o.data.polygons))
-           for o in bpy.context.scene.objects if o.type == 'MESH'}
+    got = {}
+    for mesh_name, obj, matrix, me in evaluated_meshes():
+        got[mesh_name] = (len(me.vertices), len(me.polygons))
     want = {m["name"]: (m["vertices"], m["faces"]) for m in expected["meshes"]}
     if sorted(got.values()) != sorted(want.values()):
         raise RuntimeError("%s: Alembic round-trip mismatch %s != %s" % (name, got, want))
 
 
 def main():
+    """Arguments after '--': output directory, then optionally the cases to
+    (re)generate; the other cases of an existing manifest are kept."""
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     outdir = os.path.abspath(argv[0] if argv else "tests/data")
+    selected = argv[1:] or list(CASES)
     os.makedirs(outdir, exist_ok=True)
 
+    path = os.path.join(outdir, "manifest.json")
     manifest = {"generator": "Blender " + bpy.app.version_string, "cases": {}}
-    for name, build in CASES.items():
-        build()
+    if os.path.exists(path):
+        manifest["cases"] = json.load(open(path))["cases"]
+    for name in selected:
+        CASES[name]()
         manifest["cases"][name] = export_case(name, outdir)
-        verify_roundtrip(name, outdir, manifest["cases"][name])
+        if name not in NO_ROUNDTRIP:
+            verify_roundtrip(name, outdir, manifest["cases"][name])
         info = manifest["cases"][name]
         print("[OK] %-14s meshes=%d V=%d T=%d" % (
             name, len(info["meshes"]), info["total_vertices"], info["total_triangles"]))
 
-    with open(os.path.join(outdir, "manifest.json"), "w", newline="\n") as f:
+    manifest["cases"] = {k: manifest["cases"][k] for k in CASES if k in manifest["cases"]}
+    with open(path, "w", newline="\n") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
-    print("[OK] manifest ->", os.path.join(outdir, "manifest.json"))
+    print("[OK] manifest ->", path)
 
 
 main()

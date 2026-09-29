@@ -13,6 +13,7 @@ int main(int argc, char **argv) {
     const bool long_run = argc > 1 && std::string(argv[1]) == "--long";
     test_meshio();
     test_ogawa(long_run ? 10 : 1);
+    test_abc(long_run ? 10 : 1);
     std::cout << std::endl << g_passed << " passed, " << g_failed << " failed" << std::endl;
     return g_failed == 0 ? 0 : 1;
 }

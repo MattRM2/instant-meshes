@@ -30,6 +30,18 @@ load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F,
 extern void triangulate_polygon(const std::vector<Vector3f> &p,
                                 std::vector<uint32_t> &tris);
 
+/**
+ * Triangulates polygons ('sizes' corners each, 'indices' into 'positions')
+ * with triangulate_polygon() and builds F/V, numbering vertices in order of
+ * first use (unreferenced positions are dropped). Shared by all polygon mesh
+ * readers so that they behave identically. 'source' names the file in
+ * error messages.
+ */
+extern void build_mesh(const std::vector<Vector3f> &positions,
+                       const std::vector<uint32_t> &sizes,
+                       const std::vector<uint32_t> &indices,
+                       MatrixXu &F, MatrixXf &V, const std::string &source);
+
 extern void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
                      const ProgressCallback &progress = ProgressCallback());
 

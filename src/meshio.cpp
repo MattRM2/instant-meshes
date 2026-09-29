@@ -12,6 +12,7 @@
 */
 
 #include "meshio.h"
+#include "abc.h"
 #include "normal.h"
 #include <unordered_map>
 #include <fstream>
@@ -33,10 +34,12 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
         load_ply(filename, F, V, N, false, progress);
     else if (extension == ".obj")
         load_obj(filename, F, V, progress);
+    else if (extension == ".abc")
+        abc::load_abc(filename, F, V, "", progress);
     else if (extension == ".aln")
         load_pointcloud(filename, V, N, progress);
     else
-        throw std::runtime_error("load_mesh_or_pointcloud: Unknown file extension \"" + extension + "\" (.ply/.obj/.aln are supported)");
+        throw std::runtime_error("load_mesh_or_pointcloud: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc/.aln are supported)");
 }
 
 void write_mesh(const std::string &filename, const MatrixXu &F,
@@ -417,49 +420,67 @@ void triangulate_polygon(const std::vector<Vector3f> &p,
     fan(idx);
 }
 
+void build_mesh(const std::vector<Vector3f> &positions,
+                const std::vector<uint32_t> &sizes,
+                const std::vector<uint32_t> &indices,
+                MatrixXu &F, MatrixXf &V, const std::string &source) {
+    /* New index of every position, assigned on first use */
+    std::vector<uint32_t> remap(positions.size(), (uint32_t) -1);
+    std::vector<uint32_t> used, triangles;
+    std::vector<Vector3f> polygon;
+    std::vector<uint32_t> tris;
+
+    size_t offset = 0;
+    for (uint32_t size : sizes) {
+        if (size < 3)
+            throw std::runtime_error("Invalid face with fewer than 3 vertices in \"" + source + "\"!");
+        if (size > indices.size() - offset)
+            throw std::runtime_error("Face data truncated in \"" + source + "\"!");
+        const uint32_t *face = indices.data() + offset;
+        offset += size;
+
+        polygon.resize(size);
+        for (uint32_t i = 0; i < size; ++i) {
+            if (face[i] >= positions.size())
+                throw std::runtime_error("Vertex index " + std::to_string(face[i]) +
+                                         " out of range in \"" + source + "\"!");
+            polygon[i] = positions[face[i]];
+        }
+        tris.clear();
+        triangulate_polygon(polygon, tris);
+
+        for (uint32_t corner : tris) {
+            uint32_t &id = remap[face[corner]];
+            if (id == (uint32_t) -1) {
+                id = (uint32_t) used.size();
+                used.push_back(face[corner]);
+            }
+            triangles.push_back(id);
+        }
+    }
+
+    F.resize(3, triangles.size() / 3);
+    if (!triangles.empty())
+        memcpy(F.data(), triangles.data(), sizeof(uint32_t) * triangles.size());
+
+    V.resize(3, used.size());
+    for (uint32_t i = 0; i < used.size(); ++i)
+        V.col(i) = positions[used[i]];
+}
+
 void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
               const ProgressCallback &progress) {
-    /// Vertex indices used by the OBJ format
-    struct obj_vertex {
-        uint32_t p = (uint32_t) -1;
-        uint32_t n = (uint32_t) -1;
-        uint32_t uv = (uint32_t) -1;
-
-        inline obj_vertex() { }
-
-        inline obj_vertex(const std::string &string) {
-            std::vector<std::string> tokens = str_tokenize(string, '/', true);
-
-            if (tokens.size() < 1 || tokens.size() > 3)
-                throw std::runtime_error("Invalid vertex data: \"" + string + "\"");
-
-            p = str_to_uint32_t(tokens[0]);
-
-            #if 0
-                if (tokens.size() >= 2 && !tokens[1].empty())
-                    uv = str_to_uint32_t(tokens[1]);
-
-                if (tokens.size() >= 3 && !tokens[2].empty())
-                    n = str_to_uint32_t(tokens[2]);
-            #endif
-        }
-
-        inline bool operator==(const obj_vertex &v) const {
-            return v.p == p && v.n == n && v.uv == uv;
-        }
+    /// Position index of a face corner ("p", "p/uv", "p//n" or "p/uv/n"),
+    /// converted from 1-based to 0-based
+    auto corner_index = [&](const std::string &string) -> uint32_t {
+        std::vector<std::string> tokens = str_tokenize(string, '/', true);
+        if (tokens.size() < 1 || tokens.size() > 3)
+            throw std::runtime_error("Invalid vertex data: \"" + string + "\"");
+        const uint32_t p = str_to_uint32_t(tokens[0]);
+        if (p == 0)
+            throw std::runtime_error("Vertex index 0 out of range in OBJ file \"" + filename + "\"!");
+        return p - 1;
     };
-
-    /// Hash function for obj_vertex
-    struct obj_vertexHash : std::unary_function<obj_vertex, size_t> {
-        std::size_t operator()(const obj_vertex &v) const {
-            size_t hash = std::hash<uint32_t>()(v.p);
-            hash = hash * 37 + std::hash<uint32_t>()(v.uv);
-            hash = hash * 37 + std::hash<uint32_t>()(v.n);
-            return hash;
-        }
-    };
-
-    typedef std::unordered_map<obj_vertex, uint32_t, obj_vertexHash> VertexMap;
 
     std::ifstream is(filename);
     if (is.fail())
@@ -468,14 +489,8 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
     cout.flush();
     Timer<> timer;
 
-    std::vector<Vector3f>   positions;
-    //std::vector<Vector2f>   texcoords;
-    //std::vector<Vector3f>   normals;
-    std::vector<uint32_t>   indices;
-    std::vector<obj_vertex> vertices;
-    std::vector<obj_vertex> corners;   /* all face corners, in file order */
-    std::vector<uint32_t>   faceSizes;
-    VertexMap vertexMap;
+    std::vector<Vector3f> positions;
+    std::vector<uint32_t> faceSizes, corners;   /* all face corners, in file order */
 
     std::string line_str;
     while (std::getline(is, line_str)) {
@@ -488,23 +503,11 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
             Vector3f p;
             line >> p.x() >> p.y() >> p.z();
             positions.push_back(p);
-        } else if (prefix == "vt") {
-            /*
-            Vector2f tc;
-            line >> tc.x() >> tc.y();
-            texcoords.push_back(tc);
-            */
-        } else if (prefix == "vn") {
-            /*
-            Vector3f n;
-            line >> n.x() >> n.y() >> n.z();
-            normals.push_back(n);
-            */
         } else if (prefix == "f") {
             std::string token;
             uint32_t size = 0;
             while (line >> token) {
-                corners.push_back(obj_vertex(token));
+                corners.push_back(corner_index(token));
                 ++size;
             }
             if (size < 3)
@@ -513,43 +516,12 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
         }
     }
 
-    /* Triangulate every polygon and convert to an indexed vertex list */
-    std::vector<Vector3f> polygon;
-    std::vector<uint32_t> tris;
-    size_t offset = 0;
-    for (uint32_t size : faceSizes) {
-        const obj_vertex *face = corners.data() + offset;
-        offset += size;
+    for (uint32_t index : corners)   /* report 1-based, as in the file */
+        if (index >= positions.size())
+            throw std::runtime_error("Vertex index " + std::to_string((uint64_t) index + 1) +
+                                     " out of range in OBJ file \"" + filename + "\"!");
 
-        polygon.resize(size);
-        for (uint32_t i = 0; i < size; ++i) {
-            if (face[i].p == 0 || face[i].p > positions.size())
-                throw std::runtime_error("Vertex index " + std::to_string(face[i].p) +
-                                         " out of range in OBJ file \"" + filename + "\"!");
-            polygon[i] = positions[face[i].p - 1];
-        }
-        tris.clear();
-        triangulate_polygon(polygon, tris);
-
-        for (uint32_t corner : tris) {
-            const obj_vertex &v = face[corner];
-            VertexMap::const_iterator it = vertexMap.find(v);
-            if (it == vertexMap.end()) {
-                vertexMap[v] = (uint32_t) vertices.size();
-                indices.push_back((uint32_t) vertices.size());
-                vertices.push_back(v);
-            } else {
-                indices.push_back(it->second);
-            }
-        }
-    }
-
-    F.resize(3, indices.size()/3);
-    memcpy(F.data(), indices.data(), sizeof(uint32_t)*indices.size());
-
-    V.resize(3, vertices.size());
-    for (uint32_t i=0; i<vertices.size(); ++i)
-        V.col(i) = positions.at(vertices[i].p-1);
+    build_mesh(positions, faceSizes, corners, F, V, filename);
 
     cout << "done. (V=" << V.cols() << ", F=" << F.cols() << ", took "
          << timeString(timer.value()) << ")" << endl;

@@ -58,8 +58,10 @@ void write_mesh(const std::string &filename, const MatrixXu &F,
         write_ply(filename, F, V, N, Nf, UV, C, progress);
     else if (extension == ".obj")
         write_obj(filename, F, V, N, Nf, UV, C, progress);
+    else if (extension == ".abc")
+        abc::write_abc(filename, F, V, progress);
     else
-        throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj are supported)");
+        throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc are supported)");
 }
 
 void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V,
@@ -624,6 +626,47 @@ void load_pointcloud(const std::string &filename, MatrixXf &V, MatrixXf &N,
          << timeString(timer.value()) << ")" << endl;
 }
 
+size_t extracted_polygons(const MatrixXu &F, std::vector<uint32_t> &sizes,
+                          std::vector<uint32_t> &indices, std::vector<uint32_t> &faceIds) {
+    sizes.clear();
+    indices.clear();
+    faceIds.clear();
+
+    /* Irregular faces: quads with F(2) == F(3) are directed edges (F(0) ->
+       F(1)) of the polygon whose id is F(2) */
+    std::map<uint32_t, std::pair<uint32_t, std::map<uint32_t, uint32_t>>> irregular;
+
+    for (uint32_t f = 0; f < F.cols(); ++f) {
+        if (F.rows() == 4 && F(2, f) == F(3, f)) {
+            auto &value = irregular[F(2, f)];
+            value.first = f;
+            value.second[F(0, f)] = F(1, f);
+            continue;
+        }
+        for (uint32_t j = 0; j < F.rows(); ++j)
+            indices.push_back(F(j, f));
+        sizes.push_back((uint32_t) F.rows());
+        faceIds.push_back(f);
+    }
+
+    /* Walk each edge loop (same traversal as the historical OBJ writer,
+       including its behaviour on open loops) */
+    for (auto item : irregular) {
+        auto face = item.second;
+        uint32_t v = face.second.begin()->first, first = v, i = 0, size = 0;
+        while (true) {
+            indices.push_back(v);
+            ++size;
+            v = face.second[v];
+            if (v == first || ++i == face.second.size())
+                break;
+        }
+        sizes.push_back(size);
+        faceIds.push_back(face.first);
+    }
+    return irregular.size();
+}
+
 void write_obj(const std::string &filename, const MatrixXu &F,
                 const MatrixXf &V, const MatrixXf &N, const MatrixXf &Nf,
                 const MatrixXf &UV, const MatrixXf &C,
@@ -650,52 +693,25 @@ void write_obj(const std::string &filename, const MatrixXu &F,
     for (uint32_t i=0; i<UV.cols(); ++i)
         os << "vt " << UV(0, i) << " " << UV(1, i) << endl;
 
-    /* Check for irregular faces */
-    std::map<uint32_t, std::pair<uint32_t, std::map<uint32_t, uint32_t>>> irregular;
-    size_t nIrregular = 0;
+    std::vector<uint32_t> sizes, indices, faceIds;
+    const size_t nIrregular = extracted_polygons(F, sizes, indices, faceIds);
 
-    for (uint32_t f=0; f<F.cols(); ++f) {
-        if (F.rows() == 4) {
-            if (F(2, f) == F(3, f)) {
-                nIrregular++;
-                auto &value = irregular[F(2, f)];
-                value.first = f;
-                value.second[F(0, f)] = F(1, f);
-                continue;
-            }
-        }
+    size_t offset = 0;
+    for (size_t k = 0; k < sizes.size(); ++k) {
         os << "f ";
-        for (uint32_t j=0; j<F.rows(); ++j) {
-            uint32_t idx = F(j, f);
-            idx += 1;
+        for (uint32_t j = 0; j < sizes[k]; ++j) {
+            uint32_t idx = indices[offset + j] + 1;
             os << idx;
             if (Nf.size() > 0)
-                idx = f + 1;
+                idx = faceIds[k] + 1;
             os << "//" << idx << " ";
         }
-        os << endl;
-    }
-
-    for (auto item : irregular) {
-        auto face = item.second;
-        uint32_t v = face.second.begin()->first, first = v, i = 0;
-        os << "f ";
-        while (true) {
-            uint32_t idx = v + 1;
-            os << idx;
-            if (Nf.size() > 0)
-                idx = face.first + 1;
-            os << "//" << idx << " ";
-
-            v = face.second[v];
-            if (v == first || ++i == face.second.size())
-                break;
-        }
+        offset += sizes[k];
         os << endl;
     }
 
     cout << "done. (";
-    if (irregular.size() > 0)
-        cout << irregular.size() << " irregular faces, ";
+    if (nIrregular > 0)
+        cout << nIrregular << " irregular faces, ";
     cout << "took " << timeString(timer.value()) << ")" << endl;
 }

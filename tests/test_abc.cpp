@@ -7,6 +7,7 @@
 #include "test_common.h"
 #include "abc.h"
 #include "meshio.h"
+#include "ogawa.h"
 #include <pcg32.h>
 #include <chrono>
 
@@ -133,6 +134,87 @@ static void test_unsupported() {
     CHECK(F.cols() == 92 && V.cols() == 50);
 }
 
+/* The hashes stored by the Alembic library (Blender's exporter) are the
+   oracle for our MurmurHash3 / SpookyHash transcription and hash chain */
+static void test_hashes_of_reference_files() {
+    std::cout << "abc: recomputed hashes match the Alembic library" << std::endl;
+    const char *files[] = { "cube_quads", "ngon_cylinder", "suzanne_open", "hierarchy",
+                            "scene_ab", "animated", "instances", "subd" };
+    for (const char *name : files) {
+        uint64_t objects = 0;
+        const std::string msg = error_of([&] {
+            objects = abc::verify_hashes(data_path(std::string(name) + ".abc"));
+        });
+        if (msg != "")
+            std::cerr << "  " << name << ": " << msg << std::endl;
+        CHECK(msg == "" && objects >= 3);
+    }
+
+    /* A single altered value is detected */
+    std::vector<uint8_t> bytes = read_file(data_path("cube_quads.abc"));
+    abc::Archive ar(data_path("cube_quads.abc"));
+    abc::Object mesh;
+    abc::Property geom, P;
+    CHECK(ar.resolve("/Cube/Cube", mesh) && ar.find(ar.properties(mesh), ".geom", geom) &&
+          ar.find(geom, "P", P));
+    const uint64_t entry = ar.reader().group(P.group)[0];
+    bytes[(size_t) ogawa::entry_pos(entry) + 8 + 16 + 5] ^= 0x10;   /* a byte of P */
+    write_file(temp_path("altered.abc"), bytes);
+    CHECK(contains(error_of([&] { abc::verify_hashes(temp_path("altered.abc")); }),
+                   "sample key mismatch"));
+}
+
+/* write_abc -> load_abc gives back exactly the polygons of the extracted
+   mesh, including the polygons reassembled from edge quads (F(2) == F(3)) */
+static void test_write_roundtrip() {
+    std::cout << "abc: writer round trip" << std::endl;
+    /* Vertex 9 is used by no polygon (like the centers of irregular faces
+       left by quad-dominant extraction): the writer drops it */
+    MatrixXf V(3, 10);
+    V << 0, 1, 1, 0,   3, 4.5f, 4, 2, 1.5f, 7,
+         0, 0, 1, 1,   0, 1,    2.5f, 2.5f, 1, 7,
+         0, 0, 0, 0.2f, 0, 0.1f, 0, 0.3f, 0, 7;
+    const uint32_t id = 1000;
+    MatrixXu F(4, 6);
+    F << 0, 4, 5, 6, 7, 8,
+         1, 5, 6, 7, 8, 4,
+         2, id, id, id, id, id,
+         3, id, id, id, id, id;
+
+    std::vector<uint32_t> sizes, indices, faceIds;
+    CHECK(extracted_polygons(F, sizes, indices, faceIds) == 1);
+    CHECK(sizes == std::vector<uint32_t>({ 4, 5 }));
+    std::vector<Vector3f> positions;
+    for (int i = 0; i < V.cols(); ++i)
+        positions.push_back(V.col(i));
+    MatrixXu Fexp, Fgot;
+    MatrixXf Vexp, Vgot;
+    build_mesh(positions, sizes, indices, Fexp, Vexp, "expected");
+
+    const std::string path = temp_path("roundtrip.abc");
+    CHECK(error_of([&] { abc::write_abc(path, F, V); }) == "");
+    CHECK(error_of([&] { abc::load_abc(path, Fgot, Vgot); }) == "");
+    CHECK(Fgot == Fexp && Vgot == Vexp);
+    CHECK(!file_exists(path + ".tmp"));
+
+    /* Written like the library would: every hash verifies */
+    uint64_t objects = 0;
+    CHECK(error_of([&] { objects = abc::verify_hashes(path); }) == "" && objects == 3);
+
+    /* Named after the file, polygon counts as written */
+    std::vector<abc::MeshSummary> meshes = abc::list_meshes(path);
+    CHECK(meshes.size() == 1 && meshes[0].path == "/roundtrip/roundtrip" &&
+          meshes[0].vertices == 9 && meshes[0].faces == 2);
+
+    /* Refused: empty mesh, invalid positions; the target is left untouched */
+    write_file(temp_path("keep.abc"), std::string("KEEP"));
+    CHECK(contains(error_of([&] { abc::write_abc(temp_path("keep.abc"), MatrixXu(4, 0), V); }), "empty"));
+    MatrixXf Vnan = V;
+    Vnan(1, 3) = NAN;
+    CHECK(contains(error_of([&] { abc::write_abc(temp_path("keep.abc"), F, Vnan); }), "invalid vertex"));
+    CHECK(read_file(temp_path("keep.abc")).size() == 4 && !file_exists(temp_path("keep.abc.tmp")));
+}
+
 static void test_fuzz_abc(int scale) {
     std::cout << "abc: fuzzing the mesh reader" << std::endl;
     pcg32 rng;
@@ -187,6 +269,8 @@ static void test_fuzz_abc(int scale) {
 void test_abc(int fuzz_scale) {
     test_obj_twins();
     test_exact_obj();
+    test_hashes_of_reference_files();
+    test_write_roundtrip();
     test_listing_and_selection();
     test_unsupported();
     test_fuzz_abc(fuzz_scale);

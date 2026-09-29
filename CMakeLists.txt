@@ -157,6 +157,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/meshio.h src/meshio.cpp
   src/ogawa.h src/ogawa.cpp
   src/abc.h src/abc.cpp
+  src/abchash.h src/abchash.cpp src/abcwrite.cpp
   src/normal.h src/normal.cpp
   src/adjacency.h src/adjacency.cpp
   src/meshstats.h src/meshstats.cpp
@@ -212,6 +213,7 @@ if (INSTANT_MESHES_TESTS)
     src/normal.h src/normal.cpp
     src/ogawa.h src/ogawa.cpp
     src/abc.h src/abc.cpp
+    src/abchash.h src/abchash.cpp src/abcwrite.cpp
     ext/rply/rply.c)
   target_include_directories(im_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(im_tests tbb_static nanogui ${NANOGUI_EXTRA_LIBS})
@@ -223,4 +225,16 @@ if (INSTANT_MESHES_TESTS)
     set_source_files_properties(ext/rply/rply.c PROPERTIES COMPILE_FLAGS "/wd4127")
   endif()
   add_test(NAME im_tests COMMAND im_tests)
+
+  # Developer tool: prints the structure of an Alembic file
+  add_executable(abc_dump
+    tests/abc_dump.cpp
+    src/ogawa.h src/ogawa.cpp
+    src/abc.h src/abc.cpp
+    src/abchash.h src/abchash.cpp src/abcwrite.cpp
+    src/meshio.h src/meshio.cpp
+    src/normal.h src/normal.cpp
+    ext/rply/rply.c)
+  target_include_directories(abc_dump PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(abc_dump tbb_static nanogui ${NANOGUI_EXTRA_LIBS})
 endif()

@@ -59,8 +59,15 @@ struct Property {
     Pod pod = PodUint8;
     uint32_t extent = 1;
     uint32_t samples = 0;  ///< number of samples (scalar / array only)
+    uint32_t firstChanged = 0, lastChanged = 0;  ///< stored sample range
+    uint32_t timeSampling = 0;
     MetaData meta;
     uint64_t group = 0;    ///< Ogawa entry of the property group
+};
+
+struct TimeSampling {
+    double timePerCycle = 1.0;
+    std::vector<double> times;
 };
 
 class Archive {
@@ -96,6 +103,12 @@ public:
     /// Object at a full path such as "/Props/MeshA" (false if absent)
     bool resolve(const std::string &path, Object &out);
 
+    const std::vector<TimeSampling> &time_samplings() const { return mTimeSamplings; }
+
+    /// Index of the stored data of sample 'index' (samples that repeat the
+    /// previous value are not stored again)
+    uint32_t stored_index(const Property &property, uint32_t index) const;
+
     [[noreturn]] void fail(const std::string &msg) const { mIn.fail(msg); }
 
 private:
@@ -104,10 +117,14 @@ private:
     ogawa::Reader mIn;
     Object mTop;
     std::vector<MetaData> mIndexedMeta;
+    std::vector<TimeSampling> mTimeSamplings;
 };
 
 /// Byte size of one value of a POD type (0 for strings)
 uint32_t pod_size(Pod pod);
+
+/// "key=value;key=value" with sorted keys, as written by Alembic
+std::string serialize(const MetaData &meta);
 
 struct MeshSummary {
     std::string path;      ///< full path of the PolyMesh object
@@ -129,5 +146,21 @@ void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
               const std::string &object = "",
               const ProgressCallback &progress = ProgressCallback(),
               uint64_t *polygons = nullptr);
+
+/**
+ * Writes an extracted mesh (see extracted_polygons()) as a new Alembic
+ * archive: one Xform with a PolyMesh of the same name below it, named after
+ * the file. Polygons are written clockwise, as Alembic expects. The file is
+ * replaced atomically (see ogawa::Writer).
+ */
+void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V,
+               const ProgressCallback &progress = ProgressCallback());
+
+/**
+ * Recomputes every sample key (MurmurHash3) and object hash (SpookyHash)
+ * of an archive and compares them with the stored ones. Returns the number
+ * of objects checked; throws on the first mismatch.
+ */
+uint64_t verify_hashes(const std::string &filename);
 
 } // namespace abc

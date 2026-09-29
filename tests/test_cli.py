@@ -73,6 +73,37 @@ def test_percentage(exe, tmp):
     check(code == 0 and "Face count             = 1000" in log, "-f 1000 unchanged")
 
 
+def test_abc_output(exe, tmp):
+    print("batch mode writes .abc")
+    dump = os.path.join(os.path.dirname(exe), "abc_dump.exe" if os.name == "nt" else "abc_dump")
+    for case, mode in (("scene_ab.abc", []), ("scene_ab.abc", ["-D"]),
+                       ("suzanne_open.obj", ["-r", "6", "-p", "6"]), ("ngon_cylinder.obj", ["-D"])):
+        out = os.path.join(tmp, "out_%s%s.abc" % (case.split(".")[0], "".join(mode)))
+        code, log = run(exe, os.path.join(DATA, case), "-o", out, "-d", "-f", "60%", *mode)
+        check(code == 0 and os.path.exists(out) and not os.path.exists(out + ".tmp"),
+              "%s %s -> .abc: exit %d" % (case, " ".join(mode), code))
+        if os.path.exists(dump) and os.path.exists(out):
+            code, log = run(dump, "--verify", out)
+            check(code == 0 and "all hashes match" in log, "%s: hashes of the written file" % out)
+            code, log = run(dump, out)
+            check(log.count("AbcGeom_PolyMesh_v1:.geom") == 1, "%s: one polygon mesh" % out)
+        # the written file can be read back and remeshed again
+        again = out.replace(".abc", "_again.obj")
+        code, log = run(exe, out, "-o", again, "-d", "-f", "100%")
+        check(code == 0 and face_count(again) > 0, "%s read back" % out)
+
+    # Output replacing its own input: the input is fully read (and closed)
+    # before the atomic replacement
+    src = os.path.join(tmp, "inplace.abc")
+    with open(os.path.join(DATA, "scene_ab.abc"), "rb") as f, open(src, "wb") as g:
+        g.write(f.read())
+    code, log = run(exe, src, "-o", src, "-d", "-f", "50%")
+    check(code == 0 and not os.path.exists(src + ".tmp"), "in-place .abc output: exit %d" % code)
+    code, log = run(exe, src, "-o", os.path.join(tmp, "inplace.obj"), "-d", "-f", "100%")
+    check(code == 0 and "input polygons" in log and "of 8448 input" not in log,
+          "in-place output is the new mesh")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -83,6 +114,7 @@ def test_errors(exe, tmp):
         (["-o", out, "-f", "abc%"], "Could not parse"),
         (["-o", out, "-f", "75%", "-s", "0.1"], "Only one of"),
         (["-o", os.path.join(tmp, "x.xyz")], "unsupported output format"),
+        (["-o", os.path.join(tmp, "x.fbx")], "(.obj/.ply/.abc are supported)"),
         (["-f", "75%"], "only available in batch mode"),
     ]
     for args, expect in cases:
@@ -104,6 +136,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="im_cli_") as tmp:
         test_abc_input(exe, tmp)
         test_percentage(exe, tmp)
+        test_abc_output(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

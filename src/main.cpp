@@ -159,8 +159,8 @@ int main(int argc, char **argv) {
     /* Check the output format before spending time on the computation */
     if (!batchOutput.empty()) {
         std::string extension = batchOutput.size() > 4 ? str_tolower(batchOutput.substr(batchOutput.size() - 4)) : "";
-        if (extension != ".obj" && extension != ".ply") {
-            cerr << "Error: unsupported output format \"" << batchOutput << "\" (.obj/.ply are supported)!" << endl;
+        if (extension != ".obj" && extension != ".ply" && extension != ".abc") {
+            cerr << "Error: unsupported output format \"" << batchOutput << "\" (.obj/.ply/.abc are supported)!" << endl;
             help = true;
         }
     }
@@ -168,7 +168,7 @@ int main(int argc, char **argv) {
     if (args.size() > 1 || help || (!batchOutput.empty() && args.size() == 0)) {
         cout << "Syntax: " << argv[0] << " [options] <input mesh / point cloud / application state snapshot>" << endl;
         cout << "Options:" << endl;
-        cout << "   -o, --output <output>     Writes to the specified PLY/OBJ output file in batch mode" << endl;
+        cout << "   -o, --output <output>     Writes to the specified PLY/OBJ/ABC output file in batch mode" << endl;
         cout << "   -t, --threads <count>     Number of threads used for parallel computations" << endl;
         cout << "   -d, --deterministic       Prefer (slower) deterministic algorithms" << endl;
         cout << "   -c, --crease <degrees>    Dihedral angle threshold for creases" << endl;

@@ -107,9 +107,43 @@ Archive::Archive(const std::string &filename) : mIn(filename) {
         mIndexedMeta.push_back(parse_metadata(c.str(size)));
     }
 
+    /* Time samplings: max sample (uint32), time per cycle (double), number
+       of stored times (uint32), stored times (doubles) */
+    std::vector<uint8_t> sampling = mIn.data(root[4]);
+    Cursor ts(*this, sampling, sampling.size(), "time samplings");
+    while (!ts.done()) {
+        TimeSampling t;
+        ts.get<uint32_t>();
+        t.timePerCycle = ts.get<double>();
+        const uint32_t count = ts.get<uint32_t>();
+        if (count == 0 || count > sampling.size() / 8)
+            fail("invalid time sampling");
+        for (uint32_t i = 0; i < count; ++i)
+            t.times.push_back(ts.get<double>());
+        mTimeSamplings.push_back(t);
+    }
+    if (mTimeSamplings.empty())
+        mTimeSamplings.push_back(TimeSampling { 1.0, { 0.0 } });
+
     mTop.name = "ABC";
     mTop.path = "/";
     mTop.group = root[2];
+}
+
+uint32_t Archive::stored_index(const Property &p, uint32_t index) const {
+    /* Same mapping as the reference implementation (verifyIndex) */
+    if (index < p.firstChanged || (p.firstChanged == 0 && p.lastChanged == 0))
+        return 0;
+    if (index >= p.lastChanged)
+        return p.lastChanged - p.firstChanged + 1;
+    return index - p.firstChanged + 1;
+}
+
+std::string serialize(const MetaData &meta) {
+    std::string s;
+    for (const auto &kv : meta)
+        s += (s.empty() ? "" : ";") + kv.first + "=" + kv.second;
+    return s;
 }
 
 MetaData Archive::parse_metadata(const std::string &text) const {
@@ -199,18 +233,25 @@ std::vector<Property> Archive::properties(const Property &compound) {
             p.pod = (Pod) pod;
             p.extent = (info & 0xff000) >> 12;
             p.samples = c.hinted(hint);
-            if (info & 0x200) {   /* first / last changed sample */
-                c.hinted(hint);
-                c.hinted(hint);
+            if (info & 0x200) {          /* explicit stored sample range */
+                p.firstChanged = c.hinted(hint);
+                p.lastChanged = c.hinted(hint);
+            } else if (info & 0x800) {   /* constant: one stored sample */
+                p.firstChanged = p.lastChanged = 0;
+            } else {
+                p.firstChanged = 1;
+                p.lastChanged = p.samples > 0 ? p.samples - 1 : 0;
             }
-            if (info & 0x100)     /* time sampling index */
-                c.hinted(hint);
+            if (info & 0x100)
+                p.timeSampling = c.hinted(hint);
         }
 
         const uint32_t nameSize = c.hinted(hint);
         if (nameSize == 0)
             fail("property with an empty name");
         p.name = c.str(nameSize);
+        if (p.timeSampling >= mTimeSamplings.size())
+            fail("property \"" + p.name + "\" uses an unknown time sampling");
 
         const uint32_t metaIndex = (info & 0xff00000) >> 20;
         if (metaIndex == 0xff)

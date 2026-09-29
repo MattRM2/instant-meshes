@@ -66,6 +66,18 @@ extern void write_mesh(const std::string &filename, const MatrixXu &F,
                       const MatrixXf &C = MatrixXf(),
                       const ProgressCallback &progress = ProgressCallback());
 
+/**
+ * Polygons of an extracted mesh (F with 3 or 4 rows; a quad with F(2) ==
+ * F(3) is one directed edge F(0) -> F(1) of a larger polygon, see
+ * extract_faces()), in output order: regular faces first, then the
+ * reassembled polygons. 'faceIds' gives the column of F each polygon comes
+ * from (for face normals). Returns the number of reassembled polygons.
+ * Shared by the OBJ and Alembic writers.
+ */
+extern size_t extracted_polygons(const MatrixXu &F, std::vector<uint32_t> &sizes,
+                                 std::vector<uint32_t> &indices,
+                                 std::vector<uint32_t> &faceIds);
+
 extern void write_obj(const std::string &filename, const MatrixXu &F,
                       const MatrixXf &V,
                       const MatrixXf &N = MatrixXf(),

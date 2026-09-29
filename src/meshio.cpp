@@ -25,17 +25,21 @@ extern "C" {
 }
 
 void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf &V, MatrixXf &N,
-              const ProgressCallback &progress) {
+              const ProgressCallback &progress, uint64_t *polygons) {
+    if (polygons)
+        *polygons = 0;
     std::string extension;
     if (filename.size() > 4)
         extension = str_tolower(filename.substr(filename.size()-4));
 
-    if (extension == ".ply")
+    if (extension == ".ply") {
         load_ply(filename, F, V, N, false, progress);
-    else if (extension == ".obj")
-        load_obj(filename, F, V, progress);
+        if (polygons)
+            *polygons = F.cols();   /* the PLY reader only accepts triangles */
+    } else if (extension == ".obj")
+        load_obj(filename, F, V, progress, polygons);
     else if (extension == ".abc")
-        abc::load_abc(filename, F, V, "", progress);
+        abc::load_abc(filename, F, V, "", progress, polygons);
     else if (extension == ".aln")
         load_pointcloud(filename, V, N, progress);
     else
@@ -469,7 +473,7 @@ void build_mesh(const std::vector<Vector3f> &positions,
 }
 
 void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
-              const ProgressCallback &progress) {
+              const ProgressCallback &progress, uint64_t *polygons) {
     /// Position index of a face corner ("p", "p/uv", "p//n" or "p/uv/n"),
     /// converted from 1-based to 0-based
     auto corner_index = [&](const std::string &string) -> uint32_t {
@@ -522,6 +526,8 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
                                      " out of range in OBJ file \"" + filename + "\"!");
 
     build_mesh(positions, faceSizes, corners, F, V, filename);
+    if (polygons)
+        *polygons = faceSizes.size();
 
     cout << "done. (V=" << V.cols() << ", F=" << F.cols() << ", took "
          << timeString(timer.value()) << ")" << endl;

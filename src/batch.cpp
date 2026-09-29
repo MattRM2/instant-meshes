@@ -24,7 +24,7 @@
 
 void batch_process(const std::string &input, const std::string &output,
                    int rosy, int posy, Float scale, int face_count,
-                   int vertex_count, Float creaseAngle, bool extrinsic,
+                   Float face_percent, int vertex_count, Float creaseAngle, bool extrinsic,
                    bool align_to_boundaries, int smooth_iter, int knn_points,
                    bool pure_quad, bool deterministic) {
     cout << endl;
@@ -44,6 +44,8 @@ void batch_process(const std::string &input, const std::string &output,
     cout << "   Fully deterministic    = " << (deterministic ? "yes" : "no") << endl;
     if (posy == 4)
         cout << "   Output mode            = " << (pure_quad ? "pure quad mesh" : "quad-dominant mesh") << endl;
+    if (face_percent > 0)
+        cout << "   Face target            = " << face_percent << "% of the input polygons" << endl;
     cout << endl;
 
     MatrixXu F;
@@ -54,9 +56,29 @@ void batch_process(const std::string &input, const std::string &output,
     AdjacencyMatrix adj = nullptr;
 
     /* Load the input mesh */
-    load_mesh_or_pointcloud(input, F, V, N);
+    uint64_t polygons = 0;
+    load_mesh_or_pointcloud(input, F, V, N, ProgressCallback(), &polygons);
 
     bool pointcloud = F.size() == 0;
+
+    if (face_percent > 0) {
+        if (pointcloud || polygons == 0)
+            throw std::runtime_error("A percentage face target needs a polygon mesh as input, not a point cloud!");
+        /* In pure quad mode the extracted mesh is subdivided afterwards
+           (every n-gon becomes n quads, ~4x the faces): aim for a quarter
+           so that the final mesh matches the requested percentage */
+        const bool subdivided = posy == 4 && pure_quad;
+        const double target = polygons * (double) face_percent / 100.0;
+        const double extracted = std::round(subdivided ? target / 4 : target);
+        if (extracted > 1e9)
+            throw std::runtime_error("The percentage face target is too large!");
+        face_count = std::max(1, (int) extracted);
+        cout << "Face target: " << face_percent << "% of " << polygons << " input polygons = ~"
+             << (uint64_t) std::round(target) << " faces";
+        if (subdivided)
+            cout << " (~" << face_count << " extracted, then subdivided into quads)";
+        cout << endl;
+    }
 
     Timer<> timer;
     MeshStats stats = compute_mesh_stats(F, V, deterministic);

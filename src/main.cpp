@@ -28,7 +28,7 @@ int main(int argc, char **argv) {
     bool fullscreen = false, help = false, deterministic = false, compat = false;
     int rosy = 4, posy = 4, face_count = -1, vertex_count = -1;
     uint32_t knn_points = 10, smooth_iter = 2;
-    Float crease_angle = -1, scale = -1;
+    Float crease_angle = -1, scale = -1, face_percent = -1;
     std::string batchOutput;
     #if defined(__APPLE__)
         bool launched_from_finder = false;
@@ -95,7 +95,14 @@ int main(int argc, char **argv) {
                     cerr << "Missing face count argument!" << endl;
                     return -1;
                 }
-                face_count = str_to_int32_t(argv[i]);
+                std::string value = argv[i];
+                if (!value.empty() && value.back() == '%') {
+                    face_percent = str_to_float(value.substr(0, value.size() - 1));
+                    if (!std::isfinite(face_percent) || !(face_percent > 0))
+                        throw std::runtime_error("Invalid face percentage \"" + value + "\"");
+                } else {
+                    face_count = str_to_int32_t(value);
+                }
             } else if (strcmp("--vertices", argv[i]) == 0 || strcmp("-v", argv[i]) == 0) {
                 if (++i >= argc) {
                     cerr << "Missing vertex count argument!" << endl;
@@ -136,12 +143,26 @@ int main(int argc, char **argv) {
 
     int nConstraints = 0;
     nConstraints += scale > 0 ? 1 : 0;
-    nConstraints += face_count > 0 ? 1 : 0;
+    nConstraints += (face_count > 0 || face_percent > 0) ? 1 : 0;
     nConstraints += vertex_count > 0 ? 1 : 0;
 
     if (nConstraints > 1) {
         cerr << "Error: Only one of the --scale, --face and --vertices parameters can be used at once!" << endl;
         help = true;
+    }
+
+    if (face_percent > 0 && batchOutput.empty()) {
+        cerr << "Error: a percentage face target (-f N%) is only available in batch mode (-o) for now!" << endl;
+        help = true;
+    }
+
+    /* Check the output format before spending time on the computation */
+    if (!batchOutput.empty()) {
+        std::string extension = batchOutput.size() > 4 ? str_tolower(batchOutput.substr(batchOutput.size() - 4)) : "";
+        if (extension != ".obj" && extension != ".ply") {
+            cerr << "Error: unsupported output format \"" << batchOutput << "\" (.obj/.ply are supported)!" << endl;
+            help = true;
+        }
     }
 
     if (args.size() > 1 || help || (!batchOutput.empty() && args.size() == 0)) {
@@ -158,7 +179,10 @@ int main(int argc, char **argv) {
         cout << "   -r, --rosy <number>       Specifies the orientation symmetry type (2, 4, or 6)" << endl;
         cout << "   -p, --posy <number>       Specifies the position symmetry type (4 or 6)" << endl;
         cout << "   -s, --scale <scale>       Desired world space length of edges in the output" << endl;
-        cout << "   -f, --faces <count>       Desired face count of the output mesh" << endl;
+        cout << "   -f, --faces <count>       Desired face count of the output mesh (approximate)," << endl;
+        cout << "       --faces <percent>%    or a percentage of the input polygon count, e.g. 75%" << endl;
+        cout << "                             (batch mode, mesh inputs; 100% = polygons of the file;" << endl;
+        cout << "                             about +/-3%, less accurate below a few hundred polygons)" << endl;
         cout << "   -v, --vertices <count>    Desired vertex count of the output mesh" << endl;
         cout << "   -C, --compat              Compatibility mode to load snapshots from old software versions" << endl;
         cout << "   -k, --knn <count>         Point cloud mode: number of adjacent points to consider" << endl;
@@ -175,7 +199,7 @@ int main(int argc, char **argv) {
     if (!batchOutput.empty() && args.size() == 1) {
         try {
             batch_process(args[0], batchOutput, rosy, posy, scale, face_count,
-                          vertex_count, crease_angle, extrinsic,
+                          face_percent, vertex_count, crease_angle, extrinsic,
                           align_to_boundaries, smooth_iter, knn_points,
                           !dominant, deterministic);
             return 0;

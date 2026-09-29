@@ -579,7 +579,8 @@ std::vector<MeshSummary> list_meshes(const std::string &filename) {
 }
 
 void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
-              const std::string &object, const ProgressCallback &progress) {
+              const std::string &object, const ProgressCallback &progress,
+              uint64_t *polygons) {
     cout << "Loading \"" << filename << "\" .. ";
     cout.flush();
     Timer<> timer;
@@ -597,6 +598,8 @@ void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
     }
 
     build_mesh(collector.positions, collector.sizes, collector.indices, F, V, filename);
+    if (polygons)
+        *polygons = collector.sizes.size();
 
     cout << "done. (" << collector.meshes.size() << " mesh"
          << (collector.meshes.size() > 1 ? "es" : "") << ", V=" << V.cols()

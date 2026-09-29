@@ -123,9 +123,11 @@ std::vector<MeshSummary> list_meshes(const std::string &filename);
  * indexed exactly like OBJ files (see build_mesh()). 'object' restricts
  * loading to the meshes at or below that full path ("" loads everything).
  * Non-polygon objects (cameras, curves, points, SubD, ...) are skipped.
+ * 'polygons' receives the number of loaded polygons before triangulation.
  */
 void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
               const std::string &object = "",
-              const ProgressCallback &progress = ProgressCallback());
+              const ProgressCallback &progress = ProgressCallback(),
+              uint64_t *polygons = nullptr);
 
 } // namespace abc

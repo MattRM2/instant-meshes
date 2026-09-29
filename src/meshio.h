@@ -15,10 +15,14 @@
 
 #include "common.h"
 
+/// Loads a mesh (.obj/.ply/.abc) or point cloud (.aln). If 'polygons' is
+/// given, it receives the number of polygons of the file before
+/// triangulation (as shown in a DCC), 0 for a point cloud.
 extern void
 load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F,
                         MatrixXf &V, MatrixXf &N,
-                        const ProgressCallback &progress = ProgressCallback());
+                        const ProgressCallback &progress = ProgressCallback(),
+                        uint64_t *polygons = nullptr);
 
 /**
  * Split a polygon with n >= 3 corners (positions given in corner order) into
@@ -43,7 +47,8 @@ extern void build_mesh(const std::vector<Vector3f> &positions,
                        MatrixXu &F, MatrixXf &V, const std::string &source);
 
 extern void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
-                     const ProgressCallback &progress = ProgressCallback());
+                     const ProgressCallback &progress = ProgressCallback(),
+                     uint64_t *polygons = nullptr);
 
 extern void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V,
                      MatrixXf &N, bool pointcloud = false,

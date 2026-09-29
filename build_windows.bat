@@ -72,6 +72,18 @@ if exist "%BUILD_DIR%\Release\im_tests.exe" (
     findstr /c:" passed, " "%BUILD_DIR%\im_tests.log"
     echo [OK] Tests unitaires reussis
 )
+
+rem --- Tests de bout en bout de la ligne de commande (Python requis) --------
+where python >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] Python introuvable, tests de la ligne de commande ignores
+) else (
+    echo [INFO] Tests de la ligne de commande...
+    python "%ROOT%tests\test_cli.py" "%BUILD_DIR%\Release\Instant Meshes.exe" > "%BUILD_DIR%\test_cli.log" 2>&1
+    if errorlevel 1 goto fail_cli
+    findstr /c:" passed, " "%BUILD_DIR%\test_cli.log"
+    echo [OK] Tests de la ligne de commande reussis
+)
 set "RC=0"
 goto end
 
@@ -95,6 +107,13 @@ goto end
 :fail_build
 echo.
 echo [ERREUR] La compilation a echoue.
+set "RC=1"
+goto end
+
+:fail_cli
+echo.
+echo [ERREUR] Des tests de la ligne de commande echouent :
+type "%BUILD_DIR%\test_cli.log" | findstr /c:"FAILED" /c:" passed, "
 set "RC=1"
 goto end
 

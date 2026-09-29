@@ -14,6 +14,7 @@
 #include "batch.h"
 #include "meshio.h"
 #include "abc.h"
+#include "objscene.h"
 #include "dedge.h"
 #include "subdivide.h"
 #include "meshstats.h"
@@ -316,6 +317,25 @@ void batch_process(const std::string &input, const std::string &output,
     write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr);
 }
 
+static bool is_obj_file(const std::string &filename) {
+    return filename.size() > 4 && str_tolower(filename.substr(filename.size() - 4)) == ".obj";
+}
+
+/* Polygon meshes of an Alembic file, or objects of an OBJ file ("/name") */
+static std::vector<abc::MeshSummary> list_scene(const std::string &input) {
+    if (!is_obj_file(input))
+        return abc::list_meshes(input);
+    std::vector<abc::MeshSummary> result;
+    for (const objscene::ObjectInfo &o : objscene::list_objects(input)) {
+        abc::MeshSummary m;
+        m.path = "/" + o.name;
+        m.vertices = o.vertices;
+        m.faces = o.faces;
+        result.push_back(m);
+    }
+    return result;
+}
+
 static std::string mesh_flags(const abc::MeshSummary &m) {
     std::string flags;
     if (m.animated)
@@ -326,7 +346,7 @@ static std::string mesh_flags(const abc::MeshSummary &m) {
 }
 
 void batch_list(const std::string &input) {
-    const std::vector<abc::MeshSummary> meshes = abc::list_meshes(input);
+    const std::vector<abc::MeshSummary> meshes = list_scene(input);
     size_t width = 0;
     for (const abc::MeshSummary &m : meshes)
         width = std::max(width, m.path.size());
@@ -340,7 +360,8 @@ void batch_list(const std::string &input) {
 void batch_process_objects(const std::string &input, const std::string &output,
                            const RemeshParams &params, const std::vector<MeshRule> &rules,
                            const FaceTarget &others, bool dryRun) {
-    const std::vector<abc::MeshSummary> meshes = abc::list_meshes(input);
+    const std::vector<abc::MeshSummary> meshes = list_scene(input);
+    const bool obj = is_obj_file(input);
 
     /* Plan: the last matching rule wins, then --others, else untouched */
     struct Item {
@@ -429,7 +450,10 @@ void batch_process_objects(const std::string &input, const std::string &output,
         MatrixXu F;
         MatrixXf V, N;
         uint64_t polygons = 0;
-        abc::load_abc_mesh(input, i.mesh->path, F, V, &polygons);
+        if (obj)
+            objscene::load_object(input, i.mesh->path.substr(1), F, V, &polygons);
+        else
+            abc::load_abc_mesh(input, i.mesh->path, F, V, &polygons);
 
         RemeshParams p = params;
         p.scale = -1;
@@ -447,5 +471,17 @@ void batch_process_objects(const std::string &input, const std::string &output,
     }
 
     cout << endl;
-    abc::splice_abc(input, output, replacements);
+    if (obj) {
+        std::vector<objscene::Replacement> objects;
+        for (abc::Replacement &r : replacements) {
+            objscene::Replacement o;
+            o.name = r.path.substr(1);
+            o.F = std::move(r.F);
+            o.V = std::move(r.V);
+            objects.push_back(std::move(o));
+        }
+        objscene::splice_obj(input, output, objects);
+    } else {
+        abc::splice_abc(input, output, replacements);
+    }
 }

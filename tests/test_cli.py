@@ -3,7 +3,7 @@ test_cli.py -- End-to-end tests of the Instant Meshes command line (batch
 mode) on the reference dataset. Standard library only.
 
 Usage:
-    python tests/test_cli.py "build/Release/Instant Meshes.exe"
+    python tests/test_cli.py build/Release/InstantMeshes.exe
 Exit code 0 when every check passes.
 """
 
@@ -199,7 +199,7 @@ def test_mesh_rules(exe, tmp):
     cases = [
         (["-o", os.path.join(tmp, "e.abc"), "-m", "Nope=50%"], "no polygon mesh matches"),
         (["-o", os.path.join(tmp, "e.abc"), "-m", "Mesh=50%"], "no polygon mesh matches"),
-        (["-o", os.path.join(tmp, "e.obj"), "-m", "MeshA=50%"], "Alembic (.abc) output"),
+        (["-o", os.path.join(tmp, "e.obj"), "-m", "MeshA=50%"], "same format as the input"),
         (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=50%", "-f", "50%"], "give the face targets there"),
         (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA"], "expected name=target"),
         (["-o", os.path.join(tmp, "e.abc"), "-m", "=50%"], "expected name=target"),
@@ -212,14 +212,57 @@ def test_mesh_rules(exe, tmp):
         check(code != 0 and expect in log and "Optimizing" not in log,
               "%s -> expected '%s'" % (" ".join(args), expect))
     check(not os.path.exists(os.path.join(tmp, "e.abc")), "no output after errors")
-    code, log = run(exe, os.path.join(DATA, "cube_quads.obj"), "--list")
-    check(code != 0 and "need one Alembic (.abc) input" in log, "--list on an OBJ refused")
+    code, log = run(exe, os.path.join(DATA, "cube_quads.ply"), "--list")
+    check(code != 0 and "need one Alembic (.abc) or OBJ (.obj) input" in log, "--list on a PLY refused")
     code, log = run(exe, os.path.join(DATA, "instances.abc"), "-o", os.path.join(tmp, "e.abc"),
                     "-m", "Pillar*=50%")
     check(code != 0 and "cannot be remeshed" in log, "instanced target refused")
     code, log = run(exe, os.path.join(DATA, "animated.abc"), "-o", os.path.join(tmp, "e.abc"),
                     "-m", "Moving=50%")
     check(code != 0 and "cannot be remeshed" in log, "animated target refused")
+
+
+def test_obj_rules(exe, tmp):
+    print("per-object remeshing of OBJ scenes")
+    scene = os.path.join(DATA, "scene_ab.obj")
+    A, B = "/MeshA", "/MeshB"
+
+    code, meshes = list_meshes(exe, scene)
+    check(code == 0 and meshes == {A: 7872, B: 576}, "--list scene_ab.obj: %s" % meshes)
+
+    code, log = run(exe, scene, "-m", "Mesh*=75%", "-m", "MeshB=85%", "--dry-run")
+    plan = plan_lines(log)
+    check(code == 0 and "75%" in plan.get(A, "") and "85%" in plan.get(B, ""), "OBJ dry run plan")
+
+    out = os.path.join(tmp, "obj_spliced.obj")
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%")
+    code2, meshes = list_meshes(exe, out)
+    check(code == 0 and meshes.get(B) == 576 and abs(meshes.get(A, 0) - 3936) <= 0.1 * 3936,
+          "OBJ -m MeshA=50%%: %s" % meshes)
+    with open(scene) as f:
+        original = f.read()
+    with open(out) as f:
+        spliced = f.read()
+    b_vertices = [l for l in original[original.index("o MeshB"):].splitlines() if l.startswith("v ")]
+    check(all(("\n" + l + "\n") in spliced for l in b_vertices[:50]) and len(b_vertices) == 576,
+          "MeshB vertex lines copied verbatim")
+
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%", "--others", "150%")
+    code2, meshes = list_meshes(exe, out)
+    check(code == 0 and meshes.get(B, 0) > 576, "OBJ --others: %s" % meshes)
+
+    src = os.path.join(tmp, "inplace.obj")
+    with open(scene, "rb") as f, open(src, "wb") as g:
+        g.write(f.read())
+    code, log = run(exe, src, "-o", src, "-d", "-m", "MeshB=200%")
+    code2, meshes = list_meshes(exe, src)
+    check(code == 0 and meshes.get(A) == 7872 and meshes.get(B, 0) > 576 and
+          not os.path.exists(src + ".tmp"), "in-place OBJ: %s" % meshes)
+
+    code, log = run(exe, scene, "-o", os.path.join(tmp, "x.abc"), "-m", "MeshA=50%")
+    check(code != 0 and "same format as the input" in log, "OBJ input needs an OBJ output")
+    code, log = run(exe, scene, "-o", out, "-m", "Nope=50%")
+    check(code != 0 and "no polygon mesh matches" in log, "OBJ rule without match")
 
 
 def test_errors(exe, tmp):
@@ -233,7 +276,6 @@ def test_errors(exe, tmp):
         (["-o", out, "-f", "75%", "-s", "0.1"], "Only one of"),
         (["-o", os.path.join(tmp, "x.xyz")], "unsupported output format"),
         (["-o", os.path.join(tmp, "x.fbx")], "(.obj/.ply/.abc are supported)"),
-        (["-f", "75%"], "only available in batch mode"),
     ]
     for args, expect in cases:
         code, log = run(exe, src, *args)
@@ -256,6 +298,7 @@ def main():
         test_percentage(exe, tmp)
         test_abc_output(exe, tmp)
         test_mesh_rules(exe, tmp)
+        test_obj_rules(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

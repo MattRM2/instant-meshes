@@ -61,3 +61,4 @@ inline bool contains(const std::string &haystack, const std::string &needle) {
 void test_meshio();
 void test_ogawa(int fuzz_scale);
 void test_abc(int fuzz_scale);
+void test_objscene();

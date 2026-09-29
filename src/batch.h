@@ -64,11 +64,11 @@ extern void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
 extern void batch_process(const std::string &input, const std::string &output,
                           const RemeshParams &params);
 
-/// Prints the polygon meshes of an Alembic file (--list)
+/// Prints the polygon meshes of an Alembic file, or the objects of an OBJ file (--list)
 extern void batch_list(const std::string &input);
 
 /**
- * Alembic input -> Alembic output, per-mesh targets (-m / --others): each
+ * Alembic (or OBJ) input -> same format output, per-mesh targets (-m / --others): each
  * selected mesh is remeshed on its own and spliced back into a copy of the
  * input; unselected meshes are copied untouched. Prints the plan first;
  * with 'dryRun' stops there.

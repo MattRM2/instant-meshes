@@ -123,7 +123,9 @@ set(PNG_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/scare.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/sing_dir.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/sing_pos.png
-  ${CMAKE_CURRENT_SOURCE_DIR}/resources/instantmeshes.png)
+  ${CMAKE_CURRENT_SOURCE_DIR}/resources/instantmeshes.png
+  ${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts/Poppins-Regular.ttf
+  ${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts/Poppins-SemiBold.ttf)
 file(GLOB FRAG_FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/*.frag")
 file(GLOB VERT_FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/*.vert")
 file(GLOB GEO_FILES  "${CMAKE_CURRENT_SOURCE_DIR}/resources/*.geo")
@@ -158,6 +160,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/ogawa.h src/ogawa.cpp
   src/abc.h src/abc.cpp
   src/abchash.h src/abchash.cpp src/abcwrite.cpp
+  src/objscene.h src/objscene.cpp
   src/normal.h src/normal.cpp
   src/adjacency.h src/adjacency.cpp
   src/meshstats.h src/meshstats.cpp
@@ -179,7 +182,8 @@ add_executable(InstantMeshes MACOSX_BUNDLE
 add_definitions(${NANOGUI_EXTRA_DEFS})
 target_link_libraries(InstantMeshes tbb_static nanogui ${NANOGUI_EXTRA_LIBS})
 
-set_target_properties(InstantMeshes PROPERTIES OUTPUT_NAME "Instant Meshes")
+# No space in the executable name: easier to call from scripts and shells
+set_target_properties(InstantMeshes PROPERTIES OUTPUT_NAME "InstantMeshes")
 
 if (WIN32)
   # Quench some warnings on MSVC
@@ -208,12 +212,13 @@ if (INSTANT_MESHES_TESTS)
   enable_testing()
   add_executable(im_tests
     tests/test_common.h tests/test_main.cpp
-    tests/test_meshio.cpp tests/test_ogawa.cpp tests/test_abc.cpp
+    tests/test_meshio.cpp tests/test_ogawa.cpp tests/test_abc.cpp tests/test_objscene.cpp
     src/meshio.h src/meshio.cpp
     src/normal.h src/normal.cpp
     src/ogawa.h src/ogawa.cpp
     src/abc.h src/abc.cpp
     src/abchash.h src/abchash.cpp src/abcwrite.cpp
+    src/objscene.h src/objscene.cpp
     ext/rply/rply.c)
   target_include_directories(im_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(im_tests tbb_static nanogui ${NANOGUI_EXTRA_LIBS})
@@ -232,6 +237,7 @@ if (INSTANT_MESHES_TESTS)
     src/ogawa.h src/ogawa.cpp
     src/abc.h src/abc.cpp
     src/abchash.h src/abchash.cpp src/abcwrite.cpp
+    src/objscene.h src/objscene.cpp
     src/meshio.h src/meshio.cpp
     src/normal.h src/normal.cpp
     ext/rply/rply.c)

@@ -77,6 +77,9 @@ public:
     void setSymmetry(int rosy, int posy);
     void setExtrinsic(bool extrinsic);
 
+    /// Face target as a percentage of the input polygons (-f N% at startup)
+    void setTargetPercent(Float percent);
+
     void resetState();
     void loadState(std::string filename, bool compat = false);
     void saveState(std::string filename);
@@ -106,6 +109,12 @@ protected:
                                Eigen::Matrix4f &proj);
 
     void setLevel(int level);
+    void applyMattDarkTheme();
+    void applyTargetFaces(Float faces, bool prompt);
+    void refreshTargetUI();
+    Float facesPerVertex() const;
+    Float targetReference() const;
+    void setFlowColorMode(int mode);
     void setTargetScale(Float scale);
     void setTargetVertexCount(uint32_t v);
     void setTargetVertexCountPrompt(uint32_t v);
@@ -217,14 +226,26 @@ protected:
     PopupButton *mExportBtn;
     ToolButton *mOrientationComb, *mOrientationAttractor, *mOrientationScareBrush;
     ToolButton *mEdgeBrush, *mPositionAttractor, *mPositionScareBrush;
-    TextBox *mHierarchyLevelBox, *mScaleBox, *mCreaseAngleBox;
+    TextBox *mHierarchyLevelBox, *mCreaseAngleBox;
     TextBox *mOrientationSingularityBox, *mPositionSingularityBox, *mSmoothBox;
-    Slider *mScaleSlider, *mCreaseAngleSlider, *mSmoothSlider;
+    Slider *mCreaseAngleSlider, *mSmoothSlider;
     Slider *mOrientationFieldSizeSlider, *mOrientationFieldSingSizeSlider;
     Slider *mPositionFieldSingSizeSlider, *mFlowLineSlider;
 #ifdef VISUALIZE_ERROR
     Graph *mGraph;
 #endif
+
+    /* Target (faces or % of the input polygons) and flow line colors */
+    enum TargetMode { TargetFaces = 0, TargetPercent = 1 };
+    Button *mTargetModeBtn[2], *mTargetPresetBtn[4], *mFlowModeBtn[4];
+    TextBox *mTargetBox;
+    Slider *mTargetSlider;
+    Label *mTargetInfo, *mInputInfoLabel;
+    int mTargetMode = TargetPercent;
+    int mFlowColorMode = 2;            /* 1 = mono, 2 = direction, 3 = per line */
+    Float mTargetFaces = 0;            /* output faces, pure quad subdivision included */
+    Float mUnsafeVertexCount = std::numeric_limits<Float>::infinity();
+    uint64_t mInputPolygons = 0;
 
     /* Progress display */
     std::function<void(const std::string &, Float)> mProgress;

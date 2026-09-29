@@ -21,8 +21,13 @@
 #include "reorder.h"
 #include "smoothcurve.h"
 #include "gui_serializer.h"
+#include "version.h"
+#include <nanogui/theme.h>
 #include <resources.h>
 #include <pcg32.h>
+#include <algorithm>
+#define NANOVG_GL3
+#include <nanovg_gl.h>
 #include <fstream>
 
 #if !defined(_WIN32)
@@ -30,14 +35,61 @@
 #  include <sys/wait.h>
 #endif
 
+/* Matt Dark palette for flow lines, strokes and singularities */
+static const uint8_t FLOW_PALETTE[7][3] = {
+    { 0x22, 0xD3, 0xEE }, { 0xA7, 0x8B, 0xFA }, { 0x4A, 0xDE, 0x80 }, { 0xF4, 0x72, 0xB6 },
+    { 0xFA, 0xCC, 0x15 }, { 0x60, 0xA5, 0xFA }, { 0xE5, 0xE5, 0xE5 }
+};
+
+static inline Vector3f hex_color(uint32_t rgb) {
+    return Vector3f(((rgb >> 16) & 0xFF) / 255.f, ((rgb >> 8) & 0xFF) / 255.f, (rgb & 0xFF) / 255.f);
+}
+
+/* Color of a flow line: mono, by direction family (the field direction the
+   line was traced along) or one palette color per line */
+static Vector4u8 flow_line_color(int mode, uint32_t line, uint32_t rotation, int rosy) {
+    static const uint8_t mono[3] = { 0xD4, 0xD4, 0xD4 };
+    const uint8_t *c;
+    if (mode == 1)
+        c = mono;
+    else if (mode == 3)
+        c = FLOW_PALETTE[line % 7];
+    else
+        c = FLOW_PALETTE[rosy == 6 ? rotation % 3 : (rosy == 4 ? rotation % 2 : 0)];
+    Vector4u8 value;
+    value << c[0], c[1], c[2], (uint8_t) 0x0;
+    return value;
+}
+
+static std::string group_thousands(uint64_t n) {
+    std::string s = std::to_string(n);
+    for (int i = (int) s.size() - 3; i > 0; i -= 3)
+        s.insert((size_t) i, ",");
+    return s;
+}
+
+/* Target slider: log scale from 1% to 400% of the input polygons */
+static Float slider_from_percent(Float percent) {
+    const Float v = std::log(std::max(percent, (Float) 1e-3)) / std::log((Float) 400);
+    return std::min((Float) 1, std::max((Float) 0, v));
+}
+
+static nanogui::Label *section(nanogui::Widget *parent, const std::string &caption) {
+    nanogui::Label *label = new nanogui::Label(parent, caption, "sans-bold");
+    label->setColor(nanogui::Color(251, 146, 60, 255));
+    return label;
+}
+
 Viewer::Viewer(bool fullscreen, bool deterministic)
-    : Screen(Vector2i(1280, 960), "Instant Meshes", true, fullscreen),
+    : Screen(Vector2i(1280, 960), INSTANT_MESHES_TITLE, true, fullscreen),
       mOptimizer(mRes, true), mBVH(nullptr) {
     resizeEvent(mSize);
+    applyMattDarkTheme();
+    setBackground(Color(43, 43, 43, 255));
     mCreaseAngle = -1;
     mDeterministic = deterministic;
 
-    mBaseColor = Vector3f(0.4f, 0.5f, 0.7f);
+    mBaseColor = Vector3f(0.42f, 0.42f, 0.42f);   /* Matt Dark clay #6B6B6B */
     mEdgeFactor0 = mEdgeFactor1 = mEdgeFactor2 = Vector3f::Constant(1.0f);
     mEdgeFactor0[0] = mEdgeFactor1[2] = 0.5f;
     mInteriorFactor = Vector3f::Constant(0.5f);
@@ -160,7 +212,7 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     mProgressWindow->setVisible(false);
 
     PopupButton *openBtn = new PopupButton(window, "Open mesh");
-    openBtn->setBackgroundColor(Color(0, 255, 0, 25));
+    openBtn->setBackgroundColor(Color(251, 146, 60, 60));
     openBtn->setIcon(ENTYPO_ICON_FOLDER);
     Popup *popup = openBtn->popup();
     VScrollPanel *vscroll = new VScrollPanel(popup);
@@ -173,7 +225,6 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
 
     PopupButton *advancedBtn = new PopupButton(window, "Advanced");
     advancedBtn->setIcon(ENTYPO_ICON_ROCKET);
-    advancedBtn->setBackgroundColor(Color(100, 0, 0, 25));
     Popup *advancedPopup = advancedBtn->popup();
     advancedPopup->setAnchorHeight(61);
 
@@ -295,7 +346,11 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     for (int i=0; i<LayerCount; ++i)
         mLayers[i]->setId("layer_" + std::to_string(i));
 
-    new Label(window, "Remesh as", "sans-bold");
+    mInputInfoLabel = new Label(window, "No mesh loaded");
+    mInputInfoLabel->setColor(Color(163, 163, 163, 255));
+    mInputInfoLabel->setFixedWidth(218);
+
+    section(window, "Remesh as");
     mSymmetryBox = new ComboBox(window,
         { "Triangles (6-RoSy, 6-PoSy)",
         "Quads (2-RoSy, 4-PoSy)",
@@ -306,6 +361,7 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     mSymmetryBox->setId("symmetryBox");
 
     mSymmetryBox->setCallback([&](int index) {
+        {
         std::lock_guard<ordered_lock> lock(mRes.mutex());
         mOptimizer.stop();
         if (index == 0) {
@@ -319,17 +375,27 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
             mOptimizer.setPoSy(4);
         }
         mPureQuadBox->setEnabled(mOptimizer.posy() == 4);
-        mPureQuadBox->setChecked(false);
+        mPureQuadBox->setChecked(mOptimizer.posy() == 4);
         mSolvePositionBtn->setEnabled(false);
         mExportBtn->setEnabled(false);
         mOrientationScareBrush->setEnabled(false);
         mOrientationAttractor->setEnabled(false);
         mVisualizeBox->setSelectedIndex(0);
         mRes.resetSolution();
+        }
+        /* Same output face count with the new symmetry */
+        applyTargetFaces(mTargetFaces, false);
         repaint();
     });
 
-    new Label(window, "Configuration details", "sans-bold");
+    mPureQuadBox = new CheckBox(window, "Pure quad output");
+    mPureQuadBox->setTooltip("Subdivide the extracted mesh once into pure quads. "
+                             "The face target accounts for it.");
+    mPureQuadBox->setId("pureQuadBox");
+    mPureQuadBox->setChecked(true);
+    mPureQuadBox->setCallback([&](bool) { applyTargetFaces(mTargetFaces, false); });
+
+    section(window, "Configuration");
 
     mExtrinsicBox = new CheckBox(window, "Extrinsic");
     mExtrinsicBox->setId("extrinsic");
@@ -358,46 +424,77 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     });
 
     mCreaseBox->setId("creaseBox");
-    new Label(window, "Target vertex count", "sans-bold");
-    Widget *densityPanel = new Widget(window);
-    densityPanel->setLayout(
-        new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 10));
+    section(window, "Target");
+    Widget *modePanel = new Widget(window);
+    modePanel->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    const char *modeNames[2] = { "Faces", "% of input" };
+    std::vector<Button *> modeGroup;
+    for (int i = 0; i < 2; ++i) {
+        Button *b = new Button(modePanel, modeNames[i]);
+        b->setFlags(Button::RadioButton);
+        b->setFontSize(15);
+        b->setFixedSize(Vector2i(i == 0 ? 90 : 124, 26));
+        b->setCallback([&, i] { mTargetMode = i; refreshTargetUI(); });
+        mTargetModeBtn[i] = b;
+        modeGroup.push_back(b);
+    }
+    for (auto b : modeGroup)
+        b->setButtonGroup(modeGroup);
+    mTargetModeBtn[TargetPercent]->setPushed(true);
+    mTargetModeBtn[0]->setTooltip("Type an exact face count for the output mesh");
+    mTargetModeBtn[1]->setTooltip("Type a percentage of the input polygon count (100% = as many faces as the input)");
 
-    mScaleSlider = new Slider(densityPanel);
-    mScaleSlider->setValue(0.5f);
-    mScaleSlider->setId("scaleSlider");
-    mScaleSlider->setFixedWidth(60);
-
-    mScaleBox = new TextBox(densityPanel);
-    mScaleBox->setFixedSize(Vector2i(80, 25));
-    mScaleBox->setValue("0");
-    mScaleBox->setId("scaleBox");
-    mScaleSlider->setCallback([&](Float value) {
-        Float min = std::log(std::min(100, (int) mRes.V().cols() / 10));
-        Float max = std::log(2*mRes.V().cols());
-        uint32_t v = (uint32_t) std::exp((1-value) * min + value * max);
-        char tmp[10];
-        if (v > 1e6f) {
-            mScaleBox->setUnits("M");
-            snprintf(tmp, sizeof(tmp), "%.2f", v*1e-6f);
-        } else if (v > 1e3f) {
-            mScaleBox->setUnits("K");
-            snprintf(tmp, sizeof(tmp), "%.2f", v*1e-3f);
-        } else {
-            mScaleBox->setUnits(" ");
-            snprintf(tmp, sizeof(tmp), "%i", v);
-        }
-        mScaleBox->setValue(tmp);
+    mTargetBox = new TextBox(window);
+    mTargetBox->setId("targetBox");
+    mTargetBox->setFixedSize(Vector2i(218, 32));
+    mTargetBox->setFontSize(20);
+    mTargetBox->setEditable(true);
+    mTargetBox->setFormat("[0-9]*[.,]?[0-9]*");
+    mTargetBox->setAlignment(TextBox::Alignment::Left);
+    mTargetBox->setValue("");
+    mTargetBox->setTooltip("Type the target and press Enter");
+    mTargetBox->setCallback([&](const std::string &str) {
+        std::string s = str;
+        std::replace(s.begin(), s.end(), ',', '.');
+        char *end = nullptr;
+        const double value = strtod(s.c_str(), &end);
+        if (s.empty() || *end != '\0' || !(value > 0) || !std::isfinite(value))
+            return false;
+        const bool percent = mTargetMode == TargetPercent && mInputPolygons > 0;
+        applyTargetFaces((Float) (percent ? targetReference() * value / 100 : value), true);
+        return true;
     });
 
-    mScaleSlider->setFinalCallback([&](Float value) {
-        Float min = std::log(std::min(100, (int) mRes.V().cols() / 10));
-        Float max = std::log(2*mRes.V().cols());
-        uint32_t v = (uint32_t) std::exp((1-value) * min + value * max);
-        setTargetVertexCountPrompt(v);
+    mTargetSlider = new Slider(window);
+    mTargetSlider->setId("targetSlider");
+    mTargetSlider->setFixedWidth(218);
+    mTargetSlider->setHighlightColor(Color(248, 113, 113, 110));
+    mTargetSlider->setTooltip("1% to 400% of the input polygons. The red range needs a finer input (it will be subdivided)");
+    mTargetSlider->setCallback([&](Float value) {
+        mTargetFaces = targetReference() * std::exp(value * std::log((Float) 400)) / 100;
+        refreshTargetUI();
+    });
+    mTargetSlider->setFinalCallback([&](Float value) {
+        applyTargetFaces(targetReference() * std::exp(value * std::log((Float) 400)) / 100, true);
     });
 
-    new Label(window, "Orientation field", "sans-bold");
+    Widget *presetPanel = new Widget(window);
+    presetPanel->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    const int presets[4] = { 25, 50, 75, 100 };
+    for (int i = 0; i < 4; ++i) {
+        Button *b = new Button(presetPanel, std::to_string(presets[i]) + "%");
+        b->setFontSize(15);
+        b->setFixedSize(Vector2i(51, 26));
+        const int p = presets[i];
+        b->setCallback([&, p] { applyTargetFaces(targetReference() * p / 100, true); });
+        mTargetPresetBtn[i] = b;
+    }
+
+    mTargetInfo = new Label(window, "Load a mesh to set the target");
+    mTargetInfo->setColor(Color(163, 163, 163, 255));
+    mTargetInfo->setFixedWidth(218);
+
+    section(window, "Orientation field");
     Widget *orientTools = new Widget(window);
     new Label(orientTools, "Tool:        ", "sans-bold");
     mOrientationComb = new ToolButton(orientTools, nvgImageIcon(ctx, comb));
@@ -437,8 +534,32 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
 
     new Label(orientSingPanel, "  singularities");
 
+    Widget *flowPanel = new Widget(window);
+    flowPanel->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 3));
+    const char *flowNames[4] = { "Off", "Mono", "Direction", "Per line" };
+    const char *flowTips[4] = {
+        "Hide the flow lines",
+        "Neutral flow lines: read the flow without color noise",
+        "Cyan follows U, violet follows V (green: third direction in triangle mode)",
+        "One color per line: follow a single loop around the model" };
+    const int flowWidths[4] = { 38, 50, 72, 60 };
+    std::vector<Button *> flowGroup;
+    for (int i = 0; i < 4; ++i) {
+        Button *b = new Button(flowPanel, flowNames[i]);
+        b->setFlags(Button::RadioButton);
+        b->setFontSize(14);
+        b->setFixedSize(Vector2i(flowWidths[i], 24));
+        b->setTooltip(flowTips[i]);
+        b->setCallback([&, i] { setFlowColorMode(i); });
+        mFlowModeBtn[i] = b;
+        flowGroup.push_back(b);
+    }
+    for (auto b : flowGroup)
+        b->setButtonGroup(flowGroup);
+    mFlowModeBtn[0]->setPushed(true);
+
     mSolveOrientationBtn = new ProgressButton(window, "Solve", ENTYPO_ICON_FLASH);
-    mSolveOrientationBtn->setBackgroundColor(Color(0, 0, 255, 25));
+    mSolveOrientationBtn->setBackgroundColor(Color(251, 146, 60, 70));
     mSolveOrientationBtn->setFixedHeight(25);
     mSolveOrientationBtn->setFlags(Button::ToggleButton);
     mSolveOrientationBtn->setId("solveOrientationBtn");
@@ -465,7 +586,7 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
         mOptimizer.notify();
     });
 
-    new Label(window, "Position field", "sans-bold");
+    section(window, "Position field");
 
     Widget *uvTools = new Widget(window);
     new Label(uvTools, "Tool:        ", "sans-bold");
@@ -509,7 +630,7 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     new Label(posSingPanel, "  singularities");
 
     mSolvePositionBtn = new ProgressButton(window, "Solve", ENTYPO_ICON_FLASH);
-    mSolvePositionBtn->setBackgroundColor(Color(0, 0, 255, 25));
+    mSolvePositionBtn->setBackgroundColor(Color(251, 146, 60, 70));
     mSolvePositionBtn->setFixedHeight(25);
     mSolvePositionBtn->setEnabled(false);
     mSolvePositionBtn->setFlags(Button::ToggleButton);
@@ -541,18 +662,14 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     new Label(window, "", "sans-bold");
 
     mExportBtn = new PopupButton(window, "Export mesh", ENTYPO_ICON_EXPORT);
-    mExportBtn->setBackgroundColor(Color(0, 255, 0, 25));
+    mExportBtn->setBackgroundColor(Color(251, 146, 60, 255));
+    mExportBtn->setTextColor(Color(26, 26, 26, 255));
     mExportBtn->setId("exportBtn");
     Popup *exportPopup = mExportBtn->popup();
     exportPopup->setAnchorHeight(307);
     exportPopup->setLayout(new GroupLayout());
 
-    new Label(exportPopup, "Mesh settings", "sans-bold");
-    mPureQuadBox = new CheckBox(exportPopup, "Pure quad mesh");
-    mPureQuadBox->setTooltip("Apply one step of subdivision to extract a pure quad mesh");
-    mPureQuadBox->setId("pureQuadBox");
-
-    new Label(exportPopup, "Smoothing iterations", "sans-bold");
+    section(exportPopup, "Smoothing iterations");
     Widget *smoothPanel = new Widget(exportPopup);
     smoothPanel->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 20));
     mSmoothSlider = new Slider(smoothPanel);
@@ -573,9 +690,9 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
         mSmoothBox->setValue(std::to_string((int) (value * 10)));
     });
 
-    new Label(exportPopup, "Actions", "sans-bold");
+    section(exportPopup, "Actions");
     Button *generateBtn = new Button(exportPopup, "Extract mesh", ENTYPO_ICON_FLASH);
-    generateBtn->setBackgroundColor(Color(0, 0, 255, 25));
+    generateBtn->setBackgroundColor(Color(251, 146, 60, 70));
     generateBtn->setId("generateMeshBtn");
     generateBtn->setCallback([&]() {
         extractMesh();
@@ -591,13 +708,15 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     });
 
     mSaveBtn = new Button(exportPopup, "Save ...", ENTYPO_ICON_SAVE);
-    mSaveBtn->setBackgroundColor(Color(0, 255, 0, 25));
+    mSaveBtn->setBackgroundColor(Color(251, 146, 60, 255));
+    mSaveBtn->setTextColor(Color(26, 26, 26, 255));
     mSaveBtn->setId("saveMeshBtn");
     mSaveBtn->setCallback([&]() {
         try {
             std::string filename = nanogui::file_dialog({
                 {"obj", "Wavefront OBJ"},
-                {"ply", "Stanford PLY"}
+                {"ply", "Stanford PLY"},
+                {"abc", "Alembic"}
             }, true);
 
             if (filename == "")
@@ -608,9 +727,8 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
         }
     });
 
-    new Label(exportPopup, "Advanced", "sans-bold");
+    section(exportPopup, "Advanced");
     Button *consensusGraphBtn = new Button(exportPopup, "Consensus graph", ENTYPO_ICON_FLOW_TREE);
-    consensusGraphBtn->setBackgroundColor(Color(100, 0, 0, 25));
     consensusGraphBtn->setId("consensusGraphBtn");
     consensusGraphBtn->setTooltip("Visualize the graph of position integer values");
     consensusGraphBtn->setCallback([&]() {
@@ -623,7 +741,10 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     Button *about = new Button(window->buttonPanel(), "", ENTYPO_ICON_INFO);
     about->setCallback([&,ctx]() {
         auto dlg = new MessageDialog(
-            this, MessageDialog::Type::Information, "About Instant Meshes",
+            this, MessageDialog::Type::Information, "About " INSTANT_MESHES_TITLE,
+            INSTANT_MESHES_TITLE ", MattRM2 fork: native Alembic (.abc) support, per-mesh "
+            "remeshing, percentage targets and the Matt Dark interface "
+            "(github.com/MattRM2/instant-meshes).\n\n"
             "Instant Meshes is freely available under a BSD-style license. "
             "If you use the meshes obtained with this software, we kindly "
             "request that you acknowledge this and link to the project page at\n\n"
@@ -668,6 +789,12 @@ Viewer::~Viewer() {
 }
 
 void Viewer::draw(NVGcontext *ctx) {
+    const bool flow = mLayers[FlowLines]->checked();
+    for (int i = 0; i < 4; ++i) {
+        mFlowModeBtn[i]->setPushed(i == (flow ? mFlowColorMode : 0));
+        mFlowModeBtn[i]->setEnabled(mLayers[FlowLines]->enabled());
+    }
+
     if (mRes.levels() == 0) {
         int appIcon = nvgImageIcon(ctx, instantmeshes);
         int size = mSize.norm()/2;
@@ -700,6 +827,159 @@ bool Viewer::resizeEvent(const Vector2i &size) {
     return true;
 }
 
+void Viewer::applyMattDarkTheme() {
+    /* nanogui widgets look their fonts up by name ("sans", "sans-bold") and
+       NanoVG keeps the first font registered under a name: a fresh NanoVG
+       context gets Poppins before the theme registers Roboto, so every
+       widget draws with Poppins. Same context flags as nanogui::Screen. */
+    GLint stencilBits = 0, samples = 0;
+    glGetFramebufferAttachmentParameteriv(GL_DRAW_FRAMEBUFFER, GL_STENCIL,
+        GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencilBits);
+    glGetIntegerv(GL_SAMPLES, &samples);
+    int flags = 0;
+    if (stencilBits >= 8)
+        flags |= NVG_STENCIL_STROKES;
+    if (samples <= 1)
+        flags |= NVG_ANTIALIAS;
+
+    NVGcontext *ctx = nvgCreateGL3(flags);
+    if (!ctx)
+        return;   /* keep the default look */
+    if (nvgCreateFontMem(ctx, "sans", poppins_regular_ttf, (int) poppins_regular_ttf_size, 0) < 0 ||
+        nvgCreateFontMem(ctx, "sans-bold", poppins_semibold_ttf, (int) poppins_semibold_ttf_size, 0) < 0) {
+        nvgDeleteGL3(ctx);
+        return;
+    }
+
+    nanogui::Theme *t = new nanogui::Theme(ctx);
+    t->mStandardFontSize = 16;
+    t->mButtonFontSize = 17;
+    t->mTextBoxFontSize = 17;
+    t->mWindowCornerRadius = 6;
+    t->mWindowHeaderHeight = 32;
+    t->mWindowDropShadowSize = 14;
+    t->mButtonCornerRadius = 5;
+
+    t->mDropShadow = Color(0, 0, 0, 170);
+    t->mBorderDark = Color(15, 15, 15, 255);
+    t->mBorderLight = Color(51, 51, 51, 255);
+    t->mBorderMedium = Color(40, 40, 40, 255);
+    t->mTextColor = Color(245, 245, 245, 235);
+    t->mDisabledTextColor = Color(136, 136, 136, 200);
+    t->mTextColorShadow = Color(0, 0, 0, 110);
+    t->mIconColor = t->mTextColor;
+
+    t->mButtonGradientTopUnfocused = Color(46, 46, 46, 255);
+    t->mButtonGradientBotUnfocused = Color(40, 40, 40, 255);
+    t->mButtonGradientTopFocused = Color(58, 58, 58, 255);
+    t->mButtonGradientBotFocused = Color(50, 50, 50, 255);
+    t->mButtonGradientTopPushed = Color(122, 70, 28, 255);
+    t->mButtonGradientBotPushed = Color(98, 56, 22, 255);
+
+    t->mWindowFillUnfocused = Color(37, 37, 37, 245);
+    t->mWindowFillFocused = Color(37, 37, 37, 250);
+    t->mWindowTitleUnfocused = Color(253, 186, 116, 210);
+    t->mWindowTitleFocused = Color(251, 146, 60, 255);
+    t->mWindowHeaderGradientTop = Color(32, 32, 32, 255);
+    t->mWindowHeaderGradientBot = Color(28, 28, 28, 255);
+    t->mWindowHeaderSepTop = Color(51, 51, 51, 255);
+    t->mWindowHeaderSepBot = Color(17, 17, 17, 255);
+    t->mWindowPopup = Color(37, 37, 37, 255);
+    t->mWindowPopupTransparent = Color(37, 37, 37, 0);
+
+    nvgDeleteGL3(mNVGContext);
+    mNVGContext = ctx;
+    setTheme(t);
+}
+
+void Viewer::setTargetPercent(Float percent) {
+    if (mInputPolygons > 0 && percent > 0)
+        applyTargetFaces(targetReference() * percent / 100, true);
+}
+
+Float Viewer::facesPerVertex() const {
+    /* Quads: about one face per vertex, 4 after the pure quad subdivision;
+       triangles: about two faces per vertex */
+    if (mOptimizer.posy() == 4)
+        return mPureQuadBox->checked() ? 4 : 1;
+    return 2;
+}
+
+Float Viewer::targetReference() const {
+    if (mInputPolygons > 0)
+        return (Float) mInputPolygons;
+    return (Float) std::max<int64_t>(1, (int64_t) mRes.V().cols());
+}
+
+void Viewer::applyTargetFaces(Float faces, bool prompt) {
+    if (!mRes.levels() || !(faces > 0))
+        return;
+    const Float v = std::min((Float) 1e9, std::max((Float) 1, std::round(faces / facesPerVertex())));
+    if (prompt)
+        setTargetVertexCountPrompt((uint32_t) v);
+    else
+        setTargetVertexCount((uint32_t) v);
+}
+
+void Viewer::refreshTargetUI() {
+    const bool hasData = mRes.levels() > 0;
+    const Float ref = targetReference();
+    const Float pct = mTargetFaces / ref * 100;
+    const bool percent = mTargetMode == TargetPercent && mInputPolygons > 0;
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), pct >= 10 ? "%.0f" : "%.1f", pct);
+    const std::string pctText = tmp;
+
+    if (!hasData) {
+        mTargetBox->setValue("");
+        mTargetBox->setUnits(percent ? "%" : "faces");
+        mTargetInfo->setCaption("Load a mesh to set the target");
+    } else if (percent) {
+        mTargetBox->setValue(pctText);
+        mTargetBox->setUnits("%");
+        mTargetInfo->setCaption("~ " + group_thousands((uint64_t) std::round(mTargetFaces)) + " faces");
+    } else {
+        mTargetBox->setValue(std::to_string((uint64_t) std::round(mTargetFaces)));
+        mTargetBox->setUnits("faces");
+        if (mInputPolygons > 0)
+            mTargetInfo->setCaption(pctText + "% of " + group_thousands(mInputPolygons) + " input faces");
+        else
+            mTargetInfo->setCaption(group_thousands((uint64_t) mRes.V().cols()) + " input points");
+    }
+    mTargetModeBtn[TargetFaces]->setPushed(!percent);
+    mTargetModeBtn[TargetPercent]->setPushed(percent);
+    mTargetModeBtn[TargetPercent]->setEnabled(mInputPolygons > 0);
+    mTargetSlider->setValue(slider_from_percent(pct));
+
+    /* Red range: targets the input is too coarse for (it gets subdivided) */
+    if (hasData && std::isfinite(mUnsafeVertexCount)) {
+        const Float s = slider_from_percent(mUnsafeVertexCount * facesPerVertex() / ref * 100);
+        mTargetSlider->setHighlightedRange(s < 1 ? std::make_pair(s, 1.f) : std::make_pair(0.f, 0.f));
+    } else {
+        mTargetSlider->setHighlightedRange(std::make_pair(0.f, 0.f));
+    }
+
+    const int presets[4] = { 25, 50, 75, 100 };
+    for (int i = 0; i < 4; ++i) {
+        mTargetPresetBtn[i]->setEnabled(hasData && mInputPolygons > 0);
+        mTargetPresetBtn[i]->setBackgroundColor(hasData && std::abs(pct - presets[i]) < 0.5f
+            ? Color(251, 146, 60, 90) : Color(0, 0));
+    }
+}
+
+void Viewer::setFlowColorMode(int mode) {
+    if (mode == 0) {
+        mLayers[FlowLines]->setChecked(false);
+    } else {
+        mFlowColorMode = mode;
+        mLayers[FlowLines]->setChecked(true);
+        if (mRes.levels() > 0 && mRes.iterationsQ() > 0)
+            traceFlowLines();
+    }
+    mFlowLineSlider->setEnabled(mLayers[FlowLines]->checked());
+    repaint();
+}
+
 void Viewer::setSymmetry(int rosy, int posy) {
     if (rosy == 6 && posy == 3)
         mSymmetryBox->setSelectedIndex(0);
@@ -710,7 +990,7 @@ void Viewer::setSymmetry(int rosy, int posy) {
     else
         throw std::runtime_error("Selected RoSy/PoSy combination is not supported by the user interface");
     mPureQuadBox->setEnabled(posy == 4);
-    mPureQuadBox->setChecked(false);
+    mPureQuadBox->setChecked(posy == 4);
     mPositionAttractor->setEnabled(false);
     mOrientationAttractor->setEnabled(false);
     mOptimizer.setRoSy(rosy);
@@ -751,24 +1031,8 @@ void Viewer::setTargetScale(Float scale) {
 void Viewer::setTargetVertexCount(uint32_t v) {
     if (!mRes.levels())
         return;
-    char tmp[10];
-
-    if (v > 1e6f) {
-        mScaleBox->setUnits("M");
-        snprintf(tmp, sizeof(tmp), "%.2f", v*1e-6f);
-    } else if (v > 1e3f) {
-        mScaleBox->setUnits("K");
-        snprintf(tmp, sizeof(tmp), "%.2f", v*1e-3f);
-    } else {
-        mScaleBox->setUnits(" ");
-        snprintf(tmp, sizeof(tmp), "%i", v);
-    }
-    Float value = std::log((Float) v);
-    Float min = std::log(std::min(100, (int) mRes.V().cols() / 10));
-    Float max = std::log(2*mRes.V().cols());
-
-    mScaleSlider->setValue((value - min) / (max-min));
-    mScaleBox->setValue(tmp);
+    mTargetFaces = v * facesPerVertex();
+    refreshTargetUI();
 
     int posy = mOptimizer.posy();
     int face_count = posy == 4 ? v : (v * 2);
@@ -780,9 +1044,7 @@ void Viewer::setTargetVertexCount(uint32_t v) {
 }
 
 void Viewer::setTargetVertexCountPrompt(uint32_t v) {
-    Float min = std::log(std::min(100, (int) mRes.V().cols() / 10));
-    Float max = std::log(2*mRes.V().cols());
-    Float safe = std::exp(min + mScaleSlider->highlightedRange().first * (max-min));
+    const Float safe = mUnsafeVertexCount;
     if (v <= safe || mRes.F().size() == 0) {
         setTargetVertexCount(v);
         return;
@@ -804,7 +1066,7 @@ void Viewer::setTargetVertexCountPrompt(uint32_t v) {
             mCamera.zoom = savedZoom;
             mCamera.modelTranslation = savedTranslation;
         } else {
-            setTargetVertexCount(safe);
+            setTargetVertexCount((uint32_t) safe);
         }
     });
 }
@@ -1443,11 +1705,11 @@ void Viewer::extractConsensusGraph() {
                     }
 
                     if (diffSum == 0)
-                        color = Vector3f::UnitZ();
+                        color = hex_color(0x22D3EE);
                     else if (diffSum == 1)
-                        color = Vector3f::UnitX();
+                        color = hex_color(0xA78BFA);
                     else
-                        color = Vector3f::Constant(1.0f);
+                        color = hex_color(0xE5E5E5);
 
                     outputMeshWireframe.col(2*(link-adj[0]))   << O.col(i) + N.col(i) * eps, color;
                     outputMeshWireframe.col(2*(link-adj[0])+1) << O.col(j) + N.col(j) * eps, color;
@@ -1477,7 +1739,7 @@ void Viewer::extractMesh() {
                   mV_extracted, mN_extracted, mCreaseSet, creaseOut,
                   mDeterministic);
 
-    Vector3f red = Vector3f::UnitX();
+    Vector3f red = hex_color(0x111111);   /* output wireframe */
 
     int smooth_iterations = (int) (mSmoothSlider->value() * 10);
     extract_faces(adj_extracted, mV_extracted, mN_extracted, mNf_extracted,
@@ -1572,9 +1834,8 @@ void Viewer::traceFlowLines() {
             pcg32 rng;
             for (uint32_t k = range.begin(); k != range.end(); ++k) {
                 rng.seed(1, k);
-                Float hue = std::fmod(k*0.61803398f, 1.f);
                 Vector4u8 cvalue;
-                cvalue << (hsv_to_rgb(hue, 0.5f, 0.5f * rng.nextFloat() + 0.5f) * 255).cast<uint8_t>(), (uint8_t) 0x0;
+                rng.nextFloat();   /* keeps the random sequence, hence the line placement */
                 int nTries = 0;
                 Float height = rng.nextFloat() * eps + eps;
 
@@ -1584,8 +1845,10 @@ void Viewer::traceFlowLines() {
                     uint32_t startIdx = rng.nextUInt(V.cols());
 
                     Vector3f p = V.col(startIdx), n = N.col(startIdx), q = Q.col(startIdx);
-                    for (int i=0, nrot=rng.nextUInt(rosy); i<nrot; ++i)
+                    const uint32_t nrot = rng.nextUInt(rosy);
+                    for (uint32_t i = 0; i < nrot; ++i)
                         q = rotate(q, n);
+                    cvalue = flow_line_color(mFlowColorMode, k, nrot, rosy);
 
                     Vector3f t = n.cross(q);
 
@@ -1742,8 +2005,10 @@ void Viewer::resetState() {
     mLayers[BrushStrokes]->setChecked(false);
     mLayers[BrushStrokes]->setEnabled(hasData);
     mVisualizeBox->setSelectedIndex(0);
-    mScaleSlider->setEnabled(hasData);
-    mScaleBox->setEnabled(hasData);
+    mTargetBox->setEnabled(hasData);
+    mTargetSlider->setEnabled(hasData);
+    for (int i = 0; i < 2; ++i)
+        mTargetModeBtn[i]->setEnabled(hasData);
     mOrientationFieldSizeSlider->setEnabled(mLayers[OrientationField]->checked());
     mOrientationFieldSizeSlider->setValue(0.5f);
     mFlowLineSlider->setEnabled(mLayers[FlowLines]->checked());
@@ -2201,9 +2466,9 @@ bool Viewer::refreshOrientationSingularities() {
     MatrixXf position(3, n), color(3, n), normal(3, n), dir(3, n);
     dir.setZero();
 
-    const Vector3f red   = Vector3f::UnitX(),
-                   green = Vector3f::UnitY(),
-                   blue  = Vector3f::UnitZ();
+    const Vector3f red   = hex_color(0xF87171),    /* valence 5 */
+                   green = hex_color(0x4ADE80),    /* other indices (6-RoSy) */
+                   blue  = hex_color(0x60A5FA);    /* valence 3 */
 
     uint32_t ctr = 0;
     const Float eps = mMeshStats.mAverageEdgeLength * 1.0f / 5.0f;
@@ -2248,8 +2513,8 @@ bool Viewer::refreshPositionSingularities() {
     dir1.setZero();
     dir2.setZero();
 
-    const Vector3f yellow(1.0f, 0.933f, 0.0f);
-    const Vector3f orange(1.0f, 0.5f, 0.0f);
+    const Vector3f yellow = hex_color(0xFACC15);
+    const Vector3f orange = hex_color(0xF472B6);   /* pink: orange is reserved for your strokes */
 
     uint32_t ctr = 0;
     const Float eps = mMeshStats.mAverageEdgeLength * 1.0f / 5.0f;
@@ -2479,7 +2744,7 @@ void Viewer::drawContents() {
         mMeshShader44.setUniform("model", model);
         mMeshShader44.setUniform("view", view);
         mMeshShader44.setUniform("proj", proj);
-        mMeshShader44.setUniform("fixed_color", Vector4f(0.1f, 0.1f, 0.2f, 1.0f));
+        mMeshShader44.setUniform("fixed_color", Vector4f(0.067f, 0.067f, 0.067f, 1.0f));
         mMeshShader44.setUniform("camera_local", Vector3f(civ.head(3)));
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         mMeshShader44.drawIndexed(GL_TRIANGLES, offset, count);
@@ -2520,7 +2785,7 @@ void Viewer::drawContents() {
         mPositionFieldShader.bind();
         mPositionFieldShader.setUniform("mvp", Eigen::Matrix4f(proj * view * model));
         mPositionFieldShader.setUniform("scale", (Float) mMeshStats.mAverageEdgeLength);
-        mPositionFieldShader.setUniform("fixed_color", Eigen::Vector3f(0.5f, 1.0f, 0.5f));
+        mPositionFieldShader.setUniform("fixed_color", hex_color(0x4ADE80));
         glPointSize(3.0f * mPixelRatio);
         mPositionFieldShader.drawArray(GL_POINTS, offset, count);
     };
@@ -2705,14 +2970,13 @@ void Viewer::refreshStrokes() {
 
     for (auto const &stroke : mStrokes) {
         auto const &curve = stroke.second;
-        Vector4u8 cvalue;
-        {
-            pcg32 rng;
-            rng.seed(1, union_cast<uint32_t>(curve[0].p.sum()));
-            Float hue = std::fmod(rng.nextUInt(100)*0.61803398f, 1.f);
-            cvalue << (hsv_to_rgb(hue, 1.0f, 1.f) * 255).cast<uint8_t>(), (uint8_t) 220;
-        }
         bool edgeStroke = stroke.first == 1;
+        /* Your strokes are orange (comb) or white (edge brush) */
+        Vector4u8 cvalue;
+        if (edgeStroke)
+            cvalue << (uint8_t) 0xF5, (uint8_t) 0xF5, (uint8_t) 0xF5, (uint8_t) 220;
+        else
+            cvalue << (uint8_t) 0xFB, (uint8_t) 0x92, (uint8_t) 0x3C, (uint8_t) 220;
 
         position.col(vertexIdx) = curve[0].p;
         color.col(vertexIdx++) << cvalue[0], cvalue[1], cvalue[2], (uint8_t) 0x00;
@@ -3042,11 +3306,12 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
         filename = nanogui::file_dialog({
             {"obj", "Wavefront OBJ"},
             {"ply", "Stanford PLY"},
+            {"abc", "Alembic"},
             {"aln", "Aligned point cloud"}
         }, false);
         if (filename == "")
             return;
-    } else if (extension != ".ply" && extension != ".obj" && extension != ".aln")
+    } else if (extension != ".ply" && extension != ".obj" && extension != ".abc" && extension != ".aln")
         filename = filename + ".ply";
 
     if (!std::isfinite(creaseAngle)) {
@@ -3067,7 +3332,7 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
     glfwMakeContextCurrent(nullptr);
 
     try {
-        load_mesh_or_pointcloud(filename, F, V, N, mProgress);
+        load_mesh_or_pointcloud(filename, F, V, N, mProgress, &mInputPolygons);
     } catch (const std::exception &e) {
         new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
         glfwMakeContextCurrent(mGLFWWindow);
@@ -3076,6 +3341,14 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
     }
     mFilename = filename;
     bool pointcloud = F.size() == 0;
+    {
+        const size_t slash = filename.find_last_of("/\\");
+        const std::string name = slash == std::string::npos ? filename : filename.substr(slash + 1);
+        mInputInfoLabel->setCaption(name + "  \xC2\xB7  " + (pointcloud
+            ? group_thousands((uint64_t) V.cols()) + " points"
+            : group_thousands(mInputPolygons) + " faces"));
+        performLayout(mNVGContext);   /* the caption may wrap onto two lines */
+    }
 
     {
         std::lock_guard<ordered_lock> lock(mRes.mutex());
@@ -3275,20 +3548,14 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
 
     resetState();
     setSymmetry(rosy, posy);
-    setTargetScale(scale);
-    mScaleSlider->setHighlightedRange(std::make_pair(0.f, 0.f));
-
+    /* Targets above this vertex count need a finer input (re-tessellation) */
+    mUnsafeVertexCount = std::numeric_limits<Float>::infinity();
     if (!pointcloud) {
-        /* Mark the range of target resolutions which will require re-tesselation */
         Float el = mMeshStats.mMaximumEdgeLength * 2;
         Float fc = mMeshStats.mSurfaceArea / (rosy == 4 ? (el*el) : (std::sqrt(3.f)/4.f*el*el));
-        Float unsafe = std::log(posy == 4 ? fc : (fc / 2));
-        Float min = std::log(std::min(100, (int) mRes.V().cols() / 10));
-        Float max = std::log(2*mRes.V().cols());
-        if (unsafe < max)
-            mScaleSlider->setHighlightedRange(
-                    std::make_pair((unsafe-min) / (max-min), 1.f));
+        mUnsafeVertexCount = posy == 4 ? fc : (fc / 2);
     }
+    setTargetScale(scale);
 
     mCamera.modelTranslation = -mMeshStats.mWeightedCenter.cast<float>();
     mCamera.modelZoom = 3.0f / (mMeshStats.mAABB.max - mMeshStats.mAABB.min).cwiseAbs().maxCoeff();

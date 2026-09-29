@@ -14,6 +14,7 @@ int main(int argc, char **argv) {
     test_meshio();
     test_ogawa(long_run ? 10 : 1);
     test_abc(long_run ? 10 : 1);
+    test_objscene();
     std::cout << std::endl << g_passed << " passed, " << g_failed << " failed" << std::endl;
     return g_failed == 0 ? 0 : 1;
 }

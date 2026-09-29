@@ -1,5 +1,5 @@
 """
-check_splice_in_blender.py -- Imports an Alembic file before and after a
+check_splice_in_blender.py -- Imports an Alembic or OBJ file before and after a
 per-mesh remesh (-m / --others) in Blender and checks that:
   - every object of the original is still there, with the same type,
     parent and world transform (cameras, curves, empties included);
@@ -23,7 +23,10 @@ import sys
 
 def snapshot(path):
     bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.wm.alembic_import(filepath=os.path.abspath(path))
+    if path.lower().endswith(".obj"):
+        bpy.ops.wm.obj_import(filepath=os.path.abspath(path))
+    else:
+        bpy.ops.wm.alembic_import(filepath=os.path.abspath(path))
     depsgraph = bpy.context.evaluated_depsgraph_get()
     scene = {}
     for obj in bpy.context.scene.objects:
@@ -42,6 +45,9 @@ def snapshot(path):
             info["bbox"] = ([min(p[i] for p in pts) for i in range(3)],
                             [max(p[i] for p in pts) for i in range(3)])
             info["materials"] = [m.name for m in obj.data.materials if m]
+            layer = me.uv_layers.active
+            info["uv"] = [tuple(d.uv) for d in layer.data] if layer else []
+            info["face_materials"] = [p.material_index for p in me.polygons]
             ev.to_mesh_clear()
         scene[obj.name] = info
     return scene
@@ -90,11 +96,14 @@ def main():
         else:
             same = (a["polys"] == b["polys"] and len(a["verts"]) == len(b["verts"]) and
                     all(close(p, q, 1e-6) for p, q in zip(a["verts"], b["verts"])) and
-                    a["materials"] == b["materials"])
+                    a["materials"] == b["materials"] and
+                    a["face_materials"] == b["face_materials"] and
+                    len(a["uv"]) == len(b["uv"]) and
+                    all(close(u, v, 1e-6) for u, v in zip(a["uv"], b["uv"])))
             if not same:
                 errors.append("%s: should be unchanged but differs" % name)
-            print("[unchanged] %-12s %6d polygons, materials %s%s" % (
-                name, len(b["polys"]), b["materials"], "" if same else "  <-- DIFFERENT"))
+            print("[unchanged] %-12s %6d polygons, %d UVs, materials %s%s" % (
+                name, len(b["polys"]), len(b["uv"]), b["materials"], "" if same else "  <-- DIFFERENT"))
 
     for name in sorted(set(after) - set(before)):
         errors.append("%s: unexpected new object" % name)

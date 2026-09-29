@@ -173,7 +173,7 @@ static void test_load_obj() {
         {"two_corners.obj",  "v 0 0 0\nv 1 0 0\nf 1 2\n",             "fewer than 3"},
         {"index_zero.obj",   "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 0 1 2\n",  "out of range"},
         {"index_high.obj",   "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 9\n",  "out of range"},
-        {"index_neg.obj",    "v 0 0 0\nv 1 0 0\nv 0 1 0\nf -3 -2 -1\n", "out of range"},
+        {"index_neg.obj",    "v 0 0 0\nv 1 0 0\nv 0 1 0\nf -4 -2 -1\n", "out of range"},
         {"garbage.obj",      "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 x\n",  "parse"},
         {"too_many_slash.obj","v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1/1/1/1 2 3\n", "Invalid vertex data"},
     };

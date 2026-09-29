@@ -10,7 +10,7 @@ in fData {
 out vec4 outColor;
 
 void main() {
-	vec3 Kd = vec3(0.4, 0.5, 0.7);
+	vec3 Kd = vec3(0.46, 0.46, 0.46);   // Matt Dark clay
 	vec3 Ks = vec3(1.0);
 	vec3 Ka = Kd * 0.2;
 

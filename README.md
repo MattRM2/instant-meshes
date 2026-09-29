@@ -27,22 +27,22 @@ animé est lu à sa première image).
 ### Ligne de commande
 
 ```
-"Instant Meshes.exe" scene.abc -o scene_retopo.abc -f 75%
+InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 ```
 
 | Option | Rôle |
 |---|---|
 | `-o fichier.abc` | Sortie Alembic (aussi `.obj` / `.ply`) ; peut être le fichier d'entrée (remplacement atomique) |
 | `-f 75%` | Objectif en pourcentage des polygones d'origine (tels qu'affichés dans Blender) ; `-f 5000` = nombre de faces |
-| `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) |
-| `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier |
+| `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) ou les objets d'un `.obj` |
+| `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier (`.abc` ou `.obj`) |
 | `--others <cible>` | Remaille aussi tous les autres maillages ; sans cette option ils sont recopiés intacts |
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
 
 Exemple, par objet :
 
 ```
-"Instant Meshes.exe" scene.abc -o scene_retopo.abc -m "MeshA=75%" -m "MeshB=85%" --others 25%
+InstantMeshes.exe scene.abc -o scene_retopo.abc -m "MeshA=75%" -m "MeshB=85%" --others 25%
 ```
 
 - `<nom>` : nom d'objet (`MeshA`) ou chemin depuis la racine (`Props/MeshA`, le
@@ -64,6 +64,13 @@ retirés (ils ne correspondent plus à la topologie) ; un matériau unique (face
 set) est reconstruit sur toutes les faces, plusieurs matériaux sont retirés.
 Le reste du fichier (autres objets, caméras, courbes, animations,
 métadonnées) est recopié bloc pour bloc.
+
+Scènes OBJ : même mode par objet (`-m`, `--others`, `--list`, `--dry-run`),
+sortie `.obj`. Les objets sont les blocs `o`, ou les groupes `g` sans `o`. Les
+objets non visés gardent leurs lignes telles quelles (positions, UV, normales,
+matériaux), seuls leurs indices de faces sont renumérotés ; un objet remaillé
+garde son matériau le plus utilisé (un OBJ ne peut pas laisser un objet sans
+matériau).
 
 Précision de `-f N%` : environ ±3 % sur des maillages réels, moins précis en
 dessous de quelques centaines de polygones.

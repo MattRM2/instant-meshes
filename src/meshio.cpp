@@ -476,16 +476,22 @@ void build_mesh(const std::vector<Vector3f> &positions,
 
 void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
               const ProgressCallback &progress, uint64_t *polygons) {
+    std::vector<Vector3f> positions;
+
     /// Position index of a face corner ("p", "p/uv", "p//n" or "p/uv/n"),
-    /// converted from 1-based to 0-based
+    /// converted from 1-based (or negative = relative to the positions read
+    /// so far) to 0-based
     auto corner_index = [&](const std::string &string) -> uint32_t {
         std::vector<std::string> tokens = str_tokenize(string, '/', true);
         if (tokens.size() < 1 || tokens.size() > 3)
             throw std::runtime_error("Invalid vertex data: \"" + string + "\"");
-        const uint32_t p = str_to_uint32_t(tokens[0]);
-        if (p == 0)
-            throw std::runtime_error("Vertex index 0 out of range in OBJ file \"" + filename + "\"!");
-        return p - 1;
+        char *end = nullptr;
+        const long long p = strtoll(tokens[0].c_str(), &end, 10);
+        if (tokens[0].empty() || *end != '\0')
+            throw std::runtime_error("Could not parse vertex index \"" + tokens[0] + "\"");
+        if (p == 0 || (p < 0 && (unsigned long long) (-p) > positions.size()) || p > 0xffffffffLL)
+            throw std::runtime_error("Vertex index " + tokens[0] + " out of range in OBJ file \"" + filename + "\"!");
+        return (uint32_t) (p < 0 ? (long long) positions.size() + p : p - 1);
     };
 
     std::ifstream is(filename);
@@ -495,7 +501,6 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
     cout.flush();
     Timer<> timer;
 
-    std::vector<Vector3f> positions;
     std::vector<uint32_t> faceSizes, corners;   /* all face corners, in file order */
 
     std::string line_str;

@@ -12,6 +12,7 @@
 */
 
 #include "batch.h"
+#include "version.h"
 #include "viewer.h"
 #include "serializer.h"
 #include <thread>
@@ -39,7 +40,10 @@ int main(int argc, char **argv) {
 
     try {
         for (int i=1; i<argc; ++i) {
-            if (strcmp("--fullscreen", argv[i]) == 0 || strcmp("-F", argv[i]) == 0) {
+            if (strcmp("--version", argv[i]) == 0 || strcmp("-V", argv[i]) == 0) {
+                cout << INSTANT_MESHES_TITLE << " (MattRM2 fork, native Alembic)" << endl;
+                return 0;
+            } else if (strcmp("--fullscreen", argv[i]) == 0 || strcmp("-F", argv[i]) == 0) {
                 fullscreen = true;
             } else if (strcmp("--help", argv[i]) == 0 || strcmp("-h", argv[i]) == 0) {
                 help = true;
@@ -170,10 +174,6 @@ int main(int argc, char **argv) {
         help = true;
     }
 
-    if (face_percent > 0 && batchOutput.empty()) {
-        cerr << "Error: a percentage face target (-f N%) is only available in batch mode (-o) for now!" << endl;
-        help = true;
-    }
 
     /* Check the output format before spending time on the computation */
     if (!batchOutput.empty()) {
@@ -186,11 +186,12 @@ int main(int argc, char **argv) {
 
     /* Alembic per-mesh modes */
     const bool objectMode = !meshRules.empty() || others.valid();
-    auto is_abc = [](const std::string &f) {
-        return f.size() > 4 && str_tolower(f.substr(f.size() - 4)) == ".abc";
+    auto extension_of = [](const std::string &f) {
+        return f.size() > 4 ? str_tolower(f.substr(f.size() - 4)) : std::string();
     };
-    if ((listMeshes || objectMode || dryRun) && (args.size() != 1 || !is_abc(args[0]))) {
-        cerr << "Error: --list, -m, --others and --dry-run need one Alembic (.abc) input file!" << endl;
+    const std::string sceneExt = args.size() == 1 ? extension_of(args[0]) : std::string();
+    if ((listMeshes || objectMode || dryRun) && (sceneExt != ".abc" && sceneExt != ".obj")) {
+        cerr << "Error: --list, -m, --others and --dry-run need one Alembic (.abc) or OBJ (.obj) input file!" << endl;
         help = true;
     }
     if (dryRun && !objectMode) {
@@ -201,12 +202,15 @@ int main(int argc, char **argv) {
         cerr << "Error: with -m / --others, give the face targets there (-f, -s and -v remesh the whole file)!" << endl;
         help = true;
     }
-    if (objectMode && !dryRun && !is_abc(batchOutput)) {
-        cerr << "Error: -m / --others need an Alembic (.abc) output file (-o)!" << endl;
+    if (objectMode && !dryRun && (sceneExt == ".abc" || sceneExt == ".obj") &&
+        extension_of(batchOutput) != sceneExt) {
+        cerr << "Error: -m / --others need an output file (-o) of the same format as the input ("
+             << sceneExt << ")!" << endl;
         help = true;
     }
 
     if (args.size() > 1 || help || (!batchOutput.empty() && args.size() == 0)) {
+        cout << INSTANT_MESHES_TITLE << " (MattRM2 fork)" << endl;
         cout << "Syntax: " << argv[0] << " [options] <input mesh / point cloud / application state snapshot>" << endl;
         cout << "Options:" << endl;
         cout << "   -o, --output <output>     Writes to the specified PLY/OBJ/ABC output file in batch mode" << endl;
@@ -222,10 +226,10 @@ int main(int argc, char **argv) {
         cout << "   -s, --scale <scale>       Desired world space length of edges in the output" << endl;
         cout << "   -f, --faces <count>       Desired face count of the output mesh (approximate)," << endl;
         cout << "       --faces <percent>%    or a percentage of the input polygon count, e.g. 75%" << endl;
-        cout << "                             (batch mode, mesh inputs; 100% = polygons of the file;" << endl;
+        cout << "                             (mesh inputs; 100% = polygons of the file;" << endl;
         cout << "                             about +/-3%, less accurate below a few hundred polygons)" << endl;
         cout << "   -v, --vertices <count>    Desired vertex count of the output mesh" << endl;
-        cout << "Alembic (.abc) per-mesh mode (input and output .abc):" << endl;
+        cout << "Per-mesh mode for Alembic (.abc) and OBJ (.obj) scenes (output in the same format):" << endl;
         cout << "   -m, --mesh <name>=<target>  Remesh the polygon meshes matching <name> on their own:" << endl;
         cout << "                             <target> = percentage (75%) or face count (5000);" << endl;
         cout << "                             <name> = object name or path (Props/MeshA), wildcards" << endl;
@@ -234,10 +238,11 @@ int main(int argc, char **argv) {
         cout << "       --others <target>     Remesh every other polygon mesh with <target>" << endl;
         cout << "                             (without it, the other objects are copied unchanged)" << endl;
         cout << "       --dry-run             Print the plan of -m / --others and stop" << endl;
-        cout << "       --list                List the polygon meshes of an .abc file" << endl;
+        cout << "       --list                List the polygon meshes of an .abc file / objects of an .obj" << endl;
         cout << "   -C, --compat              Compatibility mode to load snapshots from old software versions" << endl;
         cout << "   -k, --knn <count>         Point cloud mode: number of adjacent points to consider" << endl;
         cout << "   -F, --fullscreen          Open a full-screen window" << endl;
+        cout << "   -V, --version             Print the version" << endl;
         cout << "   -h, --help                Display this message" << endl;
         return -1;
     }
@@ -297,6 +302,8 @@ int main(int argc, char **argv) {
                             scale, face_count, vertex_count,
                             rosy, posy, knn_points);
                     viewer->setExtrinsic(extrinsic);
+                    if (face_percent > 0)
+                        viewer->setTargetPercent(face_percent);
                 }
             }
 

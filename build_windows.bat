@@ -8,7 +8,7 @@ rem
 rem  Usage :  build_windows.bat            compile puis attend une touche
 rem           build_windows.bat clean      supprime build\ avant de compiler
 rem           build_windows.bat nopause    sans pause finale (scripts, CI locale)
-rem  Resultat : build\Release\Instant Meshes.exe
+rem  Resultat : build\Release\InstantMeshes.exe
 rem ---------------------------------------------------------------------------
 setlocal EnableExtensions
 
@@ -59,10 +59,10 @@ if errorlevel 1 goto fail_build
 "%CMAKE_EXE%" --build "%BUILD_DIR%" --config Release --parallel
 if errorlevel 1 goto fail_build
 
-if not exist "%BUILD_DIR%\Release\Instant Meshes.exe" goto fail_build
+if not exist "%BUILD_DIR%\Release\InstantMeshes.exe" goto fail_build
 
 echo.
-echo [OK] Compilation terminee : %BUILD_DIR%\Release\Instant Meshes.exe
+echo [OK] Compilation terminee : %BUILD_DIR%\Release\InstantMeshes.exe
 
 rem --- Tests unitaires (cible im_tests, option INSTANT_MESHES_TESTS) --------
 if exist "%BUILD_DIR%\Release\im_tests.exe" (
@@ -79,7 +79,7 @@ if errorlevel 1 (
     echo [INFO] Python introuvable, tests de la ligne de commande ignores
 ) else (
     echo [INFO] Tests de la ligne de commande...
-    python "%ROOT%tests\test_cli.py" "%BUILD_DIR%\Release\Instant Meshes.exe" > "%BUILD_DIR%\test_cli.log" 2>&1
+    python "%ROOT%tests\test_cli.py" "%BUILD_DIR%\Release\InstantMeshes.exe" > "%BUILD_DIR%\test_cli.log" 2>&1
     if errorlevel 1 goto fail_cli
     findstr /c:" passed, " "%BUILD_DIR%\test_cli.log"
     echo [OK] Tests de la ligne de commande reussis

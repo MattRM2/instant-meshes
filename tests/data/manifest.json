@@ -1,0 +1,273 @@
+{
+  "generator": "Blender 5.2.2 LTS",
+  "cases": {
+    "cube_quads": {
+      "frames": [
+        1,
+        1
+      ],
+      "meshes": [
+        {
+          "name": "Cube",
+          "parent": null,
+          "vertices": 26,
+          "faces": 24,
+          "face_sizes": {
+            "4": 24
+          },
+          "triangles": 48,
+          "materials": [],
+          "bbox_yup": [
+            [
+              -0.839506,
+              -0.839506,
+              -0.839506
+            ],
+            [
+              0.839506,
+              0.839506,
+              0.839506
+            ]
+          ]
+        }
+      ],
+      "skipped_objects": [],
+      "total_vertices": 26,
+      "total_triangles": 48
+    },
+    "ngon_cylinder": {
+      "frames": [
+        1,
+        1
+      ],
+      "meshes": [
+        {
+          "name": "Cylinder",
+          "parent": null,
+          "vertices": 27,
+          "faces": 14,
+          "face_sizes": {
+            "4": 10,
+            "5": 1,
+            "6": 1,
+            "13": 1,
+            "14": 1
+          },
+          "triangles": 50,
+          "materials": [],
+          "bbox_yup": [
+            [
+              -1.0,
+              -1.0,
+              -1.0
+            ],
+            [
+              1.0,
+              1.0,
+              1.0
+            ]
+          ]
+        }
+      ],
+      "skipped_objects": [],
+      "total_vertices": 27,
+      "total_triangles": 50
+    },
+    "suzanne_open": {
+      "frames": [
+        1,
+        1
+      ],
+      "meshes": [
+        {
+          "name": "Suzanne",
+          "parent": null,
+          "vertices": 2012,
+          "faces": 1968,
+          "face_sizes": {
+            "4": 1968
+          },
+          "triangles": 3936,
+          "materials": [],
+          "bbox_yup": [
+            [
+              -1.325935,
+              -0.970486,
+              -0.778266
+            ],
+            [
+              1.325935,
+              0.939236,
+              0.82232
+            ]
+          ]
+        }
+      ],
+      "skipped_objects": [],
+      "total_vertices": 2012,
+      "total_triangles": 3936
+    },
+    "hierarchy": {
+      "frames": [
+        1,
+        1
+      ],
+      "meshes": [
+        {
+          "name": "Body",
+          "parent": "Rig",
+          "vertices": 42,
+          "faces": 80,
+          "face_sizes": {
+            "3": 80
+          },
+          "triangles": 80,
+          "materials": [],
+          "bbox_yup": [
+            [
+              1.17411,
+              0.99171,
+              -2.418795
+            ],
+            [
+              3.657136,
+              3.040063,
+              0.693135
+            ]
+          ]
+        },
+        {
+          "name": "Head",
+          "parent": "Body",
+          "vertices": 8,
+          "faces": 6,
+          "face_sizes": {
+            "4": 6
+          },
+          "triangles": 12,
+          "materials": [],
+          "bbox_yup": [
+            [
+              2.42873,
+              1.681221,
+              -2.131905
+            ],
+            [
+              3.807213,
+              2.488181,
+              -0.617222
+            ]
+          ]
+        }
+      ],
+      "skipped_objects": [],
+      "total_vertices": 50,
+      "total_triangles": 92
+    },
+    "scene_ab": {
+      "frames": [
+        1,
+        1
+      ],
+      "meshes": [
+        {
+          "name": "MeshA",
+          "parent": "Props",
+          "vertices": 7958,
+          "faces": 7872,
+          "face_sizes": {
+            "4": 7872
+          },
+          "triangles": 15744,
+          "materials": [
+            "MatA"
+          ],
+          "bbox_yup": [
+            [
+              -3.340505,
+              -0.971822,
+              -0.319966
+            ],
+            [
+              -0.771119,
+              0.939236,
+              1.399237
+            ]
+          ]
+        },
+        {
+          "name": "MeshB",
+          "parent": "Props",
+          "vertices": 576,
+          "faces": 576,
+          "face_sizes": {
+            "4": 576
+          },
+          "triangles": 1152,
+          "materials": [
+            "MatB_outer",
+            "MatB_inner"
+          ],
+          "bbox_yup": [
+            [
+              0.431852,
+              -0.3,
+              -2.017638
+            ],
+            [
+              3.431852,
+              0.3,
+              0.982362
+            ]
+          ]
+        }
+      ],
+      "skipped_objects": [
+        {
+          "name": "Camera",
+          "type": "CAMERA"
+        },
+        {
+          "name": "Curve",
+          "type": "CURVE"
+        }
+      ],
+      "total_vertices": 8534,
+      "total_triangles": 16896
+    },
+    "animated": {
+      "frames": [
+        1,
+        10
+      ],
+      "meshes": [
+        {
+          "name": "Moving",
+          "parent": null,
+          "vertices": 8,
+          "faces": 6,
+          "face_sizes": {
+            "4": 6
+          },
+          "triangles": 12,
+          "materials": [],
+          "bbox_yup": [
+            [
+              -1.0,
+              -1.0,
+              -1.0
+            ],
+            [
+              1.0,
+              1.0,
+              1.0
+            ]
+          ]
+        }
+      ],
+      "skipped_objects": [],
+      "total_vertices": 8,
+      "total_triangles": 12
+    }
+  }
+}

@@ -63,6 +63,15 @@ if not exist "%BUILD_DIR%\Release\Instant Meshes.exe" goto fail_build
 
 echo.
 echo [OK] Compilation terminee : %BUILD_DIR%\Release\Instant Meshes.exe
+
+rem --- Tests unitaires (cible meshio_tests, option INSTANT_MESHES_TESTS) ----
+if exist "%BUILD_DIR%\Release\meshio_tests.exe" (
+    echo [INFO] Tests unitaires...
+    "%BUILD_DIR%\Release\meshio_tests.exe" > "%BUILD_DIR%\meshio_tests.log" 2>&1
+    if errorlevel 1 goto fail_tests
+    findstr /c:" passed, " "%BUILD_DIR%\meshio_tests.log"
+    echo [OK] Tests unitaires reussis
+)
 set "RC=0"
 goto end
 
@@ -86,6 +95,13 @@ goto end
 :fail_build
 echo.
 echo [ERREUR] La compilation a echoue.
+set "RC=1"
+goto end
+
+:fail_tests
+echo.
+echo [ERREUR] Des tests unitaires echouent :
+type "%BUILD_DIR%\meshio_tests.log" | findstr /c:"FAILED" /c:" passed, "
 set "RC=1"
 goto end
 

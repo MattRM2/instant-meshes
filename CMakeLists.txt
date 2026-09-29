@@ -2,6 +2,7 @@ cmake_minimum_required (VERSION 2.8.3)
 project(InstantMeshes)
 
 option(INSTANT_MESHES_DEV_MODE "Instant meshes developer mode" OFF)
+option(INSTANT_MESHES_TESTS "Build the unit tests (meshio_tests)" ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   message(STATUS "Setting build type to 'Release' as none was specified.")
@@ -197,4 +198,24 @@ endif()
 
 if (UNIX AND NOT ${U_CMAKE_BUILD_TYPE} MATCHES DEBUG)
   add_custom_command(TARGET InstantMeshes POST_BUILD COMMAND strip $<TARGET_FILE:InstantMeshes>)
+endif()
+
+# Unit tests for the mesh readers/writers: build 'meshio_tests', run with ctest
+if (INSTANT_MESHES_TESTS)
+  enable_testing()
+  add_executable(meshio_tests
+    tests/test_meshio.cpp
+    src/meshio.h src/meshio.cpp
+    src/normal.h src/normal.cpp
+    ext/rply/rply.c)
+  target_include_directories(meshio_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(meshio_tests tbb_static nanogui ${NANOGUI_EXTRA_LIBS})
+  file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test_tmp)
+  target_compile_definitions(meshio_tests PRIVATE
+    IM_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    IM_TEST_TEMP_DIR="${CMAKE_CURRENT_BINARY_DIR}/test_tmp")
+  if (MSVC)
+    set_source_files_properties(ext/rply/rply.c PROPERTIES COMPILE_FLAGS "/wd4127")
+  endif()
+  add_test(NAME meshio_tests COMMAND meshio_tests)
 endif()

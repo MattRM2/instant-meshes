@@ -326,6 +326,97 @@ void write_ply(const std::string &filename, const MatrixXu &F,
     cout << "took " << timeString(timer.value()) << ")" << endl;
 }
 
+void triangulate_polygon(const std::vector<Vector3f> &p,
+                         std::vector<uint32_t> &tris) {
+    const uint32_t n = (uint32_t) p.size();
+    if (n < 3)
+        throw std::runtime_error("triangulate_polygon: polygon with fewer than 3 corners!");
+
+    /* Fan over the corners listed in 'idx': (0,1,2), (i+1,0,i).
+       For a quad this is exactly the historical OBJ loader split. */
+    auto fan = [&](const std::vector<uint32_t> &idx) {
+        tris.push_back(idx[0]); tris.push_back(idx[1]); tris.push_back(idx[2]);
+        for (size_t i = 2; i + 1 < idx.size(); ++i) {
+            tris.push_back(idx[i + 1]); tris.push_back(idx[0]); tris.push_back(idx[i]);
+        }
+    };
+
+    std::vector<uint32_t> idx(n);
+    for (uint32_t i = 0; i < n; ++i)
+        idx[i] = i;
+
+    if (n <= 4) {
+        fan(idx);
+        return;
+    }
+
+    /* Newell normal -> project onto the dominant axis plane, keeping the
+       polygon counter-clockwise in 2D */
+    Vector3f normal = Vector3f::Zero();
+    for (uint32_t i = 0; i < n; ++i) {
+        const Vector3f &a = p[i], &b = p[(i + 1) % n];
+        normal += Vector3f((a.y() - b.y()) * (a.z() + b.z()),
+                           (a.z() - b.z()) * (a.x() + b.x()),
+                           (a.x() - b.x()) * (a.y() + b.y()));
+    }
+    int axis = 0;
+    normal.cwiseAbs().maxCoeff(&axis);
+    if (!std::isfinite(normal[axis]) || normal[axis] == 0) {
+        fan(idx);
+        return;
+    }
+    const int u = (axis + 1) % 3, v = (axis + 2) % 3;
+    const Float sign = normal[axis] > 0 ? 1 : -1;
+    std::vector<Vector2f> q(n);
+    for (uint32_t i = 0; i < n; ++i)
+        q[i] = Vector2f(p[i][u], p[i][v] * sign);
+
+    auto cross = [](const Vector2f &a, const Vector2f &b) {
+        return a.x() * b.y() - a.y() * b.x();
+    };
+    auto inside = [&](const Vector2f &pt, const Vector2f &a, const Vector2f &b, const Vector2f &c) {
+        return cross(b - a, pt - a) >= 0 && cross(c - b, pt - b) >= 0 &&
+               cross(a - c, pt - c) >= 0;
+    };
+
+    /* Ear clipping. Pass 0 only accepts ears with a strictly positive area;
+       pass 1 also accepts flat ones (collinear corners). If neither finds
+       an ear the polygon is self-intersecting: fan whatever remains. */
+    size_t start = 0;
+    while (idx.size() > 3) {
+        const size_t m = idx.size();
+        bool clipped = false;
+        for (int pass = 0; pass < 2 && !clipped; ++pass) {
+            for (size_t j = 0; j < m && !clipped; ++j) {
+                const size_t k = (start + j) % m;
+                const uint32_t a = idx[(k + m - 1) % m], b = idx[k], c = idx[(k + 1) % m];
+                const Float area = cross(q[b] - q[a], q[c] - q[b]);
+                if (pass == 0 ? !(area > 0) : !(area >= 0))
+                    continue;
+                bool ear = true;
+                for (uint32_t r : idx) {
+                    if (r == a || r == b || r == c ||
+                        q[r] == q[a] || q[r] == q[b] || q[r] == q[c])
+                        continue;
+                    if (inside(q[r], q[a], q[b], q[c])) {
+                        ear = false;
+                        break;
+                    }
+                }
+                if (!ear)
+                    continue;
+                tris.push_back(a); tris.push_back(b); tris.push_back(c);
+                idx.erase(idx.begin() + k);
+                start = k % idx.size();
+                clipped = true;
+            }
+        }
+        if (!clipped)
+            break;
+    }
+    fan(idx);
+}
+
 void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
               const ProgressCallback &progress) {
     /// Vertex indices used by the OBJ format
@@ -382,6 +473,8 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
     //std::vector<Vector3f>   normals;
     std::vector<uint32_t>   indices;
     std::vector<obj_vertex> vertices;
+    std::vector<obj_vertex> corners;   /* all face corners, in file order */
+    std::vector<uint32_t>   faceSizes;
     VertexMap vertexMap;
 
     std::string line_str;
@@ -408,33 +501,45 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
             normals.push_back(n);
             */
         } else if (prefix == "f") {
-            std::string v1, v2, v3, v4;
-            line >> v1 >> v2 >> v3 >> v4;
-            obj_vertex tri[6];
-            int nVertices = 3;
-
-            tri[0] = obj_vertex(v1);
-            tri[1] = obj_vertex(v2);
-            tri[2] = obj_vertex(v3);
-
-            if (!v4.empty()) {
-                /* This is a quad, split into two triangles */
-                tri[3] = obj_vertex(v4);
-                tri[4] = tri[0];
-                tri[5] = tri[2];
-                nVertices = 6;
+            std::string token;
+            uint32_t size = 0;
+            while (line >> token) {
+                corners.push_back(obj_vertex(token));
+                ++size;
             }
-            /* Convert to an indexed vertex list */
-            for (int i=0; i<nVertices; ++i) {
-                const obj_vertex &v = tri[i];
-                VertexMap::const_iterator it = vertexMap.find(v);
-                if (it == vertexMap.end()) {
-                    vertexMap[v] = (uint32_t) vertices.size();
-                    indices.push_back((uint32_t) vertices.size());
-                    vertices.push_back(v);
-                } else {
-                    indices.push_back(it->second);
-                }
+            if (size < 3)
+                throw std::runtime_error("Invalid face with fewer than 3 vertices in OBJ file \"" + filename + "\"!");
+            faceSizes.push_back(size);
+        }
+    }
+
+    /* Triangulate every polygon and convert to an indexed vertex list */
+    std::vector<Vector3f> polygon;
+    std::vector<uint32_t> tris;
+    size_t offset = 0;
+    for (uint32_t size : faceSizes) {
+        const obj_vertex *face = corners.data() + offset;
+        offset += size;
+
+        polygon.resize(size);
+        for (uint32_t i = 0; i < size; ++i) {
+            if (face[i].p == 0 || face[i].p > positions.size())
+                throw std::runtime_error("Vertex index " + std::to_string(face[i].p) +
+                                         " out of range in OBJ file \"" + filename + "\"!");
+            polygon[i] = positions[face[i].p - 1];
+        }
+        tris.clear();
+        triangulate_polygon(polygon, tris);
+
+        for (uint32_t corner : tris) {
+            const obj_vertex &v = face[corner];
+            VertexMap::const_iterator it = vertexMap.find(v);
+            if (it == vertexMap.end()) {
+                vertexMap[v] = (uint32_t) vertices.size();
+                indices.push_back((uint32_t) vertices.size());
+                vertices.push_back(v);
+            } else {
+                indices.push_back(it->second);
             }
         }
     }

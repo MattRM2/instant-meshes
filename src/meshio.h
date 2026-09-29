@@ -20,6 +20,16 @@ load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F,
                         MatrixXf &V, MatrixXf &N,
                         const ProgressCallback &progress = ProgressCallback());
 
+/**
+ * Split a polygon with n >= 3 corners (positions given in corner order) into
+ * n-2 triangles, appended to 'tris' as corner indices in [0, n). Triangles
+ * and quads keep the historical split (0,1,2) (3,0,2); larger polygons are
+ * ear-clipped in their best-fit plane, falling back to a fan when the
+ * polygon is degenerate or self-intersecting. Shared by all mesh readers.
+ */
+extern void triangulate_polygon(const std::vector<Vector3f> &p,
+                                std::vector<uint32_t> &tris);
+
 extern void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
                      const ProgressCallback &progress = ProgressCallback());
 

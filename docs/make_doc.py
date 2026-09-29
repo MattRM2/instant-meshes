@@ -437,6 +437,7 @@ def build(cover_image=None):
                 "<b>Enter</b> to apply. The line below the controls converts one into the other."),
               Spacer(1, 2 * mm)]
     story += bullets([
+        "When a mesh is opened, the target starts at <b>100%</b> of its polygons.",
         "<b>Presets</b> 25 / 50 / 75 / 100% apply a percentage in one click.",
         "The <b>slider</b> spans 0 to 100% of the loaded polygons: its right end is the input face count. "
         "For more than 100%, type the value. Its <b>red range</b> marks targets the input is too coarse for: "

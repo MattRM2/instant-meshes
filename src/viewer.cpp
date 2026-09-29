@@ -3376,9 +3376,18 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
     }
 
     if (scale < 0 && vertex_count < 0 && face_count < 0) {
-        cout << "No target vertex count/face count/scale argument provided. "
-                "Setting to the default of 1/16 * input vertex count." << endl;
-        vertex_count = V.cols() / 16;
+        if (mInputPolygons > 0) {
+            /* Interface default: 100% of the input polygons (same face
+               count ratio as facesPerVertex(); pure quad is on for posy 4) */
+            cout << "No target vertex count/face count/scale argument provided. "
+                    "Setting to the default of 100% of the input polygons." << endl;
+            vertex_count = (int) std::max<uint64_t>(1, std::min<uint64_t>(
+                (uint64_t) std::numeric_limits<int>::max(), mInputPolygons / (posy == 4 ? 4 : 2)));
+        } else {
+            cout << "No target vertex count/face count/scale argument provided. "
+                    "Setting to the default of 1/16 * input vertex count." << endl;
+            vertex_count = V.cols() / 16;
+        }
     }
 
     if (scale > 0) {

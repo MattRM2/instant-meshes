@@ -1,46 +1,12 @@
 /*
     test_meshio.cpp -- Unit tests for the mesh readers (polygon triangulation,
     OBJ loader error handling, reference dataset).
-
-    Build target: meshio_tests (see CMakeLists.txt). Exit code 0 = all passed.
 */
 
+#include "test_common.h"
 #include "meshio.h"
 #include <algorithm>
 #include <cmath>
-#include <fstream>
-#include <functional>
-
-static int g_failed = 0, g_passed = 0;
-
-#define CHECK(cond) do { \
-    if (cond) { ++g_passed; } else { \
-        ++g_failed; \
-        std::cerr << "  FAILED: " #cond "  (" << __FILE__ << ":" << __LINE__ << ")" << std::endl; \
-    } } while (0)
-
-static std::string data_path(const std::string &name) {
-    return std::string(IM_TEST_DATA_DIR) + "/" + name;
-}
-
-static std::string temp_path(const std::string &name) {
-    return std::string(IM_TEST_TEMP_DIR) + "/" + name;
-}
-
-static void write_file(const std::string &path, const std::string &content) {
-    std::ofstream os(path, std::ios::binary);
-    os << content;
-}
-
-/* Runs 'fn' and returns the exception message ("" if nothing was thrown) */
-static std::string error_of(const std::function<void()> &fn) {
-    try {
-        fn();
-    } catch (const std::exception &e) {
-        return e.what();
-    }
-    return "";
-}
 
 /* ------------------------------------------------------------------------- */
 /*  triangulate_polygon                                                      */
@@ -226,9 +192,7 @@ static void test_load_obj() {
     CHECK(error_of([&] { load_obj(temp_path("empty.obj"), F, V); }) == "" && F.cols() == 0);
 }
 
-int main() {
+void test_meshio() {
     test_triangulate();
     test_load_obj();
-    std::cout << std::endl << g_passed << " passed, " << g_failed << " failed" << std::endl;
-    return g_failed == 0 ? 0 : 1;
 }

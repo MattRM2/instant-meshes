@@ -18,7 +18,9 @@
 #include "abc.h"
 #include "abchash.h"
 #include "meshio.h"
+#include <array>
 #include <cfloat>
+#include <set>
 
 namespace abc {
 
@@ -101,16 +103,44 @@ Digest object_hash(SpookyHash &children, const Digest &data, const MetaData &met
 /*  Verification                                                             */
 /* ------------------------------------------------------------------------- */
 
-class Verifier {
+/* Recomputes hashes from the file content */
+class HashCalc {
 public:
-    explicit Verifier(Archive &ar) : mAr(ar), mIn(ar.reader()) { }
+    explicit HashCalc(Archive &ar) : mAr(ar), mIn(ar.reader()) { }
 
-    uint64_t run() {
+    /* Verifies the whole archive, returns the number of objects checked */
+    uint64_t verify() {
         object(mAr.top());
         return mObjects;
     }
 
-private:
+    /* Hash an object passes to its parent, from the hashes stored in the
+       file (no sample data is read): used for untouched objects */
+    Digest stored_object_hash(const Object &o) {
+        SpookyHash h;
+        h.init(0, 0);
+        std::vector<Object> children = mAr.children(o);
+        if (!children.empty()) {
+            for (const Object &child : children) {
+                const Digest d = stored_object_hash(child);
+                h.update(d.words, 16);
+            }
+            uint64_t unused[2];
+            h.final(&unused[0], &unused[1]);
+        }
+        return object_hash(h, stored_hashes(o)[0], o.meta, o.name);
+    }
+
+    /* [data hash, children hash] stored after an object's child headers */
+    std::array<Digest, 2> stored_hashes(const Object &o) {
+        std::vector<uint64_t> g = mIn.group(o.group);
+        if (g.empty() || !is_data(g.back()) || mIn.data_size(g.back()) < 32)
+            mAr.fail("object \"" + o.path + "\" has no stored hashes");
+        std::array<Digest, 2> stored;
+        mIn.read_data(g.back(), mIn.data_size(g.back()) - 32, 32, stored.data());
+        return stored;
+    }
+
     Digest property(const Property &p) {
         if (p.type == Property::Compound) {
             SpookyHash h;
@@ -173,6 +203,7 @@ private:
                              digests);
     }
 
+private:
     Digest object(const Object &o) {
         SpookyHash data;
         data.init(0, 0);
@@ -194,12 +225,7 @@ private:
             h.final(&childrenHash.words[0], &childrenHash.words[1]);
         }
 
-        /* Stored hashes: last 32 bytes of the child headers */
-        std::vector<uint64_t> g = mIn.group(o.group);
-        if (g.empty() || !is_data(g.back()) || mIn.data_size(g.back()) < 32)
-            mAr.fail("object \"" + o.path + "\" has no stored hashes");
-        Digest stored[2];
-        mIn.read_data(g.back(), mIn.data_size(g.back()) - 32, 32, stored);
+        const std::array<Digest, 2> stored = stored_hashes(o);
         if (stored[0] != dataHash)
             mAr.fail("property hash mismatch on object \"" + o.path + "\"");
         if (stored[1] != childrenHash)
@@ -262,7 +288,14 @@ OutProperty make_compound(const std::string &name, const MetaData &meta,
 
 class ArchiveWriter {
 public:
-    explicit ArchiveWriter(ogawa::Writer &out) : mOut(out) { }
+    /* 'table': indexed metadata to start from (when copying an archive, so
+       that the copied headers keep their indices) */
+    explicit ArchiveWriter(ogawa::Writer &out,
+                           const std::vector<std::string> &table = std::vector<std::string>())
+        : mOut(out), mMetaTable(table) {
+        for (size_t i = 0; i < table.size(); ++i)
+            mMetaIndex.insert(std::make_pair(table[i], (uint32_t) i));
+    }
 
     void write(const OutObject &top, const MetaData &archiveMeta) {
         const int32_t formatVersion = 0, libraryVersion = 10803;
@@ -283,17 +316,21 @@ public:
         push_raw(ts, 0.0);
         const uint64_t timeSamplings = mOut.add_data(ts.data(), ts.size());
 
+        const uint64_t indexed = metadata_table();
+
+        mOut.commit(mOut.add_group({ v0, v1, topGroup, metaData, timeSamplings, indexed }));
+    }
+
+    /* Writes the indexed metadata table, returns its entry */
+    uint64_t metadata_table() {
         std::vector<uint8_t> table;
         for (const std::string &s : mMetaTable) {
             table.push_back((uint8_t) s.size());
             table.insert(table.end(), s.begin(), s.end());
         }
-        const uint64_t indexed = mOut.add_data(table.data(), table.size());
-
-        mOut.commit(mOut.add_group({ v0, v1, topGroup, metaData, timeSamplings, indexed }));
+        return mOut.add_data(table.data(), table.size());
     }
 
-private:
     /* MetaDataMap::getIndex: 0 = empty, 1..254 = table, 0xff = inline */
     uint32_t meta_index(const std::string &s) {
         if (s.empty())
@@ -348,6 +385,7 @@ private:
         return element > 0 ? p.values.size() / element : 0;
     }
 
+public:
     /* Writes a property group, appends its header, returns its entry */
     uint64_t write_property(const OutProperty &p, std::vector<uint8_t> &headers, Digest &hash) {
         const TimeSampling ts { 1.0, { 0.0 } };
@@ -393,6 +431,7 @@ private:
         return mOut.add_group(entries);
     }
 
+private:
     /* Writes an object group; appends its header to 'parentHeaders' (if
        any) and returns its entry together with the hash for its parent */
     uint64_t write_object(const OutObject &o, Digest &hash, std::vector<uint8_t> *parentHeaders) {
@@ -451,6 +490,71 @@ private:
     std::vector<std::string> mMetaTable;
 };
 
+/* Geometry of a PolyMesh ready to be written */
+struct MeshData {
+    std::vector<float> P;
+    std::vector<int32_t> faceIndices, faceCounts;
+    double bounds[6] = { DBL_MAX, DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX, -DBL_MAX };
+    size_t irregular = 0;
+
+    std::vector<OutProperty> geom_properties() const {
+        return {
+            make_value(".selfBnds", Property::Scalar, PodFloat64, 6, bounds, 6, {{ "interpretation", "box" }}),
+            make_value("P", Property::Array, PodFloat32, 3, P.data(), P.size(),
+                       {{ "geoScope", "vtx" }, { "interpretation", "point" }}),
+            make_value(".faceIndices", Property::Array, PodInt32, 1, faceIndices.data(), faceIndices.size()),
+            make_value(".faceCounts", Property::Array, PodInt32, 1, faceCounts.data(), faceCounts.size())
+        };
+    }
+};
+
+/* Polygons of an extracted mesh, positions mapped by 'transform', faces
+   clockwise. Only the vertices used by polygons are kept, in their
+   original order: quad-dominant extraction leaves the centers of irregular
+   faces unused (Blender's OBJ importer drops them too). */
+MeshData make_mesh_data(const MatrixXu &F, const MatrixXf &V, const Eigen::Matrix4d &transform) {
+    MeshData m;
+    std::vector<uint32_t> sizes, ccw, faceIds;
+    m.irregular = extracted_polygons(F, sizes, ccw, faceIds);
+    if (sizes.empty() || V.cols() == 0)
+        throw std::runtime_error("Alembic writer: the mesh is empty!");
+    if (V.cols() > 0x7fffffff || ccw.size() > 0x7fffffff)
+        throw std::runtime_error("Alembic writer: the mesh is too large!");
+
+    std::vector<int32_t> remap((size_t) V.cols(), -1);
+    for (uint32_t index : ccw) {
+        if (index >= V.cols())
+            throw std::runtime_error("Alembic writer: vertex index out of range!");
+        remap[index] = 0;
+    }
+    int32_t used = 0;
+    for (uint32_t i = 0; i < V.cols(); ++i) {
+        if (remap[i] < 0)
+            continue;
+        remap[i] = used++;
+        const Eigen::Vector4d q = transform * Eigen::Vector4d(V(0, i), V(1, i), V(2, i), 1.0);
+        for (int k = 0; k < 3; ++k) {
+            const float x = (float) q[k];
+            if (!std::isfinite(x))
+                throw std::runtime_error("Alembic writer: invalid vertex position!");
+            m.P.push_back(x);
+            m.bounds[k] = std::min(m.bounds[k], (double) x);
+            m.bounds[k + 3] = std::max(m.bounds[k + 3], (double) x);
+        }
+    }
+
+    m.faceIndices.resize(ccw.size());
+    m.faceCounts.resize(sizes.size());
+    size_t offset = 0;
+    for (size_t f = 0; f < sizes.size(); ++f) {
+        m.faceCounts[f] = (int32_t) sizes[f];
+        for (uint32_t k = 0; k < sizes[f]; ++k)
+            m.faceIndices[offset + k] = remap[ccw[offset + sizes[f] - 1 - k]];
+        offset += sizes[f];
+    }
+    return m;
+}
+
 /* Object name from the output file name ("C:/x/scene_retopo.abc" ->
    "scene_retopo"); characters that Alembic paths cannot hold are replaced */
 std::string object_name(const std::string &filename) {
@@ -466,11 +570,273 @@ std::string object_name(const std::string &filename) {
     return name.empty() ? "InstantMeshes" : name;
 }
 
+
+/* ------------------------------------------------------------------------- */
+/*  Splicing: copy an archive, replacing the geometry of some meshes         */
+/* ------------------------------------------------------------------------- */
+
+const char *SCHEMA_FACESET = "AbcGeom_FaceSet_v1";
+
+class Splicer {
+public:
+    struct Target {
+        MeshData data;
+        std::string path;
+    };
+
+    Splicer(Archive &ar, ogawa::Writer &out, const std::map<std::string, Target> &targets)
+        : mAr(ar), mIn(ar.reader()), mOut(out), mCopier(ar.reader(), out),
+          mWriter(out, ar.indexed_metadata()), mCalc(ar), mTargets(targets) {
+        /* Objects to rebuild: the targets and all their ancestors */
+        for (const auto &t : targets) {
+            std::string path = t.first;
+            while (!path.empty() && path != "/") {
+                mDirty.insert(path);
+                path = path.substr(0, path.rfind('/'));
+            }
+        }
+    }
+
+    /* Writes everything, returns the new root group entry (not committed) */
+    uint64_t run() {
+        std::vector<uint64_t> root = mIn.group(mIn.root());
+        std::vector<uint64_t> entries;
+        entries.push_back(mCopier.copy(root[0]));    /* format version */
+        entries.push_back(mCopier.copy(root[1]));    /* library version */
+        Digest unused;
+        entries.push_back(rebuild_object(mAr.top(), "/", unused));
+        entries.push_back(mCopier.copy(root[3]));    /* archive metadata */
+        entries.push_back(mCopier.copy(root[4]));    /* time samplings */
+        entries.push_back(mWriter.metadata_table()); /* original table + additions */
+        for (size_t i = 6; i < root.size(); ++i)     /* unknown extensions */
+            entries.push_back(mCopier.copy(root[i]));
+        for (const auto &t : mTargets)
+            if (!mDone.count(t.first))
+                mAr.fail("mesh \"" + t.first + "\" not found while copying");
+        return mOut.add_group(entries);
+    }
+
+    std::vector<std::string> notes;
+
+private:
+    struct Built {
+        uint64_t entry = ogawa::EMPTY_GROUP;
+        Digest hash;
+        std::vector<uint8_t> header;
+    };
+
+    Built copy_property(const Property &p) {
+        Built b;
+        b.entry = mCopier.copy(p.group);
+        b.hash = mCalc.property(p);
+        b.header = p.rawHeader;
+        return b;
+    }
+
+    Built new_property(const OutProperty &p) {
+        Built b;
+        b.entry = mWriter.write_property(p, b.header, b.hash);
+        return b;
+    }
+
+    /* Group of sub-properties followed by their headers */
+    uint64_t property_group(const std::vector<Built> &children) {
+        std::vector<uint64_t> entries;
+        std::vector<uint8_t> headers;
+        for (const Built &b : children) {
+            entries.push_back(b.entry);
+            headers.insert(headers.end(), b.header.begin(), b.header.end());
+        }
+        if (!headers.empty())
+            entries.push_back(mOut.add_data(headers.data(), headers.size()));
+        return mOut.add_group(entries);
+    }
+
+    /* A compound whose own header is unchanged but whose content is new */
+    Built compound(const Property &original, const std::vector<Built> &children) {
+        Built b;
+        b.entry = property_group(children);
+        SpookyHash h;
+        h.init(0, 0);
+        for (const Built &c : children)
+            h.update(c.hash.words, 16);
+        std::vector<uint8_t> in = header_hash_input(original.name, original.meta, Property::Compound,
+                                                    original.pod, original.extent, TimeSampling());
+        if (!in.empty())
+            h.update(in.data(), in.size());
+        b.hash = h.final();
+        b.header = original.rawHeader;
+        return b;
+    }
+
+    static bool per_element(const Property &p) {
+        auto it = p.meta.find("geoScope");
+        return it != p.meta.end() && (it->second == "vtx" || it->second == "fvr" ||
+                                      it->second == "uni" || it->second == "var");
+    }
+
+    /* New .geom: new positions and faces, per-element data dropped */
+    Built rebuild_geom(const Property &geom, const Target &target) {
+        std::vector<Built> children;
+        for (const OutProperty &p : target.data.geom_properties())
+            children.push_back(new_property(p));
+
+        static const std::set<std::string> replaced { ".selfBnds", "P", ".faceIndices", ".faceCounts" };
+        std::vector<std::string> dropped;
+        for (const Property &p : mAr.properties(geom)) {
+            if (replaced.count(p.name))
+                continue;
+            if (p.name == ".arbGeomParams" && p.type == Property::Compound) {
+                std::vector<Built> kept;
+                for (const Property &a : mAr.properties(p)) {
+                    if (per_element(a))
+                        dropped.push_back(a.name);
+                    else
+                        kept.push_back(copy_property(a));
+                }
+                children.push_back(compound(p, kept));
+            } else if (p.name == "N" || p.name == "uv" || p.name == ".velocities" || per_element(p)) {
+                dropped.push_back(p.name);
+            } else {
+                children.push_back(copy_property(p));
+            }
+        }
+        if (!dropped.empty()) {
+            std::string list;
+            for (const std::string &d : dropped)
+                list += (list.empty() ? "" : ", ") + d;
+            notes.push_back(target.path + ": dropped " + list + " (no longer matching the topology)");
+        }
+        return compound(geom, children);
+    }
+
+    /* New .faceset: every face of the new mesh */
+    Built rebuild_faceset(const Property &faceset, size_t faces) {
+        std::vector<int32_t> all(faces);
+        for (size_t i = 0; i < faces; ++i)
+            all[i] = (int32_t) i;
+        std::vector<Built> children;
+        bool found = false;
+        for (const Property &p : mAr.properties(faceset)) {
+            if (p.name == ".faces") {
+                children.push_back(new_property(make_value(".faces", Property::Array, PodInt32, 1,
+                                                           all.data(), all.size(), p.meta)));
+                found = true;
+            } else {
+                children.push_back(copy_property(p));
+            }
+        }
+        if (!found)
+            mAr.fail("face set without faces");
+        return compound(faceset, children);
+    }
+
+    enum Mode { Ancestor, Mesh, FaceSet };
+
+    /* Rebuilds an object group, returns its entry; 'hash' receives the hash
+       for its parent */
+    uint64_t rebuild_object(const Object &o, const std::string &path, Digest &hash,
+                            Mode mode = Ancestor, const Target *target = nullptr) {
+        std::vector<uint64_t> g = mIn.group(o.group);
+
+        /* Properties */
+        uint64_t propGroup;
+        Digest dataHash;
+        if (mode == Ancestor) {
+            propGroup = g.empty() || is_data(g[0]) ? ogawa::EMPTY_GROUP : mCopier.copy(g[0]);
+            dataHash = mCalc.stored_hashes(o)[0];
+        } else {
+            std::vector<Built> props;
+            bool rebuilt = false;
+            for (const Property &p : mAr.properties(mAr.properties(o))) {
+                if (mode == Mesh && p.name == ".geom" && p.type == Property::Compound) {
+                    props.push_back(rebuild_geom(p, *target));
+                    rebuilt = true;
+                } else if (mode == FaceSet && p.name == ".faceset" && p.type == Property::Compound) {
+                    props.push_back(rebuild_faceset(p, target->data.faceCounts.size()));
+                    rebuilt = true;
+                } else {
+                    props.push_back(copy_property(p));
+                }
+            }
+            if (!rebuilt)
+                mAr.fail("\"" + path + "\" has no geometry to replace");
+            propGroup = property_group(props);
+            SpookyHash data;
+            data.init(0, 0);
+            for (const Built &b : props)
+                data.update(b.hash.words, 16);
+            dataHash = data.final();
+        }
+
+        /* Children */
+        const std::vector<Object> children = mAr.children(o);
+        size_t faceSets = 0;
+        if (mode == Mesh)
+            for (const Object &c : children)
+                faceSets += c.schema() == SCHEMA_FACESET;
+        if (faceSets > 1)
+            notes.push_back(path + ": dropped " + std::to_string(faceSets) +
+                            " face sets (per-face materials cannot follow the new faces)");
+        else if (faceSets == 1)
+            notes.push_back(path + ": face set rebuilt over all new faces");
+
+        std::vector<uint64_t> entries { propGroup };
+        std::vector<uint8_t> headers;
+        SpookyHash h;
+        h.init(0, 0);
+        Digest childrenHash;
+        bool any = false;
+        for (const Object &c : children) {
+            const std::string childPath = (path == "/" ? "" : path) + "/" + c.name;
+            Digest d;
+            uint64_t entry;
+            if (mode == Mesh && c.schema() == SCHEMA_FACESET) {
+                if (faceSets > 1)
+                    continue;
+                entry = rebuild_object(c, childPath, d, FaceSet, target);
+            } else if (mode == Ancestor && mTargets.count(childPath)) {
+                entry = rebuild_object(c, childPath, d, Mesh, &mTargets.at(childPath));
+                mDone.insert(childPath);
+            } else if (mode == Ancestor && mDirty.count(childPath)) {
+                entry = rebuild_object(c, childPath, d, Ancestor);
+            } else {
+                entry = mCopier.copy(c.group);
+                d = mCalc.stored_object_hash(c);
+            }
+            entries.push_back(entry);
+            headers.insert(headers.end(), c.rawHeader.begin(), c.rawHeader.end());
+            h.update(d.words, 16);
+            any = true;
+        }
+        if (any)
+            h.final(&childrenHash.words[0], &childrenHash.words[1]);
+
+        headers.insert(headers.end(), (const uint8_t *) dataHash.words,
+                       (const uint8_t *) dataHash.words + 16);
+        headers.insert(headers.end(), (const uint8_t *) childrenHash.words,
+                       (const uint8_t *) childrenHash.words + 16);
+        entries.push_back(mOut.add_data(headers.data(), headers.size()));
+
+        hash = object_hash(h, dataHash, o.meta, o.name);
+        return mOut.add_group(entries);
+    }
+
+    Archive &mAr;
+    ogawa::Reader &mIn;
+    ogawa::Writer &mOut;
+    ogawa::Copier mCopier;
+    ArchiveWriter mWriter;
+    HashCalc mCalc;
+    const std::map<std::string, Target> &mTargets;
+    std::set<std::string> mDirty, mDone;
+};
+
 } // namespace
 
 uint64_t verify_hashes(const std::string &filename) {
     Archive ar(filename);
-    return Verifier(ar).run();
+    return HashCalc(ar).verify();
 }
 
 void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V,
@@ -479,48 +845,7 @@ void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V
     cout << "Writing \"" << filename << "\" (V=" << V.cols() << ", F=" << F.cols() << ") .. ";
     cout.flush();
 
-    std::vector<uint32_t> sizes, ccw, faceIds;
-    const size_t irregular = extracted_polygons(F, sizes, ccw, faceIds);
-    if (sizes.empty() || V.cols() == 0)
-        throw std::runtime_error("Alembic writer: the mesh is empty!");
-    if (V.cols() > 0x7fffffff || ccw.size() > 0x7fffffff)
-        throw std::runtime_error("Alembic writer: the mesh is too large!");
-
-    /* Keep only the vertices used by polygons, in their original order:
-       quad-dominant extraction leaves the centers of irregular faces unused
-       (Blender's OBJ importer drops them too) */
-    std::vector<int32_t> remap((size_t) V.cols(), -1);
-    for (uint32_t index : ccw) {
-        if (index >= V.cols())
-            throw std::runtime_error("Alembic writer: vertex index out of range!");
-        remap[index] = 0;
-    }
-    std::vector<float> P;
-    double bounds[6] = { DBL_MAX, DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX, -DBL_MAX };
-    int32_t used = 0;
-    for (uint32_t i = 0; i < V.cols(); ++i) {
-        if (remap[i] < 0)
-            continue;
-        remap[i] = used++;
-        for (int k = 0; k < 3; ++k) {
-            const float x = (float) V(k, i);
-            if (!std::isfinite(x))
-                throw std::runtime_error("Alembic writer: invalid vertex position!");
-            P.push_back(x);
-            bounds[k] = std::min(bounds[k], (double) x);
-            bounds[k + 3] = std::max(bounds[k + 3], (double) x);
-        }
-    }
-
-    /* Clockwise faces */
-    std::vector<int32_t> faceIndices(ccw.size()), faceCounts(sizes.size());
-    size_t offset = 0;
-    for (size_t f = 0; f < sizes.size(); ++f) {
-        faceCounts[f] = (int32_t) sizes[f];
-        for (uint32_t k = 0; k < sizes[f]; ++k)
-            faceIndices[offset + k] = remap[ccw[offset + sizes[f] - 1 - k]];
-        offset += sizes[f];
-    }
+    const MeshData meshData = make_mesh_data(F, V, Eigen::Matrix4d::Identity());
 
     MetaData polyMeta {{ "schema", "AbcGeom_PolyMesh_v1" }, { "schemaBaseType", "AbcGeom_GeomBase_v1" }};
     MetaData polyObjMeta = polyMeta;
@@ -534,13 +859,7 @@ void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V
     OutObject mesh;
     mesh.name = name;
     mesh.meta = polyObjMeta;
-    mesh.properties.push_back(make_compound(".geom", polyMeta, {
-        make_value(".selfBnds", Property::Scalar, PodFloat64, 6, bounds, 6, {{ "interpretation", "box" }}),
-        make_value("P", Property::Array, PodFloat32, 3, P.data(), P.size(),
-                   {{ "geoScope", "vtx" }, { "interpretation", "point" }}),
-        make_value(".faceIndices", Property::Array, PodInt32, 1, faceIndices.data(), faceIndices.size()),
-        make_value(".faceCounts", Property::Array, PodInt32, 1, faceCounts.data(), faceCounts.size())
-    }));
+    mesh.properties.push_back(make_compound(".geom", polyMeta, meshData.geom_properties()));
 
     const uint8_t inherits = 1, matrixOp = 0x30;
     const double identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
@@ -563,9 +882,59 @@ void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V
                                    { "_ai_AlembicVersion", "Instant Meshes native Ogawa writer" }});
 
     cout << "done. (";
-    if (irregular > 0)
-        cout << irregular << " irregular faces, ";
+    if (meshData.irregular > 0)
+        cout << meshData.irregular << " irregular faces, ";
     cout << "took " << timeString(timer.value()) << ")" << endl;
+}
+
+void splice_abc(const std::string &input, const std::string &output,
+                const std::vector<Replacement> &replacements) {
+    Timer<> timer;
+    cout << "Writing \"" << output << "\" (" << replacements.size() << " mesh"
+         << (replacements.size() > 1 ? "es" : "") << " replaced) .. ";
+    cout.flush();
+
+    ogawa::Writer out(output);   /* temporary file until commit() */
+    uint64_t root;
+    std::vector<std::string> notes;
+    {
+        Archive ar(input);
+
+        /* World transform of every target, checked to be invertible */
+        std::map<std::string, MeshSummary> meshes;
+        for (const MeshSummary &m : list_meshes(input))
+            meshes[m.path] = m;
+
+        std::map<std::string, Splicer::Target> targets;
+        for (const Replacement &r : replacements) {
+            auto it = meshes.find(r.path);
+            if (it == meshes.end())
+                ar.fail("no polygon mesh at \"" + r.path + "\"");
+            if (it->second.instanced)
+                ar.fail("\"" + r.path + "\" is instanced: its geometry cannot be replaced");
+            if (it->second.animated)
+                ar.fail("\"" + r.path + "\" is animated: its geometry cannot be replaced");
+            if (targets.count(r.path))
+                ar.fail("\"" + r.path + "\" is replaced twice");
+            const Eigen::Matrix4d &world = it->second.world;
+            const double det = world.topLeftCorner<3, 3>().determinant();
+            if (!std::isfinite(det) || std::abs(det) < 1e-12)
+                ar.fail("\"" + r.path + "\" has a degenerate transform (zero scale)");
+            Splicer::Target t;
+            t.path = r.path;
+            t.data = make_mesh_data(r.F, r.V, world.inverse());
+            targets[r.path] = std::move(t);
+        }
+
+        Splicer splicer(ar, out, targets);
+        root = splicer.run();
+        notes = splicer.notes;
+    }   /* input closed: it may now be replaced */
+    out.commit(root);
+
+    cout << "done. (took " << timeString(timer.value()) << ")" << endl;
+    for (const std::string &n : notes)
+        cout << "   " << n << endl;
 }
 
 } // namespace abc

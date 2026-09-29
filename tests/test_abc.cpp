@@ -215,6 +215,155 @@ static void test_write_roundtrip() {
     CHECK(read_file(temp_path("keep.abc")).size() == 4 && !file_exists(temp_path("keep.abc.tmp")));
 }
 
+/* A replacement given in world space comes back in world space after the
+   splice (positions stored in the local space of the mesh), and nothing
+   else changes */
+static void test_splice() {
+    std::cout << "abc: splice (replace meshes in a copy of the archive)" << std::endl;
+
+    /* Replacement: a quad grid placed in world space around the original */
+    auto grid = [](const MatrixXf &Vorig, MatrixXu &F, MatrixXf &V) {
+        const Vector3f lo = Vorig.rowwise().minCoeff(), hi = Vorig.rowwise().maxCoeff();
+        const int n = 6;
+        V.resize(3, (n + 1) * (n + 1));
+        F.resize(4, n * n);
+        for (int j = 0; j <= n; ++j)
+            for (int i = 0; i <= n; ++i)
+                V.col(j * (n + 1) + i) = Vector3f(lo.x() + (hi.x() - lo.x()) * i / n,
+                                                  lo.y() + (hi.y() - lo.y()) * j / n,
+                                                  0.5f * (lo.z() + hi.z()) + 0.1f * i * j / (n * n));
+        for (int j = 0; j < n; ++j)
+            for (int i = 0; i < n; ++i)
+                F.col(j * n + i) = Vector4u(j * (n + 1) + i, j * (n + 1) + i + 1,
+                                            (j + 1) * (n + 1) + i + 1, (j + 1) * (n + 1) + i);
+    };
+    auto expected = [](const MatrixXu &F, const MatrixXf &V, MatrixXu &Fe, MatrixXf &Ve) {
+        std::vector<uint32_t> sizes, indices, ids;
+        extracted_polygons(F, sizes, indices, ids);
+        std::vector<Vector3f> positions;
+        for (int i = 0; i < V.cols(); ++i)
+            positions.push_back(V.col(i));
+        build_mesh(positions, sizes, indices, Fe, Ve, "expected");
+    };
+
+    struct Case { const char *file, *target, *other; };
+    const Case cases[] = {
+        { "scene_ab.abc",  "/Props/MeshA/MeshA", "/Props/MeshB/MeshB" },
+        { "hierarchy.abc", "/Rig/Body/Head/Head", "/Rig/Body/Body" },   /* nested, non-uniform scale */
+    };
+    for (const Case &c : cases) {
+        const std::string in = data_path(c.file), out = temp_path(std::string("splice_") + c.file);
+        MatrixXu F0, Fo0;
+        MatrixXf V0, Vo0;
+        abc::load_abc_mesh(in, c.target, F0, V0);
+        abc::load_abc_mesh(in, c.other, Fo0, Vo0);
+        abc::Replacement r;
+        r.path = c.target;
+        grid(V0, r.F, r.V);
+
+        const std::string msg = error_of([&] { abc::splice_abc(in, out, { r }); });
+        if (msg != "")
+            std::cerr << "  " << c.file << ": " << msg << std::endl;
+        CHECK(msg == "");
+
+        /* The replaced mesh, back in world space */
+        MatrixXu F1, Fe;
+        MatrixXf V1, Ve;
+        expected(r.F, r.V, Fe, Ve);
+        CHECK(error_of([&] { abc::load_abc_mesh(out, c.target, F1, V1); }) == "");
+        const Float extent = (Ve.rowwise().maxCoeff() - Ve.rowwise().minCoeff()).maxCoeff();
+        const bool sameShape = F1 == Fe && V1.cols() == Ve.cols();
+        const Float dist = sameShape ? (V1 - Ve).cwiseAbs().maxCoeff() : -1;
+        if (!sameShape || !(dist >= 0 && dist < 1e-5f * std::max((Float) 1, extent)))
+            std::cerr << "  " << c.target << ": world round trip distance " << dist << std::endl;
+        CHECK(sameShape && dist >= 0 && dist < 1e-5f * std::max((Float) 1, extent));
+
+        /* The other mesh: bit for bit the same */
+        MatrixXu Fo1;
+        MatrixXf Vo1;
+        CHECK(error_of([&] { abc::load_abc_mesh(out, c.other, Fo1, Vo1); }) == "");
+        CHECK(Fo1 == Fo0 && Vo1 == Vo0);
+
+        /* Same objects, valid hashes, face set rebuilt, N / uv dropped */
+        std::vector<abc::MeshSummary> before = abc::list_meshes(in), after = abc::list_meshes(out);
+        CHECK(before.size() == after.size());
+        for (size_t i = 0; i < std::min(before.size(), after.size()); ++i)
+            CHECK(before[i].path == after[i].path);
+        CHECK(error_of([&] { abc::verify_hashes(out); }) == "");
+
+        abc::Archive ar(out);
+        abc::Object mesh;
+        abc::Property geom, dummy, fs, faces;
+        CHECK(ar.resolve(c.target, mesh) && ar.find(ar.properties(mesh), ".geom", geom));
+        CHECK(!ar.find(geom, "N", dummy) && !ar.find(geom, "uv", dummy));
+        std::vector<abc::Object> children = ar.children(mesh);
+        CHECK(children.size() == 1 && children[0].schema() == "AbcGeom_FaceSet_v1" &&
+              ar.find(ar.properties(children[0]), ".faceset", fs) && ar.find(fs, ".faces", faces) &&
+              ar.sample_indices(faces).size() == (size_t) r.F.cols());
+    }
+
+    /* Several face sets (MeshB has two materials): dropped */
+    {
+        MatrixXu F0;
+        MatrixXf V0;
+        abc::load_abc_mesh(data_path("scene_ab.abc"), "/Props/MeshB/MeshB", F0, V0);
+        abc::Replacement r;
+        r.path = "/Props/MeshB/MeshB";
+        grid(V0, r.F, r.V);
+        const std::string out = temp_path("splice_b.abc");
+        CHECK(error_of([&] { abc::splice_abc(data_path("scene_ab.abc"), out, { r }); }) == "");
+        abc::Archive ar(out);
+        abc::Object mesh;
+        CHECK(ar.resolve(r.path, mesh) && ar.children(mesh).empty());
+    }
+
+    /* In place: the output replaces the input */
+    {
+        const std::string path = temp_path("inplace_splice.abc");
+        write_file(path, read_file(data_path("scene_ab.abc")));
+        MatrixXu F0;
+        MatrixXf V0;
+        abc::load_abc_mesh(path, "/Props/MeshA/MeshA", F0, V0);
+        abc::Replacement r;
+        r.path = "/Props/MeshA/MeshA";
+        grid(V0, r.F, r.V);
+        CHECK(error_of([&] { abc::splice_abc(path, path, { r }); }) == "");
+        CHECK(!file_exists(path + ".tmp"));
+        std::vector<abc::MeshSummary> meshes = abc::list_meshes(path);
+        CHECK(meshes.size() == 2 && meshes[0].faces == 36);
+    }
+
+    /* Refused, and nothing written */
+    {
+        abc::Replacement r;
+        MatrixXf corners = MatrixXf::Random(3, 4);
+        grid(corners, r.F, r.V);
+        const std::string out = temp_path("splice_refused.abc");
+        struct { const char *file, *path, *expect; } bad[] = {
+            { "instances.abc", "/InstB/Pillar-0/PillarMesh", "instanced" },
+            { "animated.abc", "/Moving/Moving", "animated" },
+            { "scene_ab.abc", "/Props/Nope", "no polygon mesh" },
+            { "scene_ab.abc", "/Props/MeshA", "no polygon mesh" },   /* the Xform, not the mesh */
+        };
+        for (const auto &b : bad) {
+            r.path = b.path;
+            const std::string msg = error_of([&] { abc::splice_abc(data_path(b.file), out, { r }); });
+            if (!contains(msg, b.expect))
+                std::cerr << "  " << b.path << ": got \"" << msg << "\"" << std::endl;
+            CHECK(contains(msg, b.expect));
+            CHECK(!file_exists(out) && !file_exists(out + ".tmp"));
+        }
+    }
+
+    /* Wildcards */
+    CHECK(abc::glob_match("Mesh*", "MeshA") && abc::glob_match("Mesh*", "Mesh"));
+    CHECK(!abc::glob_match("Mesh*", "MyMesh") && abc::glob_match("*Mesh*", "MyMeshes"));
+    CHECK(abc::glob_match("Rock_??", "Rock_01") && !abc::glob_match("Rock_??", "Rock_1"));
+    CHECK(abc::glob_match("*", "") && abc::glob_match("a*b*c", "a__b__c") && !abc::glob_match("a*b*c", "a__c"));
+    CHECK(!abc::glob_match("mesha", "MeshA"));   /* case sensitive */
+    CHECK(abc::glob_match(std::string(200, '*') + "x", std::string(10000, 'y') + "x"));   /* no blow-up */
+}
+
 static void test_fuzz_abc(int scale) {
     std::cout << "abc: fuzzing the mesh reader" << std::endl;
     pcg32 rng;
@@ -271,6 +420,7 @@ void test_abc(int fuzz_scale) {
     test_exact_obj();
     test_hashes_of_reference_files();
     test_write_roundtrip();
+    test_splice();
     test_listing_and_selection();
     test_unsupported();
     test_fuzz_abc(fuzz_scale);

@@ -30,6 +30,9 @@ int main(int argc, char **argv) {
     uint32_t knn_points = 10, smooth_iter = 2;
     Float crease_angle = -1, scale = -1, face_percent = -1;
     std::string batchOutput;
+    std::vector<MeshRule> meshRules;
+    FaceTarget others;
+    bool listMeshes = false, dryRun = false;
     #if defined(__APPLE__)
         bool launched_from_finder = false;
     #endif
@@ -117,6 +120,22 @@ int main(int argc, char **argv) {
                 batchOutput = argv[i];
             } else if (strcmp("--dominant", argv[i]) == 0 || strcmp("-D", argv[i]) == 0) {
                 dominant = true;
+            } else if (strcmp("--mesh", argv[i]) == 0 || strcmp("-m", argv[i]) == 0) {
+                if (++i >= argc) {
+                    cerr << "Missing mesh rule argument (e.g. -m \"Mesh*=75%\")!" << endl;
+                    return -1;
+                }
+                meshRules.push_back(parse_mesh_rule(argv[i]));
+            } else if (strcmp("--others", argv[i]) == 0) {
+                if (++i >= argc) {
+                    cerr << "Missing --others target argument!" << endl;
+                    return -1;
+                }
+                others = parse_face_target(argv[i]);
+            } else if (strcmp("--list", argv[i]) == 0) {
+                listMeshes = true;
+            } else if (strcmp("--dry-run", argv[i]) == 0) {
+                dryRun = true;
             } else if (strcmp("--compat", argv[i]) == 0 || strcmp("-C", argv[i]) == 0) {
                 compat = true;
 #if defined(__APPLE__)
@@ -165,6 +184,28 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Alembic per-mesh modes */
+    const bool objectMode = !meshRules.empty() || others.valid();
+    auto is_abc = [](const std::string &f) {
+        return f.size() > 4 && str_tolower(f.substr(f.size() - 4)) == ".abc";
+    };
+    if ((listMeshes || objectMode || dryRun) && (args.size() != 1 || !is_abc(args[0]))) {
+        cerr << "Error: --list, -m, --others and --dry-run need one Alembic (.abc) input file!" << endl;
+        help = true;
+    }
+    if (dryRun && !objectMode) {
+        cerr << "Error: --dry-run shows the plan of -m / --others rules!" << endl;
+        help = true;
+    }
+    if (objectMode && nConstraints > 0) {
+        cerr << "Error: with -m / --others, give the face targets there (-f, -s and -v remesh the whole file)!" << endl;
+        help = true;
+    }
+    if (objectMode && !dryRun && !is_abc(batchOutput)) {
+        cerr << "Error: -m / --others need an Alembic (.abc) output file (-o)!" << endl;
+        help = true;
+    }
+
     if (args.size() > 1 || help || (!batchOutput.empty() && args.size() == 0)) {
         cout << "Syntax: " << argv[0] << " [options] <input mesh / point cloud / application state snapshot>" << endl;
         cout << "Options:" << endl;
@@ -184,6 +225,16 @@ int main(int argc, char **argv) {
         cout << "                             (batch mode, mesh inputs; 100% = polygons of the file;" << endl;
         cout << "                             about +/-3%, less accurate below a few hundred polygons)" << endl;
         cout << "   -v, --vertices <count>    Desired vertex count of the output mesh" << endl;
+        cout << "Alembic (.abc) per-mesh mode (input and output .abc):" << endl;
+        cout << "   -m, --mesh <name>=<target>  Remesh the polygon meshes matching <name> on their own:" << endl;
+        cout << "                             <target> = percentage (75%) or face count (5000);" << endl;
+        cout << "                             <name> = object name or path (Props/MeshA), wildcards" << endl;
+        cout << "                             * and ? (quote them: \"Mesh*=75%\"); repeatable, the last" << endl;
+        cout << "                             matching -m wins" << endl;
+        cout << "       --others <target>     Remesh every other polygon mesh with <target>" << endl;
+        cout << "                             (without it, the other objects are copied unchanged)" << endl;
+        cout << "       --dry-run             Print the plan of -m / --others and stop" << endl;
+        cout << "       --list                List the polygon meshes of an .abc file" << endl;
         cout << "   -C, --compat              Compatibility mode to load snapshots from old software versions" << endl;
         cout << "   -k, --knn <count>         Point cloud mode: number of adjacent points to consider" << endl;
         cout << "   -F, --fullscreen          Open a full-screen window" << endl;
@@ -196,12 +247,29 @@ int main(int argc, char **argv) {
 
     tbb::task_scheduler_init init(nprocs == -1 ? tbb::task_scheduler_init::automatic : nprocs);
 
-    if (!batchOutput.empty() && args.size() == 1) {
+    RemeshParams params;
+    params.rosy = rosy;
+    params.posy = posy;
+    params.scale = scale;
+    params.face_count = face_count;
+    params.face_percent = face_percent;
+    params.vertex_count = vertex_count;
+    params.crease_angle = crease_angle;
+    params.extrinsic = extrinsic;
+    params.align_to_boundaries = align_to_boundaries;
+    params.smooth_iter = smooth_iter;
+    params.knn_points = knn_points;
+    params.pure_quad = !dominant;
+    params.deterministic = deterministic;
+
+    if (listMeshes || objectMode || (!batchOutput.empty() && args.size() == 1)) {
         try {
-            batch_process(args[0], batchOutput, rosy, posy, scale, face_count,
-                          face_percent, vertex_count, crease_angle, extrinsic,
-                          align_to_boundaries, smooth_iter, knn_points,
-                          !dominant, deterministic);
+            if (listMeshes)
+                batch_list(args[0]);
+            else if (objectMode)
+                batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun);
+            else
+                batch_process(args[0], batchOutput, params);
             return 0;
         } catch (const std::exception &e) {
             cerr << "Caught runtime error : " << e.what() << endl;

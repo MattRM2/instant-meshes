@@ -48,6 +48,7 @@ struct Object {
     std::string path;      ///< full path, "/" for the top object
     MetaData meta;
     uint64_t group = 0;    ///< Ogawa entry of the object group
+    std::vector<uint8_t> rawHeader;   ///< header bytes as stored in the parent
 
     std::string schema() const;
 };
@@ -63,6 +64,7 @@ struct Property {
     uint32_t timeSampling = 0;
     MetaData meta;
     uint64_t group = 0;    ///< Ogawa entry of the property group
+    std::vector<uint8_t> rawHeader;   ///< header bytes as stored in the parent
 };
 
 struct TimeSampling {
@@ -105,6 +107,9 @@ public:
 
     const std::vector<TimeSampling> &time_samplings() const { return mTimeSamplings; }
 
+    /// Indexed metadata table as stored (entry i has index i + 1)
+    const std::vector<std::string> &indexed_metadata() const { return mIndexedRaw; }
+
     /// Index of the stored data of sample 'index' (samples that repeat the
     /// previous value are not stored again)
     uint32_t stored_index(const Property &property, uint32_t index) const;
@@ -117,6 +122,7 @@ private:
     ogawa::Reader mIn;
     Object mTop;
     std::vector<MetaData> mIndexedMeta;
+    std::vector<std::string> mIndexedRaw;
     std::vector<TimeSampling> mTimeSamplings;
 };
 
@@ -130,10 +136,43 @@ struct MeshSummary {
     std::string path;      ///< full path of the PolyMesh object
     uint64_t vertices = 0;
     uint64_t faces = 0;    ///< polygons, as shown in a DCC (not triangles)
+    bool animated = false; ///< positions or topology have several samples
+    bool instanced = false;///< reached through an instance, or instanced elsewhere
+    Eigen::Matrix4d world = Eigen::Matrix4d::Identity();  ///< first sample
 };
 
 /// Polygon meshes of an archive, in traversal order
 std::vector<MeshSummary> list_meshes(const std::string &filename);
+
+/// Loads exactly the PolyMesh at 'path' (no sub-objects), in world space
+void load_abc_mesh(const std::string &filename, const std::string &path,
+                   MatrixXu &F, MatrixXf &V, uint64_t *polygons = nullptr);
+
+/// Wildcard match: '*' = any sequence of characters, '?' = one character
+bool glob_match(const std::string &pattern, const std::string &text);
+
+/// A replacement mesh for splice_abc(): extracted mesh (see
+/// extracted_polygons()) in world space, for the PolyMesh at 'path'
+struct Replacement {
+    std::string path;
+    MatrixXu F;
+    MatrixXf V;
+};
+
+/**
+ * Copies the archive 'input' to 'output', replacing the geometry of the
+ * given PolyMesh objects. Everything else (other objects, transforms,
+ * metadata, animation) is copied block for block. For a replaced mesh:
+ * name, parent transform, object properties and user properties are kept;
+ * positions are brought back from world to the mesh's local space; normals,
+ * UVs and vertex / face attributes are dropped (they no longer match the
+ * topology); a single face set is rebuilt over all new faces, several face
+ * sets are dropped. Hashes are recomputed along the modified paths.
+ * 'output' may be 'input': the input is closed before the atomic
+ * replacement.
+ */
+void splice_abc(const std::string &input, const std::string &output,
+                const std::vector<Replacement> &replacements);
 
 /**
  * Loads the polygon meshes of an archive in world space, triangulated and

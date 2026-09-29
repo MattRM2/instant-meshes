@@ -325,9 +325,9 @@ private:
     Stats mStats;
 };
 
-class Copier : public Walker {
+class CopyWalker : public Walker {
 public:
-    Copier(Reader &in, Writer &out) : Walker(in), mOut(out) { }
+    CopyWalker(Reader &in, Writer &out) : Walker(in), mOut(out) { }
     uint64_t run(uint64_t entry) { return visit(entry, 0); }
 
 protected:
@@ -344,12 +344,21 @@ private:
 
 } // namespace
 
+class Copier::Impl : public CopyWalker {
+public:
+    Impl(Reader &in, Writer &out) : CopyWalker(in, out) { }
+};
+
+Copier::Copier(Reader &in, Writer &out) : mImpl(new Impl(in, out)) { }
+Copier::~Copier() { delete mImpl; }
+uint64_t Copier::copy(uint64_t entry) { return mImpl->run(entry); }
+
 Stats scan(Reader &in) {
     return Scanner(in).run();
 }
 
 uint64_t copy(Reader &in, Writer &out, uint64_t entry) {
-    return Copier(in, out).run(entry);
+    return Copier(in, out).copy(entry);
 }
 
 } // namespace ogawa

@@ -13,6 +13,7 @@
 
 #include "batch.h"
 #include "meshio.h"
+#include "abc.h"
 #include "dedge.h"
 #include "subdivide.h"
 #include "meshstats.h"
@@ -21,43 +22,103 @@
 #include "normal.h"
 #include "extract.h"
 #include "bvh.h"
+#include <iomanip>
 
-void batch_process(const std::string &input, const std::string &output,
-                   int rosy, int posy, Float scale, int face_count,
-                   Float face_percent, int vertex_count, Float creaseAngle, bool extrinsic,
-                   bool align_to_boundaries, int smooth_iter, int knn_points,
-                   bool pure_quad, bool deterministic) {
-    cout << endl;
-    cout << "Running in batch mode:" << endl;
-    cout << "   Input file             = " << input << endl;
-    cout << "   Output file            = " << output << endl;
-    cout << "   Rotation symmetry type = " << rosy << endl;
-    cout << "   Position symmetry type = " << (posy==3?6:posy) << endl;
+/* ------------------------------------------------------------------------- */
+/*  Face targets and mesh rules                                              */
+/* ------------------------------------------------------------------------- */
+
+FaceTarget parse_face_target(const std::string &text) {
+    FaceTarget t;
+    t.text = text;
+    if (!text.empty() && text.back() == '%') {
+        t.percent = str_to_float(text.substr(0, text.size() - 1));
+        if (!std::isfinite(t.percent) || !(t.percent > 0))
+            throw std::runtime_error("Invalid face percentage \"" + text + "\"");
+    } else {
+        t.count = str_to_int32_t(text);
+        if (t.count <= 0)
+            throw std::runtime_error("Invalid face count \"" + text + "\"");
+    }
+    return t;
+}
+
+MeshRule parse_mesh_rule(const std::string &text) {
+    const size_t eq = text.rfind('=');
+    if (eq == std::string::npos || eq == 0 || eq + 1 == text.size())
+        throw std::runtime_error("Invalid mesh rule \"" + text + "\" (expected name=target, e.g. MeshA=75%)");
+    MeshRule rule;
+    rule.text = text;
+    rule.pattern = text.substr(0, eq);
+    while (!rule.pattern.empty() && rule.pattern[0] == '/')
+        rule.pattern.erase(0, 1);
+    if (rule.pattern.empty() || rule.pattern.find("//") != std::string::npos ||
+        rule.pattern.back() == '/')
+        throw std::runtime_error("Invalid object name or path in \"" + text + "\"");
+    rule.target = parse_face_target(text.substr(eq + 1));
+    return rule;
+}
+
+bool rule_matches(const std::string &pattern, const std::string &path) {
+    const std::vector<std::string> names = str_tokenize(path, '/', false);
+    if (pattern.find('/') == std::string::npos) {
+        /* A name: the mesh or any of its ancestors */
+        for (const std::string &name : names)
+            if (abc::glob_match(pattern, name))
+                return true;
+        return false;
+    }
+    /* A path from the root: the object at that depth, the mesh at or below */
+    const std::vector<std::string> parts = str_tokenize(pattern, '/', false);
+    if (parts.size() > names.size())
+        return false;
+    for (size_t i = 0; i < parts.size(); ++i)
+        if (!abc::glob_match(parts[i], names[i]))
+            return false;
+    return true;
+}
+
+static void print_settings(const RemeshParams &p) {
+    cout << "   Rotation symmetry type = " << p.rosy << endl;
+    cout << "   Position symmetry type = " << (p.posy==3?6:p.posy) << endl;
     cout << "   Crease angle threshold = ";
-    if (creaseAngle > 0)
-        cout << creaseAngle << endl;
+    if (p.crease_angle > 0)
+        cout << p.crease_angle << endl;
     else
         cout << "disabled" << endl;
-    cout << "   Extrinsic mode         = " << (extrinsic ? "enabled" : "disabled") << endl;
-    cout << "   Align to boundaries    = " << (align_to_boundaries ? "yes" : "no") << endl;
-    cout << "   kNN points             = " << knn_points << " (only applies to point clouds)"<< endl;
-    cout << "   Fully deterministic    = " << (deterministic ? "yes" : "no") << endl;
-    if (posy == 4)
-        cout << "   Output mode            = " << (pure_quad ? "pure quad mesh" : "quad-dominant mesh") << endl;
-    if (face_percent > 0)
-        cout << "   Face target            = " << face_percent << "% of the input polygons" << endl;
-    cout << endl;
+    cout << "   Extrinsic mode         = " << (p.extrinsic ? "enabled" : "disabled") << endl;
+    cout << "   Align to boundaries    = " << (p.align_to_boundaries ? "yes" : "no") << endl;
+    cout << "   kNN points             = " << p.knn_points << " (only applies to point clouds)"<< endl;
+    cout << "   Fully deterministic    = " << (p.deterministic ? "yes" : "no") << endl;
+    if (p.posy == 4)
+        cout << "   Output mode            = " << (p.pure_quad ? "pure quad mesh" : "quad-dominant mesh") << endl;
+    if (p.face_percent > 0)
+        cout << "   Face target            = " << p.face_percent << "% of the input polygons" << endl;
+}
 
-    MatrixXu F;
-    MatrixXf V, N;
+/* ------------------------------------------------------------------------- */
+/*  Remeshing                                                                */
+/* ------------------------------------------------------------------------- */
+
+void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
+            const RemeshParams &params, MatrixXu &F_extr, MatrixXf &O_extr,
+            MatrixXf &Nf_extr) {
+    const int rosy = params.rosy, posy = params.posy;
+    Float scale = params.scale, face_percent = params.face_percent;
+    int face_count = params.face_count, vertex_count = params.vertex_count;
+    const Float creaseAngle = params.crease_angle;
+    const bool extrinsic = params.extrinsic, align_to_boundaries = params.align_to_boundaries;
+    const int smooth_iter = params.smooth_iter, knn_points = params.knn_points;
+    const bool pure_quad = params.pure_quad, deterministic = params.deterministic;
+
     VectorXf A;
     std::set<uint32_t> crease_in, crease_out;
     BVH *bvh = nullptr;
     AdjacencyMatrix adj = nullptr;
-
-    /* Load the input mesh */
-    uint64_t polygons = 0;
-    load_mesh_or_pointcloud(input, F, V, N, ProgressCallback(), &polygons);
+    struct BVHGuard {
+        BVH *&bvh;
+        ~BVHGuard() { delete bvh; }
+    } bvhGuard { bvh };
 
     bool pointcloud = F.size() == 0;
 
@@ -220,17 +281,171 @@ void batch_process(const std::string &input, const std::string &output,
 
     optimizer.shutdown();
 
-    MatrixXf O_extr, N_extr, Nf_extr;
+    MatrixXf N_extr;
     std::vector<std::vector<TaggedLink>> adj_extr;
     extract_graph(mRes, extrinsic, rosy, posy, adj_extr, O_extr, N_extr,
                   crease_in, crease_out, deterministic);
 
-    MatrixXu F_extr;
     extract_faces(adj_extr, O_extr, N_extr, Nf_extr, F_extr, posy,
             mRes.scale(), crease_out, true, pure_quad, bvh, smooth_iter);
     cout << "Extraction is done. (total time: " << timeString(timer.reset()) << ")" << endl;
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Batch modes                                                              */
+/* ------------------------------------------------------------------------- */
+
+void batch_process(const std::string &input, const std::string &output,
+                   const RemeshParams &params) {
+    cout << endl;
+    cout << "Running in batch mode:" << endl;
+    cout << "   Input file             = " << input << endl;
+    cout << "   Output file            = " << output << endl;
+    print_settings(params);
+    cout << endl;
+
+    MatrixXu F, F_extr;
+    MatrixXf V, N, O_extr, Nf_extr;
+
+    /* Load the input mesh */
+    uint64_t polygons = 0;
+    load_mesh_or_pointcloud(input, F, V, N, ProgressCallback(), &polygons);
+
+    remesh(F, V, N, polygons, params, F_extr, O_extr, Nf_extr);
 
     write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr);
-    if (bvh)
-        delete bvh;
+}
+
+static std::string mesh_flags(const abc::MeshSummary &m) {
+    std::string flags;
+    if (m.animated)
+        flags += " (animated)";
+    if (m.instanced)
+        flags += " (instanced)";
+    return flags;
+}
+
+void batch_list(const std::string &input) {
+    const std::vector<abc::MeshSummary> meshes = abc::list_meshes(input);
+    size_t width = 0;
+    for (const abc::MeshSummary &m : meshes)
+        width = std::max(width, m.path.size());
+    cout << "Polygon meshes in \"" << input << "\": " << meshes.size() << endl;
+    for (const abc::MeshSummary &m : meshes)
+        cout << "   " << std::left << std::setw((int) width) << m.path << std::right
+             << "  " << std::setw(9) << m.faces << " faces  " << std::setw(9) << m.vertices
+             << " vertices" << mesh_flags(m) << endl;
+}
+
+void batch_process_objects(const std::string &input, const std::string &output,
+                           const RemeshParams &params, const std::vector<MeshRule> &rules,
+                           const FaceTarget &others, bool dryRun) {
+    const std::vector<abc::MeshSummary> meshes = abc::list_meshes(input);
+
+    /* Plan: the last matching rule wins, then --others, else untouched */
+    struct Item {
+        const abc::MeshSummary *mesh;
+        FaceTarget target;
+        std::string reason;
+        bool remesh;
+    };
+    std::vector<Item> plan;
+    std::vector<size_t> matches(rules.size(), 0);
+    std::vector<std::string> refused;
+    for (const abc::MeshSummary &m : meshes) {
+        Item item { &m, FaceTarget(), "", false };
+        int rule = -1;
+        for (size_t r = 0; r < rules.size(); ++r) {
+            if (rule_matches(rules[r].pattern, m.path)) {
+                rule = (int) r;
+                matches[r]++;
+            }
+        }
+        if (rule >= 0) {
+            item.target = rules[rule].target;
+            item.reason = "-m " + rules[rule].text;
+            item.remesh = true;
+            if (m.animated || m.instanced)
+                refused.push_back(m.path + mesh_flags(m) + ", selected by -m " + rules[rule].text);
+        } else if (others.valid()) {
+            if (m.animated || m.instanced) {
+                item.reason = "kept unchanged" + mesh_flags(m);
+            } else {
+                item.target = others;
+                item.reason = "--others " + others.text;
+                item.remesh = true;
+            }
+        } else {
+            item.reason = "kept unchanged";
+        }
+        plan.push_back(item);
+    }
+
+    for (size_t r = 0; r < rules.size(); ++r)
+        if (matches[r] == 0)
+            throw std::runtime_error("-m " + rules[r].text + ": no polygon mesh matches \"" +
+                                     rules[r].pattern + "\" (see --list)");
+    if (!refused.empty()) {
+        std::string list;
+        for (const std::string &s : refused)
+            list += "\n   " + s;
+        throw std::runtime_error("Animated or instanced meshes cannot be remeshed:" + list);
+    }
+
+    size_t width = 0, count = 0;
+    for (const Item &i : plan) {
+        width = std::max(width, i.mesh->path.size());
+        count += i.remesh;
+    }
+    cout << endl << "Plan for \"" << input << "\" (" << count << " of " << plan.size()
+         << " polygon meshes remeshed):" << endl;
+    for (const Item &i : plan) {
+        cout << "   " << std::left << std::setw((int) width) << i.mesh->path << std::right
+             << "  " << std::setw(9) << i.mesh->faces << " faces";
+        if (i.remesh) {
+            cout << "  -> " << i.target.text;
+            if (i.target.percent > 0)
+                cout << " (~" << (uint64_t) std::round(i.mesh->faces * i.target.percent / 100.0) << ")";
+        }
+        cout << "   [" << i.reason << "]" << endl;
+    }
+    if (count == 0)
+        throw std::runtime_error("Nothing to remesh!");
+    if (dryRun) {
+        cout << "Dry run: nothing computed, nothing written." << endl;
+        return;
+    }
+
+    cout << endl << "Running in batch mode:" << endl;
+    cout << "   Input file             = " << input << endl;
+    cout << "   Output file            = " << output << endl;
+    print_settings(params);
+
+    std::vector<abc::Replacement> replacements;
+    for (const Item &i : plan) {
+        if (!i.remesh)
+            continue;
+        cout << endl << "=== " << i.mesh->path << " -> " << i.target.text << endl;
+        MatrixXu F;
+        MatrixXf V, N;
+        uint64_t polygons = 0;
+        abc::load_abc_mesh(input, i.mesh->path, F, V, &polygons);
+
+        RemeshParams p = params;
+        p.scale = -1;
+        p.vertex_count = -1;
+        p.face_percent = i.target.percent;
+        p.face_count = i.target.count;
+        abc::Replacement r;
+        r.path = i.mesh->path;
+        MatrixXf Nf;
+        remesh(F, V, N, polygons, p, r.F, r.V, Nf);
+        if (r.F.cols() == 0)
+            throw std::runtime_error("Remeshing \"" + r.path + "\" produced no faces "
+                                     "(target too small for this mesh?)");
+        replacements.push_back(std::move(r));
+    }
+
+    cout << endl;
+    abc::splice_abc(input, output, replacements);
 }

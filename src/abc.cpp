@@ -39,6 +39,7 @@ public:
         : mArchive(archive), mBuf(buf), mEnd(std::min(end, buf.size())), mWhat(what) { }
 
     bool done() const { return mPos >= mEnd; }
+    size_t pos() const { return mPos; }
 
     template <typename T> T get() {
         need(sizeof(T));
@@ -104,7 +105,8 @@ Archive::Archive(const std::string &filename) : mIn(filename) {
     Cursor c(*this, table, table.size(), "indexed metadata");
     while (!c.done()) {
         const uint8_t size = c.get<uint8_t>();
-        mIndexedMeta.push_back(parse_metadata(c.str(size)));
+        mIndexedRaw.push_back(c.str(size));
+        mIndexedMeta.push_back(parse_metadata(mIndexedRaw.back()));
     }
 
     /* Time samplings: max sample (uint32), time per cycle (double), number
@@ -176,6 +178,7 @@ std::vector<Object> Archive::children(const Object &object) {
 
     Cursor c(*this, buf, buf.size() - 32, "object headers");
     while (!c.done()) {
+        const size_t start = c.pos();
         Object child;
         const uint32_t nameSize = c.get<uint32_t>();
         if (nameSize == 0)
@@ -195,6 +198,7 @@ std::vector<Object> Archive::children(const Object &object) {
             fail("object \"" + child.name + "\" has no data");
         child.group = g[index];
         child.path = (object.path == "/" ? "" : object.path) + "/" + child.name;
+        child.rawHeader.assign(buf.begin() + start, buf.begin() + c.pos());
         result.push_back(child);
     }
     return result;
@@ -221,6 +225,7 @@ std::vector<Property> Archive::properties(const Property &compound) {
 
     Cursor c(*this, buf, buf.size(), "property headers");
     while (!c.done()) {
+        const size_t start = c.pos();
         Property p;
         const uint32_t info = c.get<uint32_t>();
         const uint32_t kind = info & 0x3, hint = (info & 0xc) >> 2;
@@ -266,6 +271,7 @@ std::vector<Property> Archive::properties(const Property &compound) {
         if (index + 1 >= g.size() || is_data(g[index]))
             fail("property \"" + p.name + "\" has no data");
         p.group = g[index];
+        p.rawHeader.assign(buf.begin() + start, buf.begin() + c.pos());
         result.push_back(p);
     }
     return result;
@@ -482,11 +488,17 @@ Eigen::Matrix4d local_transform(Archive &ar, const Object &object, bool &inherit
 
 class MeshCollector {
 public:
-    MeshCollector(Archive &ar, const std::string &filter, bool geometry)
-        : mAr(ar), mFilter(filter), mGeometry(geometry) { }
+    /* 'filter' selects the meshes at or below a path ("" = all), or exactly
+       at that path when 'exact' is set */
+    MeshCollector(Archive &ar, const std::string &filter, bool geometry, bool exact = false)
+        : mAr(ar), mFilter(filter), mGeometry(geometry), mExact(exact) { }
 
     void run() {
-        visit(mAr.top(), "/", Eigen::Matrix4d::Identity(), 0);
+        visit(mAr.top(), "/", Eigen::Matrix4d::Identity(), 0, false);
+        /* A mesh object reached several times is shared by instances */
+        for (size_t i = 0; i < meshes.size(); ++i)
+            if (mGroupUses[mGroups[i]] > 1)
+                meshes[i].instanced = true;
     }
 
     std::vector<Vector3f> positions;
@@ -496,13 +508,15 @@ public:
 
 private:
     bool selected(const std::string &path) const {
+        if (mExact)
+            return path == mFilter;
         return mFilter.empty() || path == mFilter ||
                (path.size() > mFilter.size() && path.compare(0, mFilter.size(), mFilter) == 0 &&
                 path[mFilter.size()] == '/');
     }
 
     void visit(const Object &object, const std::string &path,
-               const Eigen::Matrix4d &parent, uint32_t depth) {
+               const Eigen::Matrix4d &parent, uint32_t depth, bool viaInstance) {
         if (depth > MAX_OBJECT_DEPTH)
             mAr.fail("objects nested deeper than " + std::to_string(MAX_OBJECT_DEPTH) +
                      " levels (or cyclic instances)");
@@ -516,8 +530,9 @@ private:
             const Eigen::Matrix4d local = local_transform(mAr, object, inherits);
             world = inherits ? Eigen::Matrix4d(parent * local) : local;
         } else if (schema == SCHEMA_POLYMESH) {
+            mGroupUses[object.group]++;
             if (selected(path))
-                read_mesh(object, path, world);
+                read_mesh(object, path, world, viaInstance);
         } else if (schema == SCHEMA_SUBD) {
             if (selected(path)) {
                 cout << "Skipping subdivision surface \"" << path << "\" (only polygon meshes are supported)" << endl;
@@ -537,14 +552,15 @@ private:
                 const std::string targetPath = mAr.sample_string(source);
                 if (!mAr.resolve(targetPath, target))
                     mAr.fail("instance \"" + childPath + "\" refers to missing object \"" + targetPath + "\"");
-                visit(target, childPath, world, depth + 1);
+                visit(target, childPath, world, depth + 1, true);
             } else {
-                visit(child, childPath, world, depth + 1);
+                visit(child, childPath, world, depth + 1, viaInstance);
             }
         }
     }
 
-    void read_mesh(const Object &object, const std::string &path, const Eigen::Matrix4d &world) {
+    void read_mesh(const Object &object, const std::string &path, const Eigen::Matrix4d &world,
+                   bool viaInstance) {
         if (meshes.size() >= MAX_MESHES)
             mAr.fail("more than " + std::to_string(MAX_MESHES) + " meshes (instancing loop?)");
 
@@ -575,7 +591,11 @@ private:
         summary.path = path;
         summary.vertices = nVertices;
         summary.faces = counts.size();
+        summary.animated = P.samples > 1 || faceIndices.samples > 1 || faceCounts.samples > 1;
+        summary.instanced = viaInstance;
+        summary.world = world;
         meshes.push_back(summary);
+        mGroups.push_back(object.group);
         if (!mGeometry)
             return;
 
@@ -606,8 +626,10 @@ private:
 
     Archive &mAr;
     std::string mFilter;
-    bool mGeometry;
+    bool mGeometry, mExact;
     uint64_t mVisits = 0;
+    std::vector<uint64_t> mGroups;                 /* object group of each mesh */
+    std::map<uint64_t, uint32_t> mGroupUses;       /* visits per mesh object group */
 };
 
 } // namespace
@@ -617,6 +639,42 @@ std::vector<MeshSummary> list_meshes(const std::string &filename) {
     MeshCollector collector(ar, "", false);
     collector.run();
     return collector.meshes;
+}
+
+void load_abc_mesh(const std::string &filename, const std::string &path,
+                   MatrixXu &F, MatrixXf &V, uint64_t *polygons) {
+    Archive ar(filename);
+    MeshCollector collector(ar, path, true, true);
+    collector.run();
+    if (collector.meshes.size() != 1)
+        ar.fail(collector.meshes.empty() ? "no polygon mesh at \"" + path + "\""
+                                         : "\"" + path + "\" is instanced");
+    build_mesh(collector.positions, collector.sizes, collector.indices, F, V, filename + ":" + path);
+    if (polygons)
+        *polygons = collector.sizes.size();
+}
+
+bool glob_match(const std::string &pattern, const std::string &text) {
+    /* Iterative matcher with single-star backtracking: linear memory,
+       O(pattern x text) time, no recursion */
+    size_t p = 0, t = 0, star = std::string::npos, mark = 0;
+    while (t < text.size()) {
+        if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == text[t])) {
+            ++p;
+            ++t;
+        } else if (p < pattern.size() && pattern[p] == '*') {
+            star = p++;
+            mark = t;
+        } else if (star != std::string::npos) {
+            p = star + 1;
+            t = ++mark;
+        } else {
+            return false;
+        }
+    }
+    while (p < pattern.size() && pattern[p] == '*')
+        ++p;
+    return p == pattern.size();
 }
 
 void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,

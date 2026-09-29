@@ -14,6 +14,69 @@ This repository contains the interactive meshing software developed as part of t
 > [Project page](http://igl.ethz.ch/projects/instant-meshes/)
 
 
+## Ce fork : support natif d'Alembic (.abc)
+
+Fork de [wjakob/instant-meshes](https://github.com/wjakob/instant-meshes) qui
+ajoute la lecture et l'écriture des fichiers Alembic **sans aucune
+dépendance** (pas de bibliothèque Alembic, pas d'Imath) : le format Ogawa, les
+maillages polygonaux, les transformations, les instances et la chaîne
+d'empreintes (MurmurHash3 / SpookyHash) sont implémentés dans `src/ogawa.*`,
+`src/abc*.cpp`. Géométrie polygonale uniquement, pas d'animation (un fichier
+animé est lu à sa première image).
+
+### Ligne de commande
+
+```
+"Instant Meshes.exe" scene.abc -o scene_retopo.abc -f 75%
+```
+
+| Option | Rôle |
+|---|---|
+| `-o fichier.abc` | Sortie Alembic (aussi `.obj` / `.ply`) ; peut être le fichier d'entrée (remplacement atomique) |
+| `-f 75%` | Objectif en pourcentage des polygones d'origine (tels qu'affichés dans Blender) ; `-f 5000` = nombre de faces |
+| `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) |
+| `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier |
+| `--others <cible>` | Remaille aussi tous les autres maillages ; sans cette option ils sont recopiés intacts |
+| `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
+
+Exemple, par objet :
+
+```
+"Instant Meshes.exe" scene.abc -o scene_retopo.abc -m "MeshA=75%" -m "MeshB=85%" --others 25%
+```
+
+- `<nom>` : nom d'objet (`MeshA`) ou chemin depuis la racine (`Props/MeshA`, le
+  `/` initial est facultatif). Jokers `*` et `?` (`"Mesh*=75%"`,
+  `"Props/*=60%"`) ; sensible à la casse. Un parent désigne chacun des
+  maillages en dessous.
+- Si plusieurs `-m` désignent le même maillage, **le dernier l'emporte** :
+  écrire le cas général d'abord, les exceptions ensuite.
+- `<cible>` : `75%` (des polygones de ce maillage) ou `5000` faces.
+- Tout est vérifié avant le premier calcul (règle sans correspondance, objet
+  animé ou instancié, sortie non `.abc`). Si un maillage échoue, rien n'est
+  écrit.
+- Mettre les jokers entre guillemets (sous Git Bash / Linux / macOS le shell
+  les développerait).
+
+Pour un maillage remaillé : nom, transformation du parent et propriétés
+utilisateur sont conservés ; UV, normales et attributs par sommet / face sont
+retirés (ils ne correspondent plus à la topologie) ; un matériau unique (face
+set) est reconstruit sur toutes les faces, plusieurs matériaux sont retirés.
+Le reste du fichier (autres objets, caméras, courbes, animations,
+métadonnées) est recopié bloc pour bloc.
+
+Précision de `-f N%` : environ ±3 % sur des maillages réels, moins précis en
+dessous de quelques centaines de polygones.
+
+### Compiler (Windows)
+
+Double-cliquer `build_windows.bat` (Visual Studio 2022 requis ; le script
+utilise le CMake 3.x fourni avec Visual Studio, CMake 4 étant incompatible avec
+le GLFW embarqué). Il lance ensuite les tests : `im_tests` (unitaires, dont le
+fuzzing des lecteurs) et `tests/test_cli.py` (ligne de commande, si Python est
+installé). Outils : `build\Release\abc_dump.exe [--verify] fichier.abc`, et
+les scripts Blender de `tests/`.
+
 ##### In commercial software
 
 Since version 10.2, Modo uses the Instant Meshes algorithm to implement its

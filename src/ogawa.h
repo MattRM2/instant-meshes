@@ -115,8 +115,24 @@ struct Stats {
 /// Walks and validates the whole DAG reachable from the root
 Stats scan(Reader &in);
 
+/// Copies blocks from 'in' to 'out'. Blocks already copied through the same
+/// Copier are reused (shared blocks stay shared across calls), cycles are
+/// rejected and nesting is bounded by MAX_DEPTH.
+class Copier {
+public:
+    Copier(Reader &in, Writer &out);
+    ~Copier();
+    /// Deep-copies the block (group or data) at 'entry', returns its new entry
+    uint64_t copy(uint64_t entry);
+private:
+    class Impl;
+    Impl *mImpl;
+    Copier(const Copier &) = delete;
+    Copier &operator=(const Copier &) = delete;
+};
+
 /// Deep-copies the DAG rooted at 'entry' from 'in' into 'out' and returns
-/// the new entry. Shared blocks stay shared, cycles are rejected.
+/// the new entry (one-shot Copier)
 uint64_t copy(Reader &in, Writer &out, uint64_t entry);
 
 } // namespace ogawa

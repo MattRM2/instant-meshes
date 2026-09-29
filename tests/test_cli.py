@@ -104,6 +104,124 @@ def test_abc_output(exe, tmp):
           "in-place output is the new mesh")
 
 
+def plan_lines(log):
+    """Plan lines printed by -m / --others: {mesh path: rest of the line}"""
+    lines = {}
+    for line in log.splitlines():
+        line = line.strip()
+        if line.startswith("/") and "faces" in line:
+            path = line.split()[0]
+            lines[path] = line[len(path):]
+    return lines
+
+
+def list_meshes(exe, path):
+    code, log = run(exe, path, "--list")
+    meshes = {}
+    for line in log.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0].startswith("/") and parts[2] == "faces":
+            meshes[parts[0]] = int(parts[1])
+    return code, meshes
+
+
+def test_mesh_rules(exe, tmp):
+    print("per-mesh remeshing (-m / --others / --list / --dry-run)")
+    scene = os.path.join(DATA, "scene_ab.abc")
+    A, B = "/Props/MeshA/MeshA", "/Props/MeshB/MeshB"
+    dump = os.path.join(os.path.dirname(exe), "abc_dump.exe" if os.name == "nt" else "abc_dump")
+
+    # --list
+    code, meshes = list_meshes(exe, scene)
+    check(code == 0 and meshes == {A: 7872, B: 576}, "--list scene_ab: %s" % meshes)
+    code, log = run(exe, os.path.join(DATA, "instances.abc"), "--list")
+    check(code == 0 and log.count("(instanced)") == 2, "--list flags instances")
+    code, log = run(exe, os.path.join(DATA, "animated.abc"), "--list")
+    check(code == 0 and "(animated)" in log, "--list flags animation")
+
+    # --dry-run: plan only, nothing written
+    out = os.path.join(tmp, "dry.abc")
+    code, log = run(exe, scene, "-o", out, "-m", "Mesh*=75%", "-m", "MeshB=85%", "--dry-run")
+    plan = plan_lines(log)
+    check(code == 0 and not os.path.exists(out) and "Dry run" in log, "--dry-run writes nothing")
+    check("75%" in plan.get(A, "") and "Mesh*=75%" in plan.get(A, ""), "wildcard rule on MeshA")
+    check("85%" in plan.get(B, "") and "MeshB=85%" in plan.get(B, ""), "last matching rule wins")
+    code, log = run(exe, scene, "-m", "/Props/MeshA=50%", "--dry-run")
+    plan = plan_lines(log)
+    check(code == 0 and "50%" in plan.get(A, "") and "kept unchanged" in plan.get(B, ""),
+          "path rule with leading slash, dry run without -o")
+    code, log = run(exe, scene, "-m", "Props/*=40%", "--dry-run")
+    plan = plan_lines(log)
+    check(code == 0 and "40%" in plan.get(A, "") and "40%" in plan.get(B, ""), "Props/* selects both")
+    code, log = run(exe, scene, "-m", "Mesh?=30%", "-m", "MeshA=5000", "--dry-run")
+    plan = plan_lines(log)
+    check(code == 0 and "5000" in plan.get(A, "") and "30%" in plan.get(B, ""), "? wildcard and face count")
+    code, log = run(exe, scene, "-m", "MeshA=75%", "--others", "25%", "--dry-run")
+    plan = plan_lines(log)
+    check(code == 0 and "--others 25%" in plan.get(B, ""), "--others takes the rest")
+
+    # Real run: the example of the specification
+    out = os.path.join(tmp, "spliced.abc")
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=75%", "-m", "MeshB=85%", "--others", "25%")
+    check(code == 0 and os.path.exists(out) and not os.path.exists(out + ".tmp"),
+          "-m MeshA=75%% -m MeshB=85%% --others 25%%: exit %d" % code)
+    code, meshes = list_meshes(exe, out)
+    check(set(meshes) == {A, B}, "same meshes after the splice: %s" % meshes)
+    check(abs(meshes.get(A, 0) - 5904) <= 0.1 * 5904, "MeshA ~75%%: %s" % meshes.get(A))
+    check(abs(meshes.get(B, 0) - 490) <= 0.2 * 490, "MeshB ~85%%: %s" % meshes.get(B))
+    if os.path.exists(dump):
+        code, log = run(dump, "--verify", out)
+        check(code == 0 and "all hashes match" in log, "hashes of the spliced file")
+        code, log = run(dump, out)
+        check("OBJECT /Camera" in log and "OBJECT /Curve" in log, "non-mesh objects kept")
+
+    # Only MeshA: MeshB copied untouched (same polygon count)
+    out = os.path.join(tmp, "only_a.abc")
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%")
+    code2, meshes = list_meshes(exe, out)
+    check(code == 0 and meshes.get(B) == 576 and meshes.get(A, 0) < 7872, "only MeshA remeshed")
+
+    # In place
+    src = os.path.join(tmp, "inplace_rules.abc")
+    with open(scene, "rb") as f, open(src, "wb") as g:
+        g.write(f.read())
+    code, log = run(exe, src, "-o", src, "-d", "-m", "MeshB=200%")
+    code2, meshes = list_meshes(exe, src)
+    check(code == 0 and meshes.get(A) == 7872 and meshes.get(B, 0) > 576 and
+          not os.path.exists(src + ".tmp"), "in-place -m: %s" % meshes)
+
+    # --others alone skips what cannot be remeshed, and says so
+    code, log = run(exe, os.path.join(DATA, "instances.abc"), "--others", "50%", "--dry-run")
+    check(code != 0 and "Nothing to remesh" in log and "kept unchanged (instanced)" in log,
+          "--others skips instances")
+
+    # Errors, all before any computation
+    cases = [
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "Nope=50%"], "no polygon mesh matches"),
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "Mesh=50%"], "no polygon mesh matches"),
+        (["-o", os.path.join(tmp, "e.obj"), "-m", "MeshA=50%"], "Alembic (.abc) output"),
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=50%", "-f", "50%"], "give the face targets there"),
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA"], "expected name=target"),
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "=50%"], "expected name=target"),
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=0%"], "Invalid face percentage"),
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=abc"], "Could not parse"),
+        (["-o", os.path.join(tmp, "e.abc"), "--dry-run"], "--dry-run shows the plan"),
+    ]
+    for args, expect in cases:
+        code, log = run(exe, scene, *args)
+        check(code != 0 and expect in log and "Optimizing" not in log,
+              "%s -> expected '%s'" % (" ".join(args), expect))
+    check(not os.path.exists(os.path.join(tmp, "e.abc")), "no output after errors")
+    code, log = run(exe, os.path.join(DATA, "cube_quads.obj"), "--list")
+    check(code != 0 and "need one Alembic (.abc) input" in log, "--list on an OBJ refused")
+    code, log = run(exe, os.path.join(DATA, "instances.abc"), "-o", os.path.join(tmp, "e.abc"),
+                    "-m", "Pillar*=50%")
+    check(code != 0 and "cannot be remeshed" in log, "instanced target refused")
+    code, log = run(exe, os.path.join(DATA, "animated.abc"), "-o", os.path.join(tmp, "e.abc"),
+                    "-m", "Moving=50%")
+    check(code != 0 and "cannot be remeshed" in log, "animated target refused")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -137,6 +255,7 @@ def main():
         test_abc_input(exe, tmp)
         test_percentage(exe, tmp)
         test_abc_output(exe, tmp)
+        test_mesh_rules(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

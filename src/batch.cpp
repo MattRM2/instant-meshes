@@ -23,6 +23,7 @@
 #include "normal.h"
 #include "extract.h"
 #include "bvh.h"
+#include "border.h"
 #include <iomanip>
 
 /* ------------------------------------------------------------------------- */
@@ -88,7 +89,9 @@ static void print_settings(const RemeshParams &p) {
     else
         cout << "disabled" << endl;
     cout << "   Extrinsic mode         = " << (p.extrinsic ? "enabled" : "disabled") << endl;
-    cout << "   Align to boundaries    = " << (p.align_to_boundaries ? "yes" : "no") << endl;
+    cout << "   Align to boundaries    = " << (p.align_to_boundaries || p.keep_border ? "yes" : "no") << endl;
+    if (p.keep_border)
+        cout << "   Keep border            = yes (snapped onto the input border)" << endl;
     cout << "   kNN points             = " << p.knn_points << " (only applies to point clouds)"<< endl;
     cout << "   Fully deterministic    = " << (p.deterministic ? "yes" : "no") << endl;
     if (p.posy == 4)
@@ -108,7 +111,8 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
     Float scale = params.scale, face_percent = params.face_percent;
     int face_count = params.face_count, vertex_count = params.vertex_count;
     const Float creaseAngle = params.crease_angle;
-    const bool extrinsic = params.extrinsic, align_to_boundaries = params.align_to_boundaries;
+    const bool extrinsic = params.extrinsic;
+    const bool align_to_boundaries = params.align_to_boundaries || params.keep_border;
     const int smooth_iter = params.smooth_iter, knn_points = params.knn_points;
     const bool pure_quad = params.pure_quad, deterministic = params.deterministic;
 
@@ -122,6 +126,11 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
     } bvhGuard { bvh };
 
     bool pointcloud = F.size() == 0;
+
+    /* --keep-border: the input border, before any subdivision */
+    BorderCurves border;
+    if (params.keep_border && !pointcloud)
+        border = extract_border(F, V);
 
     if (face_percent > 0) {
         if (pointcloud || polygons == 0)
@@ -290,6 +299,20 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
     extract_faces(adj_extr, O_extr, N_extr, Nf_extr, F_extr, posy,
             mRes.scale(), crease_out, true, pure_quad, bvh, smooth_iter);
     cout << "Extraction is done. (total time: " << timeString(timer.reset()) << ")" << endl;
+
+    if (params.keep_border && !pointcloud) {
+        if (border.empty()) {
+            cout << "Keep border: the input has no open border." << endl;
+        } else {
+            const BorderSnapStats s = snap_to_border(border, mRes.scale(), F_extr, O_extr, Nf_extr);
+            cout << "Keep border: " << s.snapped << " of " << s.borderVertices
+                 << " border vertices snapped onto the input border, " << s.inserted
+                 << " input corners added (" << s.faces << " faces)";
+            if (s.tooFar > 0)
+                cout << ", " << s.tooFar << " too far from it, left in place";
+            cout << ". (took " << timeString(timer.reset()) << ")" << endl;
+        }
+    }
 }
 
 /* ------------------------------------------------------------------------- */

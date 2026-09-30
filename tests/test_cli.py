@@ -7,6 +7,7 @@ Usage:
 Exit code 0 when every check passes.
 """
 
+import math
 import os
 import subprocess
 import sys
@@ -290,6 +291,96 @@ def test_skip_failed(exe, tmp):
     check(code != 0 and "--skip-failed applies to the -m / --others" in log, "--skip-failed needs -m / --others")
 
 
+def plates_obj(path):
+    """Two floor plates touching along x = 1 (different tessellations) and a
+    third one along their top side, as quads"""
+    def grid(x0, x1, y0, y1, nx, ny):
+        v = [(x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny) for j in range(ny + 1) for i in range(nx + 1)]
+        f = [(j * (nx + 1) + i, j * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i + 1, (j + 1) * (nx + 1) + i)
+             for j in range(ny) for i in range(nx)]
+        return v, f
+    base = 1
+    with open(path, "w") as out:
+        for name, (v, f) in (("PlateA", grid(0, 1, 0, 1, 12, 12)), ("PlateB", grid(1, 2.3, 0, 1, 17, 9)),
+                             ("PlateC", grid(0, 2.3, 1, 1.7, 25, 7))):
+            out.write("o %s\n" % name)
+            for x, y in v:
+                out.write("v %.9g %.9g 0\n" % (x, y))
+            for face in f:
+                out.write("f %s\n" % " ".join(str(base + i) for i in face))
+            base += len(v)
+
+
+def border_gap(original, remeshed):
+    """Largest distance between the open borders of the same objects in two
+    OBJ files, both ways (a remeshed border off the original one, or a part
+    of the original border no longer covered)"""
+    def read(path):
+        verts, objects, current = [], {}, None
+        for line in open(path):
+            parts = line.split()
+            if parts and parts[0] == "o":
+                current = objects.setdefault(parts[1], [])
+            elif parts and parts[0] == "v":
+                verts.append(tuple(float(x) for x in parts[1:4]))
+            elif parts and parts[0] == "f":
+                current.append([int(p.split("/")[0]) - 1 for p in parts[1:]])
+        return verts, objects
+
+    def border(verts, faces):
+        edges = set((f[i], f[(i + 1) % len(f)]) for f in faces for i in range(len(f)))
+        return [(verts[a], verts[b]) for a, b in edges if (b, a) not in edges and a != b]
+
+    def dist(p, a, b):
+        d = [b[i] - a[i] for i in range(3)]
+        dd = sum(x * x for x in d)
+        t = 0 if dd == 0 else max(0, min(1, sum((p[i] - a[i]) * d[i] for i in range(3)) / dd))
+        return math.sqrt(sum((a[i] + d[i] * t - p[i]) ** 2 for i in range(3)))
+
+    def one_way(src, dst):
+        pts = [tuple(a[i] + (b[i] - a[i]) * k / 4 for i in range(3)) for a, b in src for k in range(5)]
+        return max(min(dist(p, a, b) for a, b in dst) for p in pts)
+
+    v0, o0 = read(original)
+    v1, o1 = read(remeshed)
+    worst = 0
+    for name in o0:
+        b0, b1 = border(v0, o0[name]), border(v1, o1.get(name, []))
+        if not b1:
+            return float("inf")
+        worst = max(worst, one_way(b0, b1), one_way(b1, b0))
+    return worst
+
+
+def test_keep_border(exe, tmp):
+    print("--keep-border keeps touching objects closed")
+    scene = os.path.join(tmp, "plates.obj")
+    plates_obj(scene)
+    rules = ["-m", "PlateA=50%", "-m", "PlateB=30%", "-m", "PlateC=80%"]
+    out = os.path.join(tmp, "plates_out.obj")
+    code, log = run(exe, scene, "-o", out, "-d", *rules)
+    check(code == 0 and border_gap(scene, out) > 1e-3, "without --keep-border the borders move")
+    for mode in ([], ["-D"], ["-r", "6", "-p", "6"]):
+        code, log = run(exe, scene, "-o", out, "-d", "--keep-border", *rules, *mode)
+        gap = border_gap(scene, out) if code == 0 else float("inf")
+        check(gap < 1e-5, "--keep-border %s: border gap %.2e" % (" ".join(mode), gap))
+        check(log.count("Keep border:") == 3 and "Keep border            = yes" in log,
+              "--keep-border %s: reported" % " ".join(mode))
+    # Whole file, Alembic output
+    out_abc = os.path.join(tmp, "plates_out.abc")
+    code, log = run(exe, scene, "-o", out_abc, "-d", "-f", "50%", "--keep-border")
+    check(code == 0 and "Keep border: " in log and "input corners added" in log, "--keep-border whole file .abc")
+    dump = os.path.join(os.path.dirname(exe), "abc_dump.exe" if os.name == "nt" else "abc_dump")
+    if os.path.exists(dump):
+        code, log = run(dump, "--verify", out_abc)
+        check(code == 0 and "all hashes match" in log, "--keep-border .abc hashes")
+    # Refused before any computation
+    code, log = run(exe, scene, "-o", os.path.join(tmp, "x.ply"), "--keep-border")
+    check(code != 0 and "needs an .obj or .abc output" in log and "Loading" not in log, "--keep-border refuses .ply")
+    code, log = run(exe, scene, "--keep-border")
+    check(code != 0 and "applies to the batch mode" in log, "--keep-border needs -o")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -325,6 +416,7 @@ def main():
         test_mesh_rules(exe, tmp)
         test_obj_rules(exe, tmp)
         test_skip_failed(exe, tmp)
+        test_keep_border(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

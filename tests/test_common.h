@@ -62,3 +62,4 @@ void test_meshio();
 void test_ogawa(int fuzz_scale);
 void test_abc(int fuzz_scale);
 void test_objscene();
+void test_border();

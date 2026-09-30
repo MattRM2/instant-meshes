@@ -26,6 +26,7 @@ struct RemeshParams {
     bool extrinsic = true, align_to_boundaries = false;
     int smooth_iter = 2, knn_points = 10;
     bool pure_quad = true, deterministic = false;
+    bool keep_border = false;  ///< snap the open border back onto the input's (implies align_to_boundaries)
 };
 
 /// Face target of one mesh: a percentage of its polygons or a face count

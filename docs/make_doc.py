@@ -355,7 +355,8 @@ SECTIONS = [
     (3, "Alembic Support", ["3.1 What is read", "3.2 What is written", "3.3 Robustness"]),
     (4, "Command Line", ["4.1 Batch mode", "4.2 Options", "4.3 Examples"]),
     (5, "Per-Mesh Remeshing (Alembic and OBJ)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
-                                                 "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes"]),
+                                                 "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
+                                                 "5.5 Touching objects: --keep-border"]),
     (6, "Reference", ["6.1 Accuracy of the targets", "6.2 Limitations", "6.3 Credits and licenses"]),
 ]
 
@@ -538,7 +539,7 @@ def build(cover_image=None):
                      ["-D, --dominant", "Quad-dominant output (no pure quad subdivision)"],
                      ["-r / -p <n>", "Orientation / position symmetry: 4/4 quads (default), 6/6 triangles"],
                      ["-c, --crease <deg>", "Keep creases sharper than this angle"],
-                     ["-b, --boundaries", "Align to open boundaries"],
+                     ["-b, --boundaries / --keep-border", "Align to open borders / also put them back exactly on the input's (5.5)"],
                      ["-S, --smooth <n>", "Smoothing iterations (default 2)"],
                      ["-d, --deterministic", "Same result on every run (slower)"],
                      ["-t, --threads <n>", "Number of threads"],
@@ -620,6 +621,22 @@ def build(cover_image=None):
         "Vertices shared with an untouched object are kept; the .mtl file is not touched.",
         "The output must be an .obj; it may be the input file (atomic replacement).",
     ])
+    story += [Spacer(1, 4 * mm), KeepTogether([SubHeader("5.5", "Touching objects: --keep-border"), Spacer(1, 3 * mm),
+              p("Remeshed separately, two objects that touch along their borders (floor plates, tiles, panels) no "
+                "longer meet: each new border takes its own path and a gap opens. With <b>--keep-border</b>, the "
+                "vertices of the new border are placed exactly on the border of the input, and the corners and "
+                "bends of that border are added between them."),
+              Spacer(1, 3 * mm),
+              codeblock(["InstantMeshes.exe floor.abc -o floor_retopo.abc --others 50% --keep-border"])] + bullets([
+        "Works on every remeshed mesh, whole file or per mesh, with an .obj or .abc output (not .ply). "
+        "It implies <b>-b</b>.",
+        "A border face that receives a corner becomes a polygon (a quad plus one point); in triangle mode it is "
+        "split into triangles.",
+        "Measured on floor plates: a gap of 0.36 without the option, 0.018 with -b alone, under 0.000001 with "
+        "--keep-border (float precision), through Alembic transforms too.",
+        "Neighbours touch but are not welded: their border vertices lie on the same line, not at the same places. "
+        "A border vertex farther than one edge length from the input border is left in place and counted in the log.",
+    ]))]
     story += [PageBreak()]
 
     # ---------------- 6 reference

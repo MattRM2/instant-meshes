@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
     std::string batchOutput;
     std::vector<MeshRule> meshRules;
     FaceTarget others;
-    bool listMeshes = false, dryRun = false, skipFailed = false;
+    bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false;
     #if defined(__APPLE__)
         bool launched_from_finder = false;
     #endif
@@ -142,6 +142,8 @@ int main(int argc, char **argv) {
                 dryRun = true;
             } else if (strcmp("--skip-failed", argv[i]) == 0) {
                 skipFailed = true;
+            } else if (strcmp("--keep-border", argv[i]) == 0) {
+                keepBorder = true;
             } else if (strcmp("--compat", argv[i]) == 0 || strcmp("-C", argv[i]) == 0) {
                 compat = true;
 #if defined(__APPLE__)
@@ -200,6 +202,14 @@ int main(int argc, char **argv) {
         cerr << "Error: --dry-run shows the plan of -m / --others rules!" << endl;
         help = true;
     }
+    if (keepBorder && batchOutput.empty() && !dryRun) {
+        cerr << "Error: --keep-border applies to the batch mode (-o <output>)!" << endl;
+        help = true;
+    }
+    if (keepBorder && extension_of(batchOutput) == ".ply") {
+        cerr << "Error: --keep-border needs an .obj or .abc output (its border faces are polygons)!" << endl;
+        help = true;
+    }
     if (skipFailed && !objectMode) {
         cerr << "Error: --skip-failed applies to the -m / --others per-mesh mode!" << endl;
         help = true;
@@ -227,7 +237,9 @@ int main(int argc, char **argv) {
         cout << "   -D, --dominant            Generate a tri/quad dominant mesh instead of a pure tri/quad mesh" << endl;
         cout << "   -i, --intrinsic           Intrinsic mode (extrinsic is the default)" << endl;
         cout << "   -b, --boundaries          Align to boundaries (only applies when the mesh is not closed)" << endl;
-        cout << "   -r, --rosy <number>       Specifies the orientation symmetry type (2, 4, or 6)" << endl;
+        cout << "       --keep-border         Snap the open border back onto the input border (implies -b):" << endl;
+        cout << "                             objects touching along their borders stay closed (.obj/.abc)" << endl;
+        cout << "   -r, --rosy <number>     Specifies the orientation symmetry type (2, 4, or 6)" << endl;
         cout << "   -p, --posy <number>       Specifies the position symmetry type (4 or 6)" << endl;
         cout << "   -s, --scale <scale>       Desired world space length of edges in the output" << endl;
         cout << "   -f, --faces <count>       Desired face count of the output mesh (approximate)," << endl;
@@ -274,6 +286,7 @@ int main(int argc, char **argv) {
     params.knn_points = knn_points;
     params.pure_quad = !dominant;
     params.deterministic = deterministic;
+    params.keep_border = keepBorder;
 
     if (listMeshes || objectMode || (!batchOutput.empty() && args.size() == 1)) {
         try {

@@ -541,6 +541,7 @@ def build(cover_image=None):
                      ["-m, --mesh <name>=<target>", "Per-mesh remeshing of an .abc or .obj (section 5)"],
                      ["--others <target>", "Target for every other mesh of the scene"],
                      ["--list / --dry-run", "List the meshes / print the plan and stop"],
+                     ["--skip-failed", "Copy unchanged the meshes that cannot be remeshed, and go on"],
                      ["-V, --version", "Print the version"]],
                     [52 * mm, W - 2 * MARGIN - 52 * mm]),
               Spacer(1, 4 * mm), KeepTogether([SubHeader("4.3", "Examples"), Spacer(1, 3 * mm),
@@ -605,7 +606,9 @@ def build(cover_image=None):
               Spacer(1, 3 * mm),
               callout("Refused on purpose", "Animated meshes and instanced meshes cannot be targets (-m reports them; "
                                             "--others copies them untouched and says so in the plan). If one mesh "
-                                            "fails, nothing is written."),
+                                            "fails (e.g. no faces for a tiny target), nothing is written, unless "
+                                            "<b>--skip-failed</b> is given: the failed meshes are then copied "
+                                            "unchanged, listed at the end, and the file is written."),
               Spacer(1, 5 * mm), SubHeader("5.4", "OBJ scenes"), Spacer(1, 3 * mm),
               codeblock(['InstantMeshes.exe scene.obj --list',
                          'InstantMeshes.exe scene.obj -o scene_retopo.obj -m "MeshA=50%" --others 80%'])]

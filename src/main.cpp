@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
     std::string batchOutput;
     std::vector<MeshRule> meshRules;
     FaceTarget others;
-    bool listMeshes = false, dryRun = false;
+    bool listMeshes = false, dryRun = false, skipFailed = false;
     #if defined(__APPLE__)
         bool launched_from_finder = false;
     #endif
@@ -140,6 +140,8 @@ int main(int argc, char **argv) {
                 listMeshes = true;
             } else if (strcmp("--dry-run", argv[i]) == 0) {
                 dryRun = true;
+            } else if (strcmp("--skip-failed", argv[i]) == 0) {
+                skipFailed = true;
             } else if (strcmp("--compat", argv[i]) == 0 || strcmp("-C", argv[i]) == 0) {
                 compat = true;
 #if defined(__APPLE__)
@@ -198,6 +200,10 @@ int main(int argc, char **argv) {
         cerr << "Error: --dry-run shows the plan of -m / --others rules!" << endl;
         help = true;
     }
+    if (skipFailed && !objectMode) {
+        cerr << "Error: --skip-failed applies to the -m / --others per-mesh mode!" << endl;
+        help = true;
+    }
     if (objectMode && nConstraints > 0) {
         cerr << "Error: with -m / --others, give the face targets there (-f, -s and -v remesh the whole file)!" << endl;
         help = true;
@@ -238,6 +244,8 @@ int main(int argc, char **argv) {
         cout << "       --others <target>     Remesh every other polygon mesh with <target>" << endl;
         cout << "                             (without it, the other objects are copied unchanged)" << endl;
         cout << "       --dry-run             Print the plan of -m / --others and stop" << endl;
+        cout << "       --skip-failed         A mesh that cannot be remeshed (e.g. no faces for its" << endl;
+        cout << "                             target) is copied unchanged instead of stopping" << endl;
         cout << "       --list                List the polygon meshes of an .abc file / objects of an .obj" << endl;
         cout << "   -C, --compat              Compatibility mode to load snapshots from old software versions" << endl;
         cout << "   -k, --knn <count>         Point cloud mode: number of adjacent points to consider" << endl;
@@ -272,7 +280,7 @@ int main(int argc, char **argv) {
             if (listMeshes)
                 batch_list(args[0]);
             else if (objectMode)
-                batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun);
+                batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun, skipFailed);
             else
                 batch_process(args[0], batchOutput, params);
             return 0;

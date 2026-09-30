@@ -265,6 +265,31 @@ def test_obj_rules(exe, tmp):
     check(code != 0 and "no polygon mesh matches" in log, "OBJ rule without match")
 
 
+def test_skip_failed(exe, tmp):
+    print("--skip-failed copies the meshes that cannot be remeshed")
+    for scene, A, B in ((os.path.join(DATA, "scene_ab.abc"), "/Props/MeshA/MeshA", "/Props/MeshB/MeshB"),
+                        (os.path.join(DATA, "scene_ab.obj"), "/MeshA", "/MeshB")):
+        ext = os.path.splitext(scene)[1]
+        out = os.path.join(tmp, "skip" + ext)
+        # MeshB=1 face: no faces come out of the extraction
+        code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%", "-m", "MeshB=1")
+        check(code != 0 and "produced no faces" in log and not os.path.exists(out),
+              "%s: without --skip-failed a failed mesh stops everything" % ext)
+        code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%", "-m", "MeshB=1", "--skip-failed")
+        code2, meshes = list_meshes(exe, out)
+        check(code == 0 and meshes.get(B) == 576 and abs(meshes.get(A, 0) - 3936) <= 0.1 * 3936,
+              "%s --skip-failed: %s" % (ext, meshes))
+        check("Skipped 1 of 2 meshes" in log and B + ": Remeshing" in log, "%s: skip summary" % ext)
+        # Every selected mesh failing still writes the (unchanged) scene
+        out = os.path.join(tmp, "skip_all" + ext)
+        code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshB=1", "--skip-failed")
+        code2, meshes = list_meshes(exe, out)
+        check(code == 0 and meshes == {A: 7872, B: 576}, "%s: all skipped, scene copied: %s" % (ext, meshes))
+    code, log = run(exe, os.path.join(DATA, "cube_quads.obj"), "-o", os.path.join(tmp, "e.obj"),
+                    "-f", "50%", "--skip-failed")
+    check(code != 0 and "--skip-failed applies to the -m / --others" in log, "--skip-failed needs -m / --others")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -299,6 +324,7 @@ def main():
         test_abc_output(exe, tmp)
         test_mesh_rules(exe, tmp)
         test_obj_rules(exe, tmp)
+        test_skip_failed(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

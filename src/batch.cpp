@@ -359,7 +359,7 @@ void batch_list(const std::string &input) {
 
 void batch_process_objects(const std::string &input, const std::string &output,
                            const RemeshParams &params, const std::vector<MeshRule> &rules,
-                           const FaceTarget &others, bool dryRun) {
+                           const FaceTarget &others, bool dryRun, bool skipFailed) {
     const std::vector<abc::MeshSummary> meshes = list_scene(input);
     const bool obj = is_obj_file(input);
 
@@ -443,34 +443,50 @@ void batch_process_objects(const std::string &input, const std::string &output,
     print_settings(params);
 
     std::vector<abc::Replacement> replacements;
+    std::vector<std::string> skipped;
     for (const Item &i : plan) {
         if (!i.remesh)
             continue;
         cout << endl << "=== " << i.mesh->path << " -> " << i.target.text << endl;
-        MatrixXu F;
-        MatrixXf V, N;
-        uint64_t polygons = 0;
-        if (obj)
-            objscene::load_object(input, i.mesh->path.substr(1), F, V, &polygons);
-        else
-            abc::load_abc_mesh(input, i.mesh->path, F, V, &polygons);
+        try {
+            MatrixXu F;
+            MatrixXf V, N;
+            uint64_t polygons = 0;
+            if (obj)
+                objscene::load_object(input, i.mesh->path.substr(1), F, V, &polygons);
+            else
+                abc::load_abc_mesh(input, i.mesh->path, F, V, &polygons);
 
-        RemeshParams p = params;
-        p.scale = -1;
-        p.vertex_count = -1;
-        p.face_percent = i.target.percent;
-        p.face_count = i.target.count;
-        abc::Replacement r;
-        r.path = i.mesh->path;
-        MatrixXf Nf;
-        remesh(F, V, N, polygons, p, r.F, r.V, Nf);
-        if (r.F.cols() == 0)
-            throw std::runtime_error("Remeshing \"" + r.path + "\" produced no faces "
-                                     "(target too small for this mesh?)");
-        replacements.push_back(std::move(r));
+            RemeshParams p = params;
+            p.scale = -1;
+            p.vertex_count = -1;
+            p.face_percent = i.target.percent;
+            p.face_count = i.target.count;
+            abc::Replacement r;
+            r.path = i.mesh->path;
+            MatrixXf Nf;
+            remesh(F, V, N, polygons, p, r.F, r.V, Nf);
+            if (r.F.cols() == 0)
+                throw std::runtime_error("Remeshing \"" + r.path + "\" produced no faces "
+                                         "(target too small for this mesh?)");
+            replacements.push_back(std::move(r));
+        } catch (const std::exception &e) {
+            /* --skip-failed: keep this object as it is and go on */
+            if (!skipFailed)
+                throw;
+            cout << "Skipped, kept unchanged: " << e.what() << endl;
+            skipped.push_back(i.mesh->path + ": " + e.what());
+        }
     }
 
     cout << endl;
+    if (!skipped.empty()) {
+        cout << "Skipped " << skipped.size() << " of " << count
+             << " meshes (--skip-failed, copied unchanged):" << endl;
+        for (const std::string &s : skipped)
+            cout << "   " << s << endl;
+        cout << endl;
+    }
     if (obj) {
         std::vector<objscene::Replacement> objects;
         for (abc::Replacement &r : replacements) {

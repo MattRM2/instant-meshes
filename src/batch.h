@@ -71,9 +71,11 @@ extern void batch_list(const std::string &input);
  * Alembic (or OBJ) input -> same format output, per-mesh targets (-m / --others): each
  * selected mesh is remeshed on its own and spliced back into a copy of the
  * input; unselected meshes are copied untouched. Prints the plan first;
- * with 'dryRun' stops there.
+ * with 'dryRun' stops there. With 'skipFailed', a mesh that cannot be
+ * remeshed (error, no faces) is copied unchanged instead of stopping.
  */
 extern void batch_process_objects(const std::string &input, const std::string &output,
                                   const RemeshParams &params,
                                   const std::vector<MeshRule> &rules,
-                                  const FaceTarget &others, bool dryRun);
+                                  const FaceTarget &others, bool dryRun,
+                                  bool skipFailed = false);

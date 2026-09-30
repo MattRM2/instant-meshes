@@ -38,6 +38,7 @@ InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 | `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier (`.abc` ou `.obj`) |
 | `--others <cible>` | Remaille aussi tous les autres maillages ; sans cette option ils sont recopiés intacts |
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
+| `--skip-failed` | Un maillage impossible à remailler (ex. aucune face pour une cible trop petite) est recopié intact au lieu de tout arrêter ; la liste des maillages sautés est affichée à la fin |
 
 Exemple, par objet :
 

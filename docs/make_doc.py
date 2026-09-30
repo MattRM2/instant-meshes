@@ -232,16 +232,20 @@ def bullets(items):
     return [Paragraph(t, bullet, bulletText="\u2022") for t in items]
 
 
-def table(rows, widths, header=True):
-    data = [[Paragraph(str(v), head if (header and i == 0) else (cellb if j == 0 else cell))
+def table(rows, widths, header=True, pad=(5, 6), literal_first=False):
+    """literal_first: the first column is plain text (option syntax with <...>)"""
+    def text(v, j):
+        v = str(v)
+        return v.replace("<", "&lt;").replace(">", "&gt;") if (literal_first and j == 0) else v
+    data = [[Paragraph(text(v, j), head if (header and i == 0) else (cellb if j == 0 else cell))
              for j, v in enumerate(r)] for i, r in enumerate(rows)]
     t = Table(data, colWidths=widths, hAlign="LEFT")
     style = [
         ("BACKGROUND", (0, 0), (-1, -1), BAND),
         ("LINEBELOW", (0, 0), (-1, -1), 0.4, LINE),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), pad[0]),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), pad[1]),
         ("LEFTPADDING", (0, 0), (-1, -1), 7),
     ]
     if header:
@@ -521,7 +525,8 @@ def build(cover_image=None):
     story += [SectionHeader(4, "Command Line", "Batch remeshing from scripts, farms and DCC tools"),
               Spacer(1, 5 * mm),
               p("Give an output file with <b>-o</b> and Instant Meshes runs without a window: it loads, remeshes, "
-                "writes and exits with code 0 on success. Without <b>-o</b> the interface opens on the file."),
+                "writes and exits with code 0 on success. Without <b>-o</b> the interface opens on the file. "
+                "Arguments are checked before any computation, so a typo never costs minutes of remeshing."),
               Spacer(1, 4 * mm), SubHeader("4.1", "Batch mode"), Spacer(1, 3 * mm),
               codeblock(["InstantMeshes.exe input.abc -o output.abc -f 75%",
                          "InstantMeshes.exe input.obj -o output.obj -f 5000 -D"]),
@@ -529,8 +534,7 @@ def build(cover_image=None):
               table([["Option", "Meaning"],
                      ["-o, --output <file>", "Output .obj, .ply or .abc (batch mode)"],
                      ["-f, --faces <n> | <n>%", "Face count, or percentage of the input polygons (75%)"],
-                     ["-v, --vertices <n>", "Vertex count"],
-                     ["-s, --scale <length>", "Edge length in world units"],
+                     ["-v <n> / -s <length>", "Vertex count / edge length in world units"],
                      ["-D, --dominant", "Quad-dominant output (no pure quad subdivision)"],
                      ["-r / -p <n>", "Orientation / position symmetry: 4/4 quads (default), 6/6 triangles"],
                      ["-c, --crease <deg>", "Keep creases sharper than this angle"],
@@ -543,20 +547,14 @@ def build(cover_image=None):
                      ["--list / --dry-run", "List the meshes / print the plan and stop"],
                      ["--skip-failed", "Copy unchanged the meshes that cannot be remeshed, and go on"],
                      ["-V, --version", "Print the version"]],
-                    [52 * mm, W - 2 * MARGIN - 52 * mm]),
+                    [58 * mm, W - 2 * MARGIN - 58 * mm], pad=(2.5, 3.5), literal_first=True),
               Spacer(1, 4 * mm), KeepTogether([SubHeader("4.3", "Examples"), Spacer(1, 3 * mm),
               codeblock(["# Half the faces, pure quads",
                          "InstantMeshes.exe scan.obj -o scan_retopo.obj -f 50%",
-                         "",
                          "# Triangles, exact count, sharp edges kept",
                          "InstantMeshes.exe part.abc -o part_tri.abc -r 6 -p 6 -f 20000 -c 30",
-                         "",
                          "# Replace the input file in place",
-                         "InstantMeshes.exe scene.abc -o scene.abc -f 60%"]),
-              Spacer(1, 3 * mm),
-              callout("Arguments are checked first", "Unknown output formats, invalid percentages or conflicting "
-                                                     "options are reported before any computation, so a typo never "
-                                                     "costs minutes of remeshing.")]),
+                         "InstantMeshes.exe scene.abc -o scene.abc -f 60%"])]),
               PageBreak()]
 
     # ---------------- 5 per-mesh

@@ -55,11 +55,17 @@ extern MeshRule parse_mesh_rule(const std::string &text);
 /// one of its ancestors matches; a pattern with '/' is a path from the root)
 extern bool rule_matches(const std::string &pattern, const std::string &path);
 
+/// What remesh() did to its input
+struct RemeshReport {
+    uint64_t triangles = 0;    ///< input triangles
+    uint64_t subdivided = 0;   ///< after the subdivision of a too coarse input (= triangles if none)
+};
+
 /// Remeshes a loaded mesh or point cloud (F, V, N are consumed);
 /// 'polygons' is its polygon count before triangulation (for percentages)
 extern void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
                    const RemeshParams &params, MatrixXu &F_out, MatrixXf &O_out,
-                   MatrixXf &Nf_out);
+                   MatrixXf &Nf_out, RemeshReport *report = nullptr);
 
 /// Single input -> single output (whole file remeshed as one mesh)
 extern void batch_process(const std::string &input, const std::string &output,

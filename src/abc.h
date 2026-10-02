@@ -30,6 +30,7 @@
 
 #include "common.h"
 #include "ogawa.h"
+#include <functional>
 #include <map>
 
 namespace abc {
@@ -97,6 +98,10 @@ public:
     /// values; returns an empty buffer for a property without samples.
     std::vector<uint8_t> sample(const Property &property);
 
+    /// Number of values (of 'extent' components) in the first sample, from
+    /// the stored size alone: nothing is read but the block size
+    uint64_t sample_count(const Property &property);
+
     /// First sample converted to doubles / 32-bit indices / a string
     std::vector<double> sample_doubles(const Property &property);
     std::vector<uint32_t> sample_indices(const Property &property);
@@ -157,6 +162,9 @@ struct Replacement {
     std::string path;
     MatrixXu F;
     MatrixXf V;
+    /// When set, F and V are left empty and fetched on demand (spool file):
+    /// splice_abc() then holds one new mesh at a time
+    std::function<void(MatrixXu &F, MatrixXf &V)> fetch;
 };
 
 /**

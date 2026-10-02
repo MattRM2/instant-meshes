@@ -193,7 +193,50 @@ static void test_synthetic() {
     CHECK(contains(error_of([&] { objscene::list_objects(temp_path("bad_index.obj")); }), "out of range"));
 }
 
+static void test_scene_once() {
+    std::cout << "objscene: one parse for list, load and splice; CRLF, continued lines" << std::endl;
+    const std::string in = temp_path("crlf.obj");
+    write_file(in, std::string("# crlf\r\nv 0 0 0\r\nv 1 0 0\r\nv 1 1 \\\r\n 0\r\nv 0 1 0\r\n"
+                               "o Q\r\nusemtl m\r\nf 1 2 \\\r\n3 4\r\no R\r\nf 2 3 4\r\n"));
+    objscene::Scene scene(in);
+    std::vector<objscene::ObjectInfo> objects = scene.objects();
+    CHECK(objects.size() == 2 && objects[0].name == "Q" && objects[0].faces == 1 && objects[0].vertices == 4 &&
+          objects[1].name == "R" && objects[1].vertices == 3);
+    MatrixXu F;
+    MatrixXf V;
+    scene.load("Q", F, V);
+    CHECK(F.cols() == 2 && V.cols() == 4 && V.col(2) == Vector3f(1, 1, 0));
+
+    objscene::Replacement r;
+    r.name = "Q";
+    make_grid(V, r.F, r.V, 2);
+    /* Fetched on demand, as the batch mode does with its spool file */
+    objscene::Replacement lazy;
+    lazy.name = "Q";
+    lazy.fetch = [&](MatrixXu &Fo, MatrixXf &Vo) { Fo = r.F; Vo = r.V; };
+    const std::string out = temp_path("crlf_out.obj"), outLazy = temp_path("crlf_lazy.obj");
+    CHECK(error_of([&] { scene.splice(out, { r }); }) == "");
+    CHECK(error_of([&] { scene.splice(outLazy, { lazy }); }) == "");
+    const std::string text = read_text(out);
+    CHECK(text == read_text(outLazy));
+    size_t lf = 0, crlf = 0;
+    for (size_t i = 0; i < text.size(); ++i)
+        if (text[i] == '\n') {
+            ++lf;
+            crlf += i > 0 && text[i - 1] == '\r';
+        }
+    CHECK(lf > 0 && lf == crlf);
+    CHECK(text.find("v 1 1   0") != std::string::npos);   /* continued line, joined */
+    CHECK(same_mesh(in, out, "R"));
+    CHECK(objscene::list_objects(out)[0].faces == 4);
+
+    /* The same parsed scene can replace its own file */
+    CHECK(error_of([&] { scene.splice(in, { r }); }) == "");
+    CHECK(!file_exists(in + ".tmp") && objscene::list_objects(in)[0].faces == 4);
+}
+
 void test_objscene() {
     test_blender_scene();
     test_synthetic();
+    test_scene_once();
 }

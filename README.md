@@ -75,6 +75,14 @@ matériaux), seuls leurs indices de faces sont renumérotés ; un objet remaill�
 garde son matériau le plus utilisé (un OBJ ne peut pas laisser un objet sans
 matériau).
 
+Mémoire, en mode par objet : un seul maillage est remaillé à la fois (environ
+800 octets par sommet d'entrée), le pic est donc celui du plus gros objet
+remaillé, pas de la scène. Un Alembic est lu à la demande ; un OBJ est lu une
+seule fois et gardé en mémoire à environ 3 fois sa taille. Les maillages
+remaillés attendent l'écriture finale dans un fichier temporaire à côté de la
+sortie (`.spool.tmp`, supprimé à la fin). Un objet dont l'entrée doit être
+subdivisée avant le remaillage (le plus coûteux) est signalé dans le log.
+
 Précision de `-f N%` : environ ±3 % sur des maillages réels, moins précis en
 dessous de quelques centaines de polygones.
 

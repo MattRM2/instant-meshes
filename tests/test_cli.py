@@ -300,11 +300,14 @@ def test_skip_failed(exe, tmp):
         code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%", "-m", "MeshB=1")
         check(code != 0 and "produced no faces" in log and not os.path.exists(out),
               "%s: without --skip-failed a failed mesh stops everything" % ext)
+        check(not os.path.exists(out + ".spool.tmp") and not os.path.exists(out + ".tmp"),
+              "%s: no temporary file left after a failure" % ext)
         code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%", "-m", "MeshB=1", "--skip-failed")
         code2, meshes = list_meshes(exe, out)
         check(code == 0 and meshes.get(B) == 576 and abs(meshes.get(A, 0) - 3936) <= 0.1 * 3936,
               "%s --skip-failed: %s" % (ext, meshes))
         check("Skipped 1 of 2 meshes" in log and B + ": Remeshing" in log, "%s: skip summary" % ext)
+        check(not os.path.exists(out + ".spool.tmp"), "%s: spool file removed" % ext)
         # Every selected mesh failing still writes the (unchanged) scene
         out = os.path.join(tmp, "skip_all" + ext)
         code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshB=1", "--skip-failed")
@@ -390,6 +393,10 @@ def test_keep_border(exe, tmp):
         check(gap < 1e-5, "--keep-border %s: border gap %.2e" % (" ".join(mode), gap))
         check(log.count("Keep border:") == 3 and "Keep border            = yes" in log,
               "--keep-border %s: reported" % " ".join(mode))
+    # A target far above the input density: the input is subdivided first, and the summary says so
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "PlateA=800%")
+    check(code == 0 and "Warning: the input was subdivided" in log and
+          "Input subdivided before remeshing" in log and "/PlateA: 288 -> " in log, "subdivided input reported")
     # Whole file, Alembic output
     out_abc = os.path.join(tmp, "plates_out.abc")
     code, log = run(exe, scene, "-o", out_abc, "-d", "-f", "50%", "--keep-border")

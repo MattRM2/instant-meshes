@@ -579,9 +579,21 @@ const char *SCHEMA_FACESET = "AbcGeom_FaceSet_v1";
 
 class Splicer {
 public:
+    /* A mesh to replace; its new geometry is built when the mesh is
+       written, so that a single one is in memory at a time */
     struct Target {
-        MeshData data;
         std::string path;
+        const Replacement *replacement = nullptr;
+        Eigen::Matrix4d toLocal = Eigen::Matrix4d::Identity();
+
+        MeshData build() const {
+            if (!replacement->fetch)
+                return make_mesh_data(replacement->F, replacement->V, toLocal);
+            MatrixXu F;
+            MatrixXf V;
+            replacement->fetch(F, V);
+            return make_mesh_data(F, V, toLocal);
+        }
     };
 
     Splicer(Archive &ar, ogawa::Writer &out, const std::map<std::string, Target> &targets)
@@ -676,9 +688,9 @@ private:
     }
 
     /* New .geom: new positions and faces, per-element data dropped */
-    Built rebuild_geom(const Property &geom, const Target &target) {
+    Built rebuild_geom(const Property &geom, const std::string &path, const MeshData &data) {
         std::vector<Built> children;
-        for (const OutProperty &p : target.data.geom_properties())
+        for (const OutProperty &p : data.geom_properties())
             children.push_back(new_property(p));
 
         static const std::set<std::string> replaced { ".selfBnds", "P", ".faceIndices", ".faceCounts" };
@@ -705,7 +717,7 @@ private:
             std::string list;
             for (const std::string &d : dropped)
                 list += (list.empty() ? "" : ", ") + d;
-            notes.push_back(target.path + ": dropped " + list + " (no longer matching the topology)");
+            notes.push_back(path + ": dropped " + list + " (no longer matching the topology)");
         }
         return compound(geom, children);
     }
@@ -736,8 +748,14 @@ private:
     /* Rebuilds an object group, returns its entry; 'hash' receives the hash
        for its parent */
     uint64_t rebuild_object(const Object &o, const std::string &path, Digest &hash,
-                            Mode mode = Ancestor, const Target *target = nullptr) {
+                            Mode mode = Ancestor, const Target *target = nullptr,
+                            const MeshData *data = nullptr) {
         std::vector<uint64_t> g = mIn.group(o.group);
+        MeshData built;
+        if (mode == Mesh) {
+            built = target->build();
+            data = &built;
+        }
 
         /* Properties */
         uint64_t propGroup;
@@ -750,10 +768,10 @@ private:
             bool rebuilt = false;
             for (const Property &p : mAr.properties(mAr.properties(o))) {
                 if (mode == Mesh && p.name == ".geom" && p.type == Property::Compound) {
-                    props.push_back(rebuild_geom(p, *target));
+                    props.push_back(rebuild_geom(p, path, *data));
                     rebuilt = true;
                 } else if (mode == FaceSet && p.name == ".faceset" && p.type == Property::Compound) {
-                    props.push_back(rebuild_faceset(p, target->data.faceCounts.size()));
+                    props.push_back(rebuild_faceset(p, data->faceCounts.size()));
                     rebuilt = true;
                 } else {
                     props.push_back(copy_property(p));
@@ -794,7 +812,7 @@ private:
             if (mode == Mesh && c.schema() == SCHEMA_FACESET) {
                 if (faceSets > 1)
                     continue;
-                entry = rebuild_object(c, childPath, d, FaceSet, target);
+                entry = rebuild_object(c, childPath, d, FaceSet, target, data);
             } else if (mode == Ancestor && mTargets.count(childPath)) {
                 entry = rebuild_object(c, childPath, d, Mesh, &mTargets.at(childPath));
                 mDone.insert(childPath);
@@ -922,8 +940,9 @@ void splice_abc(const std::string &input, const std::string &output,
                 ar.fail("\"" + r.path + "\" has a degenerate transform (zero scale)");
             Splicer::Target t;
             t.path = r.path;
-            t.data = make_mesh_data(r.F, r.V, world.inverse());
-            targets[r.path] = std::move(t);
+            t.replacement = &r;
+            t.toLocal = world.inverse();
+            targets[r.path] = t;
         }
 
         Splicer splicer(ar, out, targets);

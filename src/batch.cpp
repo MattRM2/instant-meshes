@@ -25,6 +25,9 @@
 #include "bvh.h"
 #include "border.h"
 #include <iomanip>
+#include <fstream>
+#include <functional>
+#include <memory>
 
 /* ------------------------------------------------------------------------- */
 /*  Face targets and mesh rules                                              */
@@ -106,7 +109,7 @@ static void print_settings(const RemeshParams &p) {
 
 void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
             const RemeshParams &params, MatrixXu &F_extr, MatrixXf &O_extr,
-            MatrixXf &Nf_extr) {
+            MatrixXf &Nf_extr, RemeshReport *report) {
     const int rosy = params.rosy, posy = params.posy;
     Float scale = params.scale, face_percent = params.face_percent;
     int face_count = params.face_count, vertex_count = params.vertex_count;
@@ -188,6 +191,16 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
     cout << "   Edge length            = " << scale << endl;
 
     MultiResolutionHierarchy mRes;
+    /* The hierarchy allocates its adjacency by hand and has no destructor:
+       release it whatever happens, or every remeshed object of a scene
+       would stay in memory */
+    struct HierarchyGuard {
+        MultiResolutionHierarchy &h;
+        ~HierarchyGuard() { h.free(); }
+    } hierarchyGuard { mRes };
+
+    if (report)
+        report->triangles = report->subdivided = (uint64_t) F.cols();
 
     if (!pointcloud) {
         /* Subdivide the mesh if necessary */
@@ -197,8 +210,18 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
             cout << "Input mesh is too coarse for the desired output edge length "
                     "(max input mesh edge length=" << stats.mMaximumEdgeLength
                  << "), subdividing .." << endl;
+            const uint64_t before = (uint64_t) F.cols();
             build_dedge(F, V, V2E, E2E, boundary, nonManifold);
             subdivide(F, V, V2E, E2E, boundary, nonManifold, std::min(scale/2, (Float) stats.mAverageEdgeLength*2), deterministic);
+            const uint64_t after = (uint64_t) F.cols();
+            if (report)
+                report->subdivided = after;
+            if (after > before)
+                cout << "Warning: the input was subdivided from " << before << " to " << after
+                     << " triangles (x" << std::fixed << std::setprecision(1) << (double) after / before
+                     << std::defaultfloat << std::setprecision(6)
+                     << "): its longest edges are much longer than the target edge length, "
+                        "memory and time grow accordingly." << endl;
         }
 
         /* Compute a directed edge data structure */
@@ -344,12 +367,10 @@ static bool is_obj_file(const std::string &filename) {
     return filename.size() > 4 && str_tolower(filename.substr(filename.size() - 4)) == ".obj";
 }
 
-/* Polygon meshes of an Alembic file, or objects of an OBJ file ("/name") */
-static std::vector<abc::MeshSummary> list_scene(const std::string &input) {
-    if (!is_obj_file(input))
-        return abc::list_meshes(input);
+/* Objects of a parsed OBJ file, as mesh summaries ("/name") */
+static std::vector<abc::MeshSummary> scene_meshes(const objscene::Scene &scene) {
     std::vector<abc::MeshSummary> result;
-    for (const objscene::ObjectInfo &o : objscene::list_objects(input)) {
+    for (const objscene::ObjectInfo &o : scene.objects()) {
         abc::MeshSummary m;
         m.path = "/" + o.name;
         m.vertices = o.vertices;
@@ -358,6 +379,71 @@ static std::vector<abc::MeshSummary> list_scene(const std::string &input) {
     }
     return result;
 }
+
+/* Polygon meshes of an Alembic file, or objects of an OBJ file */
+static std::vector<abc::MeshSummary> list_scene(const std::string &input) {
+    if (!is_obj_file(input))
+        return abc::list_meshes(input);
+    return scene_meshes(objscene::Scene(input));
+}
+
+/* Remeshed meshes waiting for the final write, kept in a temporary file
+   (removed at the end, whatever happens) rather than in memory */
+class Spool {
+public:
+    explicit Spool(const std::string &path) : mPath(path) { }
+    ~Spool() {
+        if (mOut.is_open())
+            mOut.close();
+        if (mCreated)
+            std::remove(mPath.c_str());
+    }
+
+    /* Stores a mesh, returns the function that reads it back */
+    std::function<void(MatrixXu &, MatrixXf &)> put(const MatrixXu &F, const MatrixXf &V) {
+        if (!mOut.is_open()) {
+            mOut.open(mPath, std::ios::binary | std::ios::trunc);
+            if (!mOut)
+                throw std::runtime_error("Unable to create \"" + mPath + "\"!");
+            mCreated = true;
+        }
+        const Record r { mSize, (uint32_t) F.rows(), (uint64_t) F.cols(), (uint64_t) V.cols() };
+        write(F.data(), sizeof(MatrixXu::Scalar) * (size_t) F.size());
+        write(V.data(), sizeof(MatrixXf::Scalar) * (size_t) V.size());
+        return [this, r](MatrixXu &Fo, MatrixXf &Vo) { get(r, Fo, Vo); };
+    }
+
+private:
+    struct Record {
+        uint64_t offset;
+        uint32_t rows;
+        uint64_t faces, vertices;
+    };
+
+    void write(const void *data, size_t size) {
+        mOut.write((const char *) data, (std::streamsize) size);
+        if (!mOut)
+            throw std::runtime_error("Error while writing \"" + mPath + "\" (disk full?)!");
+        mSize += size;
+    }
+
+    void get(const Record &r, MatrixXu &F, MatrixXf &V) {
+        mOut.flush();
+        std::ifstream in(mPath, std::ios::binary);
+        in.seekg((std::streamoff) r.offset);
+        F.resize(r.rows, (std::ptrdiff_t) r.faces);
+        V.resize(3, (std::ptrdiff_t) r.vertices);
+        in.read((char *) F.data(), (std::streamsize) (sizeof(MatrixXu::Scalar) * (size_t) F.size()));
+        in.read((char *) V.data(), (std::streamsize) (sizeof(MatrixXf::Scalar) * (size_t) V.size()));
+        if (!in)
+            throw std::runtime_error("Unable to read back \"" + mPath + "\"!");
+    }
+
+    std::string mPath;
+    std::ofstream mOut;
+    bool mCreated = false;
+    uint64_t mSize = 0;
+};
 
 static std::string mesh_flags(const abc::MeshSummary &m) {
     std::string flags;
@@ -402,8 +488,12 @@ void batch_list(const std::string &input, int sort, int top) {
 void batch_process_objects(const std::string &input, const std::string &output,
                            const RemeshParams &params, const std::vector<MeshRule> &rules,
                            const FaceTarget &others, bool dryRun, bool skipFailed) {
-    const std::vector<abc::MeshSummary> meshes = list_scene(input);
+    /* An OBJ file is parsed once for the plan, the loads and the write */
     const bool obj = is_obj_file(input);
+    std::unique_ptr<objscene::Scene> objScene;
+    if (obj)
+        objScene.reset(new objscene::Scene(input));
+    const std::vector<abc::MeshSummary> meshes = obj ? scene_meshes(*objScene) : abc::list_meshes(input);
 
     /* Plan: the last matching rule wins, then --others, else untouched */
     struct Item {
@@ -484,8 +574,10 @@ void batch_process_objects(const std::string &input, const std::string &output,
     cout << "   Output file            = " << output << endl;
     print_settings(params);
 
+    /* The new meshes wait on disk for the final write, not in memory */
+    Spool spool(output + ".spool.tmp");
     std::vector<abc::Replacement> replacements;
-    std::vector<std::string> skipped;
+    std::vector<std::string> skipped, subdivided;
     for (const Item &i : plan) {
         if (!i.remesh)
             continue;
@@ -495,7 +587,7 @@ void batch_process_objects(const std::string &input, const std::string &output,
             MatrixXf V, N;
             uint64_t polygons = 0;
             if (obj)
-                objscene::load_object(input, i.mesh->path.substr(1), F, V, &polygons);
+                objScene->load(i.mesh->path.substr(1), F, V, &polygons);
             else
                 abc::load_abc_mesh(input, i.mesh->path, F, V, &polygons);
 
@@ -504,13 +596,19 @@ void batch_process_objects(const std::string &input, const std::string &output,
             p.vertex_count = -1;
             p.face_percent = i.target.percent;
             p.face_count = i.target.count;
+            MatrixXu Fr;
+            MatrixXf Vr, Nf;
+            RemeshReport report;
+            remesh(F, V, N, polygons, p, Fr, Vr, Nf, &report);
+            if (Fr.cols() == 0)
+                throw std::runtime_error("Remeshing \"" + i.mesh->path + "\" produced no faces "
+                                         "(target too small for this mesh?)");
+            if (report.subdivided > report.triangles)
+                subdivided.push_back(i.mesh->path + ": " + std::to_string(report.triangles) + " -> " +
+                                     std::to_string(report.subdivided) + " triangles");
             abc::Replacement r;
             r.path = i.mesh->path;
-            MatrixXf Nf;
-            remesh(F, V, N, polygons, p, r.F, r.V, Nf);
-            if (r.F.cols() == 0)
-                throw std::runtime_error("Remeshing \"" + r.path + "\" produced no faces "
-                                         "(target too small for this mesh?)");
+            r.fetch = spool.put(Fr, Vr);
             replacements.push_back(std::move(r));
         } catch (const std::exception &e) {
             /* --skip-failed: keep this object as it is and go on */
@@ -522,6 +620,13 @@ void batch_process_objects(const std::string &input, const std::string &output,
     }
 
     cout << endl;
+    if (!subdivided.empty()) {
+        cout << "Input subdivided before remeshing (the heaviest to compute), " << subdivided.size()
+             << " of " << count << " meshes:" << endl;
+        for (const std::string &s : subdivided)
+            cout << "   " << s << endl;
+        cout << endl;
+    }
     if (!skipped.empty()) {
         cout << "Skipped " << skipped.size() << " of " << count
              << " meshes (--skip-failed, copied unchanged):" << endl;
@@ -534,11 +639,10 @@ void batch_process_objects(const std::string &input, const std::string &output,
         for (abc::Replacement &r : replacements) {
             objscene::Replacement o;
             o.name = r.path.substr(1);
-            o.F = std::move(r.F);
-            o.V = std::move(r.V);
+            o.fetch = r.fetch;
             objects.push_back(std::move(o));
         }
-        objscene::splice_obj(input, output, objects);
+        objScene->splice(output, objects);
     } else {
         abc::splice_abc(input, output, replacements);
     }

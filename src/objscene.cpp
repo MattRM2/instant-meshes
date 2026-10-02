@@ -18,233 +18,51 @@
 #include <map>
 #include <set>
 #include <cstdio>
+#include <cstring>
 
 namespace objscene {
 
 namespace {
 
-enum Kind { Other, Position, TexCoord, Normal, Element, Header, Material, Smooth };
+enum Kind : uint8_t { Other, Position, TexCoord, Normal, Element, Header, Material, Smooth };
 
-struct Corner {
-    int64_t v = -1, vt = -1, vn = -1;   /* 0-based absolute indices */
-    bool hasVt = false, hasVn = false;
-};
+const uint32_t NONE = 0xffffffffu;           /* absent vt / vn */
+const uint32_t JOINED = 0xffffffffu;         /* line length: see Doc::joined */
+const size_t NO_ELEM = (size_t) -1;
 
-struct Elem {
-    char type;                           /* 'f', 'l' or 'p' */
-    std::vector<Corner> corners;
-    std::string material, smooth;        /* state in effect for this element */
-    int object;
-};
+inline bool blank(char c) { return c == ' ' || c == '\t'; }
 
-struct Doc {
-    std::string filename, eol = "\n";
-    std::vector<std::string> lines;      /* logical lines (continuations joined) */
-    std::vector<Kind> kinds;
-    std::vector<int> lineObject;         /* object of each line, -1 before any */
-    std::vector<int> lineElem;           /* element index of Element lines */
-    std::vector<Elem> elems;
-    std::vector<Vector3f> positions;
-    size_t texcoords = 0, normals = 0;
-    std::vector<std::string> names;
-    std::map<std::string, int> ids;
-
-    [[noreturn]] void fail(size_t line, const std::string &msg) const {
-        throw std::runtime_error("OBJ file \"" + filename + "\", line " + std::to_string(line + 1) +
-                                 ": " + msg + "!");
-    }
-
-    int object(const std::string &name) {
-        auto it = ids.find(name);
-        if (it != ids.end())
-            return it->second;
-        const int id = (int) names.size();
-        names.push_back(name);
-        ids[name] = id;
-        return id;
-    }
-};
-
-std::string trim(const std::string &s) {
-    size_t a = 0, b = s.size();
-    while (a < b && (s[a] == ' ' || s[a] == '\t'))
-        ++a;
-    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r'))
-        --b;
-    return s.substr(a, b - a);
+/* Bounds of the trimmed text [b, e) (spaces, tabs and '\r') */
+inline void trim(const char *&b, const char *&e) {
+    while (b < e && blank(*b))
+        ++b;
+    while (e > b && (blank(e[-1]) || e[-1] == '\r'))
+        --e;
 }
 
-/* First word and the rest of a line */
+/* First word and the rest of a line, both trimmed */
+void split_keyword(const char *b, const char *e, const char *&kb, const char *&ke,
+                   const char *&rb, const char *&re) {
+    trim(b, e);
+    kb = b;
+    while (b < e && !blank(*b))
+        ++b;
+    ke = b;
+    rb = b;
+    re = e;
+    trim(rb, re);
+}
+
 void split_keyword(const std::string &line, std::string &keyword, std::string &rest) {
-    const std::string t = trim(line);
-    size_t i = 0;
-    while (i < t.size() && t[i] != ' ' && t[i] != '\t')
-        ++i;
-    keyword = t.substr(0, i);
-    rest = trim(t.substr(i));
+    const char *kb, *ke, *rb, *re;
+    split_keyword(line.data(), line.data() + line.size(), kb, ke, rb, re);
+    keyword.assign(kb, ke);
+    rest.assign(rb, re);
 }
 
-/* Resolves an OBJ index (1-based, or negative = relative) to 0-based */
-int64_t resolve(const Doc &doc, size_t line, const std::string &token, size_t count) {
-    if (token.empty())
-        doc.fail(line, "empty index");
-    char *end = nullptr;
-    const long long value = strtoll(token.c_str(), &end, 10);
-    if (*end != '\0' || value == 0)
-        doc.fail(line, "invalid index \"" + token + "\"");
-    if (value < 0) {
-        if ((unsigned long long) (-value) > count)
-            doc.fail(line, "relative index " + token + " out of range");
-        return (int64_t) count + value;
-    }
-    return value - 1;
-}
-
-Doc parse(const std::string &filename) {
-    Doc doc;
-    doc.filename = filename;
-    std::ifstream is(filename, std::ios::binary);
-    if (!is)
-        throw std::runtime_error("Unable to open OBJ file \"" + filename + "\"!");
-    std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
-    if (text.find("\r\n") != std::string::npos)
-        doc.eol = "\r\n";
-
-    /* Logical lines: a trailing backslash continues the line */
-    size_t pos = 0;
-    std::string pending;
-    while (pos < text.size()) {
-        size_t end = text.find('\n', pos);
-        if (end == std::string::npos)
-            end = text.size();
-        std::string line = text.substr(pos, end - pos);
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
-        pos = end + 1;
-        if (!line.empty() && line.back() == '\\') {
-            line.pop_back();
-            pending += line + " ";
-            continue;
-        }
-        doc.lines.push_back(pending + line);
-        pending.clear();
-    }
-    if (!pending.empty())
-        doc.lines.push_back(pending);
-
-    /* Objects are "o" blocks, or "g" groups when there is no "o" line */
-    bool hasO = false;
-    for (const std::string &l : doc.lines) {
-        std::string k, r;
-        split_keyword(l, k, r);
-        if (k == "o") {
-            hasO = true;
-            break;
-        }
-    }
-    const std::string objectKeyword = hasO ? "o" : "g";
-
-    int current = -1;
-    std::string material, smooth;
-    const size_t n = doc.lines.size();
-    doc.kinds.assign(n, Other);
-    doc.lineObject.assign(n, -1);
-    doc.lineElem.assign(n, -1);
-
-    for (size_t i = 0; i < n; ++i) {
-        std::string keyword, rest;
-        split_keyword(doc.lines[i], keyword, rest);
-
-        if (keyword == objectKeyword) {
-            current = doc.object(rest.empty() ? "default" : rest);
-            doc.kinds[i] = Header;
-        } else if (keyword == "v") {
-            Vector3f p;
-            char *end = nullptr;
-            const char *s = rest.c_str();
-            for (int k = 0; k < 3; ++k) {
-                p[k] = (Float) strtod(s, &end);
-                if (end == s)
-                    doc.fail(i, "invalid vertex position");
-                s = end;
-            }
-            doc.positions.push_back(p);
-            doc.kinds[i] = Position;
-        } else if (keyword == "vt") {
-            ++doc.texcoords;
-            doc.kinds[i] = TexCoord;
-        } else if (keyword == "vn") {
-            ++doc.normals;
-            doc.kinds[i] = Normal;
-        } else if (keyword == "f" || keyword == "l" || keyword == "p") {
-            if (current < 0)
-                current = doc.object("default");
-            Elem e;
-            e.type = keyword[0];
-            e.material = material;
-            e.smooth = smooth;
-            e.object = current;
-            const std::string body = rest.substr(0, rest.find('#'));
-            std::vector<std::string> tokens = str_tokenize(body, ' ', false);
-            for (const std::string &token : tokens) {
-                if (trim(token).empty())
-                    continue;
-                std::vector<std::string> parts = str_tokenize(trim(token), '/', true);
-                if (parts.empty() || parts.size() > 3)
-                    doc.fail(i, "invalid vertex data \"" + token + "\"");
-                Corner c;
-                c.v = resolve(doc, i, parts[0], doc.positions.size());
-                if (parts.size() >= 2 && !parts[1].empty()) {
-                    c.vt = resolve(doc, i, parts[1], doc.texcoords);
-                    c.hasVt = true;
-                }
-                if (parts.size() == 3 && !parts[2].empty()) {
-                    c.vn = resolve(doc, i, parts[2], doc.normals);
-                    c.hasVn = true;
-                }
-                e.corners.push_back(c);
-            }
-            const size_t minimum = e.type == 'f' ? 3 : (e.type == 'l' ? 2 : 1);
-            if (e.corners.size() < minimum)
-                doc.fail(i, std::string("\"") + e.type + "\" element with too few vertices");
-            doc.kinds[i] = Element;
-            doc.lineElem[i] = (int) doc.elems.size();
-            doc.elems.push_back(e);
-        } else if (keyword == "usemtl") {
-            material = rest;
-            doc.kinds[i] = Material;
-        } else if (keyword == "s") {
-            smooth = rest;
-            doc.kinds[i] = Smooth;
-        }
-        doc.lineObject[i] = current;
-    }
-
-    /* Absolute indices may refer to data defined later: check at the end */
-    for (size_t k = 0; k < doc.elems.size(); ++k) {
-        for (const Corner &c : doc.elems[k].corners) {
-            if (c.v < 0 || c.v >= (int64_t) doc.positions.size() ||
-                (c.hasVt && (c.vt < 0 || c.vt >= (int64_t) doc.texcoords)) ||
-                (c.hasVn && (c.vn < 0 || c.vn >= (int64_t) doc.normals))) {
-                size_t line = 0;
-                for (size_t i = 0; i < n; ++i)
-                    if (doc.lineElem[i] == (int) k)
-                        line = i;
-                doc.fail(line, "index out of range");
-            }
-        }
-    }
-    return doc;
-}
-
-int find_object(const Doc &doc, const std::string &name) {
-    auto it = doc.ids.find(name);
-    if (it == doc.ids.end())
-        throw std::runtime_error("OBJ file \"" + doc.filename + "\": no object named \"" + name + "\"!");
-    for (const Elem &e : doc.elems)
-        if (e.object == it->second && e.type == 'f')
-            return it->second;
-    throw std::runtime_error("OBJ file \"" + doc.filename + "\": object \"" + name + "\" has no polygons!");
+inline bool is(const char *b, const char *e, const char *word) {
+    const size_t n = strlen(word);
+    return (size_t) (e - b) == n && memcmp(b, word, n) == 0;
 }
 
 void replace_file(const std::string &temp, const std::string &target) {
@@ -262,140 +80,489 @@ void replace_file(const std::string &temp, const std::string &target) {
 
 } // namespace
 
-std::vector<ObjectInfo> list_objects(const std::string &filename) {
-    Doc doc = parse(filename);
-    std::vector<ObjectInfo> result(doc.names.size());
-    std::vector<std::set<int64_t>> used(doc.names.size());
-    for (size_t i = 0; i < doc.names.size(); ++i)
-        result[i].name = doc.names[i];
-    for (const Elem &e : doc.elems) {
-        if (e.type != 'f')
-            continue;
-        result[e.object].faces++;
-        for (const Corner &c : e.corners)
-            used[e.object].insert(c.v);
+/* ------------------------------------------------------------------------- */
+/*  Parsed file                                                              */
+/* ------------------------------------------------------------------------- */
+
+struct Scene::Doc {
+    std::string filename, eol = "\n";
+    std::string text;                        /* the whole file */
+
+    /* Logical lines (continuations joined), as ranges of 'text' */
+    std::vector<uint64_t> lineStart;
+    std::vector<uint32_t> lineLength;        /* JOINED: the line is in 'joined' */
+    std::map<size_t, std::string> joined;
+    std::vector<uint8_t> kinds;
+    std::vector<int32_t> headerObject;       /* object of each Header line, in order */
+
+    /* Elements ("f", "l", "p"), in file order; corners in flat arrays */
+    std::vector<char> elemType;
+    std::vector<int32_t> elemObject;
+    std::vector<uint32_t> elemMaterial, elemSmooth;   /* ids in 'strings' */
+    std::vector<uint64_t> elemFirst;         /* first corner; one more entry at the end */
+    std::vector<uint32_t> cornerV, cornerT, cornerN;  /* 0-based; NONE if absent */
+
+    std::vector<Vector3f> positions;
+    size_t texcoords = 0, normals = 0;
+    std::vector<std::string> names;
+    std::map<std::string, int> ids;
+    std::vector<std::string> strings { "" }; /* material and smoothing values */
+    std::map<std::string, uint32_t> stringIds { { "", 0 } };
+
+    size_t elems() const { return elemType.size(); }
+
+    [[noreturn]] void fail(size_t line, const std::string &msg) const {
+        throw std::runtime_error("OBJ file \"" + filename + "\", line " + std::to_string(line + 1) +
+                                 ": " + msg + "!");
     }
+
+    void line(size_t i, const char *&b, const char *&e) const {
+        if (lineLength[i] == JOINED) {
+            const std::string &s = joined.at(i);
+            b = s.data();
+            e = b + s.size();
+        } else {
+            b = text.data() + lineStart[i];
+            e = b + lineLength[i];
+        }
+    }
+
+    std::string line(size_t i) const {
+        const char *b, *e;
+        line(i, b, e);
+        return std::string(b, e);
+    }
+
+    void write_line(std::ostream &os, size_t i) const {
+        const char *b, *e;
+        line(i, b, e);
+        os.write(b, (std::streamsize) (e - b));
+        os << eol;
+    }
+
+    int object(const std::string &name) {
+        auto it = ids.find(name);
+        if (it != ids.end())
+            return it->second;
+        const int id = (int) names.size();
+        names.push_back(name);
+        ids[name] = id;
+        return id;
+    }
+
+    uint32_t intern(const char *b, const char *e) {
+        std::string s(b, e);
+        auto it = stringIds.find(s);
+        if (it != stringIds.end())
+            return it->second;
+        const uint32_t id = (uint32_t) strings.size();
+        strings.push_back(s);
+        stringIds[s] = id;
+        return id;
+    }
+
+    /* Replays the lines with the object each one belongs to (the last
+       object line, or "default" from the first element before any) */
+    template <typename Fn> void each_line(Fn fn) const {
+        int current = -1;
+        size_t h = 0, e = 0;
+        for (size_t i = 0; i < kinds.size(); ++i) {
+            const Kind kind = (Kind) kinds[i];
+            size_t elem = NO_ELEM;
+            if (kind == Header) {
+                current = headerObject[h++];
+            } else if (kind == Element) {
+                elem = e++;
+                current = elemObject[elem];
+            }
+            fn(i, kind, current, elem);
+        }
+    }
+
+    size_t line_of_element(size_t k) const {
+        size_t e = 0;
+        for (size_t i = 0; i < kinds.size(); ++i)
+            if (kinds[i] == Element && e++ == k)
+                return i;
+        return 0;
+    }
+
+    int find_object(const std::string &name) const {
+        auto it = ids.find(name);
+        if (it == ids.end())
+            throw std::runtime_error("OBJ file \"" + filename + "\": no object named \"" + name + "\"!");
+        for (size_t k = 0; k < elems(); ++k)
+            if (elemObject[k] == it->second && elemType[k] == 'f')
+                return it->second;
+        throw std::runtime_error("OBJ file \"" + filename + "\": object \"" + name + "\" has no polygons!");
+    }
+
+    void parse();
+    uint32_t resolve(size_t line, const char *b, const char *e, size_t count) const;
+};
+
+/* An OBJ index (1-based, or negative = relative) to 0-based; out of range
+   absolute indices are caught after the whole file is read */
+uint32_t Scene::Doc::resolve(size_t line, const char *b, const char *e, size_t count) const {
+    const std::string token(b, e);
+    if (token.empty())
+        fail(line, "empty index");
+    char *end = nullptr;
+    const long long value = strtoll(token.c_str(), &end, 10);
+    if (*end != '\0' || value == 0)
+        fail(line, "invalid index \"" + token + "\"");
+    if (value < 0) {
+        if ((unsigned long long) (-value) > count)
+            fail(line, "relative index " + token + " out of range");
+        return (uint32_t) ((long long) count + value);
+    }
+    return (uint32_t) std::min<long long>(value - 1, (long long) NONE - 1);
+}
+
+void Scene::Doc::parse() {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file)
+        throw std::runtime_error("Unable to open OBJ file \"" + filename + "\"!");
+    file.seekg(0, std::ios::end);
+    const std::streamoff size = file.tellg();
+    file.seekg(0, std::ios::beg);
+    if (size > 0) {
+        text.resize((size_t) size);
+        file.read(&text[0], size);
+        if (!file)
+            throw std::runtime_error("Unable to read OBJ file \"" + filename + "\"!");
+    }
+    if (text.find("\r\n") != std::string::npos)
+        eol = "\r\n";
+
+    /* Logical lines: a trailing backslash continues the line */
+    {
+        size_t pos = 0, pendingStart = 0;
+        std::string pending;
+        bool continued = false;
+        while (pos < text.size()) {
+            const char *nl = (const char *) memchr(text.data() + pos, '\n', text.size() - pos);
+            size_t end = nl ? (size_t) (nl - text.data()) : text.size();
+            const size_t next = end + 1;
+            if (end > pos && text[end - 1] == '\r')
+                --end;
+            if (end > pos && text[end - 1] == '\\') {
+                if (!continued)
+                    pendingStart = pos;
+                pending.append(text, pos, end - 1 - pos);
+                pending += ' ';
+                continued = true;
+                pos = next;
+                continue;
+            }
+            if (continued) {
+                pending.append(text, pos, end - pos);
+                joined[lineStart.size()] = pending;
+                lineStart.push_back(pendingStart);
+                lineLength.push_back(JOINED);
+                pending.clear();
+                continued = false;
+            } else {
+                if (end - pos >= JOINED)
+                    throw std::runtime_error("OBJ file \"" + filename + "\": line too long!");
+                lineStart.push_back(pos);
+                lineLength.push_back((uint32_t) (end - pos));
+            }
+            pos = next;
+        }
+        if (continued) {
+            joined[lineStart.size()] = pending;
+            lineStart.push_back(pendingStart);
+            lineLength.push_back(JOINED);
+        }
+    }
+    const size_t n = lineStart.size();
+
+    /* Objects are "o" blocks, or "g" groups when there is no "o" line */
+    bool hasO = false;
+    for (size_t i = 0; i < n && !hasO; ++i) {
+        const char *b, *e, *kb, *ke, *rb, *re;
+        line(i, b, e);
+        split_keyword(b, e, kb, ke, rb, re);
+        hasO = is(kb, ke, "o");
+    }
+    const char *objectKeyword = hasO ? "o" : "g";
+
+    int current = -1;
+    uint32_t material = 0, smooth = 0;
+    kinds.assign(n, Other);
+    std::string buffer;
+    for (size_t i = 0; i < n; ++i) {
+        const char *b, *e, *kb, *ke, *rb, *re;
+        line(i, b, e);
+        split_keyword(b, e, kb, ke, rb, re);
+        if (kb == ke)
+            continue;
+
+        if (is(kb, ke, objectKeyword)) {
+            current = object(rb == re ? std::string("default") : std::string(rb, re));
+            headerObject.push_back(current);
+            kinds[i] = Header;
+        } else if (is(kb, ke, "v")) {
+            buffer.assign(rb, re);
+            Vector3f p;
+            char *end = nullptr;
+            const char *s = buffer.c_str();
+            for (int k = 0; k < 3; ++k) {
+                p[k] = (Float) strtod(s, &end);
+                if (end == s)
+                    fail(i, "invalid vertex position");
+                s = end;
+            }
+            positions.push_back(p);
+            kinds[i] = Position;
+        } else if (is(kb, ke, "vt")) {
+            ++texcoords;
+            kinds[i] = TexCoord;
+        } else if (is(kb, ke, "vn")) {
+            ++normals;
+            kinds[i] = Normal;
+        } else if (ke - kb == 1 && (*kb == 'f' || *kb == 'l' || *kb == 'p')) {
+            if (current < 0)
+                current = object("default");
+            const char type = *kb;
+            const uint64_t first = cornerV.size();
+            const char *body = rb, *bodyEnd = re;
+            const char *hash = (const char *) memchr(body, '#', (size_t) (bodyEnd - body));
+            if (hash)
+                bodyEnd = hash;
+            const char *t = body;
+            while (t < bodyEnd) {
+                while (t < bodyEnd && blank(*t))
+                    ++t;
+                const char *tokenEnd = t;
+                while (tokenEnd < bodyEnd && !blank(*tokenEnd))
+                    ++tokenEnd;
+                if (tokenEnd == t)
+                    break;
+                /* v, v/vt, v//vn or v/vt/vn */
+                const char *parts[3][2];
+                int count = 0;
+                const char *p = t;
+                while (true) {
+                    const char *slash = (const char *) memchr(p, '/', (size_t) (tokenEnd - p));
+                    const char *partEnd = slash ? slash : tokenEnd;
+                    if (count == 3)
+                        fail(i, "invalid vertex data \"" + std::string(t, tokenEnd) + "\"");
+                    parts[count][0] = p;
+                    parts[count][1] = partEnd;
+                    ++count;
+                    if (!slash)
+                        break;
+                    p = slash + 1;
+                }
+                cornerV.push_back(resolve(i, parts[0][0], parts[0][1], positions.size()));
+                cornerT.push_back(count >= 2 && parts[1][0] != parts[1][1]
+                                  ? resolve(i, parts[1][0], parts[1][1], texcoords) : NONE);
+                cornerN.push_back(count == 3 && parts[2][0] != parts[2][1]
+                                  ? resolve(i, parts[2][0], parts[2][1], normals) : NONE);
+                t = tokenEnd;
+            }
+            const size_t corners = (size_t) (cornerV.size() - first);
+            const size_t minimum = type == 'f' ? 3 : (type == 'l' ? 2 : 1);
+            if (corners < minimum)
+                fail(i, std::string("\"") + type + "\" element with too few vertices");
+            elemType.push_back(type);
+            elemObject.push_back(current);
+            elemMaterial.push_back(material);
+            elemSmooth.push_back(smooth);
+            elemFirst.push_back(first);
+            kinds[i] = Element;
+        } else if (is(kb, ke, "usemtl")) {
+            material = intern(rb, re);
+            kinds[i] = Material;
+        } else if (is(kb, ke, "s")) {
+            smooth = intern(rb, re);
+            kinds[i] = Smooth;
+        }
+    }
+    elemFirst.push_back(cornerV.size());
+
+    /* Absolute indices may refer to data defined later: check at the end */
+    for (size_t k = 0; k < elems(); ++k) {
+        for (uint64_t c = elemFirst[k]; c < elemFirst[k + 1]; ++c) {
+            if (cornerV[c] >= positions.size() ||
+                (cornerT[c] != NONE && cornerT[c] >= texcoords) ||
+                (cornerN[c] != NONE && cornerN[c] >= normals))
+                fail(line_of_element(k), "index out of range");
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Scene                                                                    */
+/* ------------------------------------------------------------------------- */
+
+Scene::Scene(const std::string &filename) : d(new Doc()) {
+    d->filename = filename;
+    d->parse();
+}
+
+Scene::~Scene() { }
+
+std::vector<ObjectInfo> Scene::objects() const {
+    const size_t nObjects = d->names.size();
+    std::vector<ObjectInfo> result(nObjects);
+    std::vector<std::vector<uint32_t>> elemsOf(nObjects);
+    for (size_t i = 0; i < nObjects; ++i)
+        result[i].name = d->names[i];
+    for (size_t k = 0; k < d->elems(); ++k) {
+        if (d->elemType[k] != 'f')
+            continue;
+        result[d->elemObject[k]].faces++;
+        elemsOf[d->elemObject[k]].push_back((uint32_t) k);
+    }
+    /* Distinct positions per object: one stamp per position */
+    std::vector<int32_t> stamp(d->positions.size(), -1);
     std::vector<ObjectInfo> meshes;
-    for (size_t i = 0; i < result.size(); ++i) {
+    for (size_t i = 0; i < nObjects; ++i) {
         if (result[i].faces == 0)
             continue;
-        result[i].vertices = used[i].size();
+        for (uint32_t k : elemsOf[i])
+            for (uint64_t c = d->elemFirst[k]; c < d->elemFirst[k + 1]; ++c)
+                if (stamp[d->cornerV[c]] != (int32_t) i) {
+                    stamp[d->cornerV[c]] = (int32_t) i;
+                    result[i].vertices++;
+                }
         meshes.push_back(result[i]);
     }
     return meshes;
 }
 
-void load_object(const std::string &filename, const std::string &name,
-                 MatrixXu &F, MatrixXf &V, uint64_t *polygons) {
-    Doc doc = parse(filename);
-    const int id = find_object(doc, name);
+void Scene::load(const std::string &name, MatrixXu &F, MatrixXf &V, uint64_t *polygons) const {
+    const int id = d->find_object(name);
     std::vector<uint32_t> sizes, indices;
-    for (const Elem &e : doc.elems) {
-        if (e.object != id || e.type != 'f')
+    for (size_t k = 0; k < d->elems(); ++k) {
+        if (d->elemObject[k] != id || d->elemType[k] != 'f')
             continue;
-        sizes.push_back((uint32_t) e.corners.size());
-        for (const Corner &c : e.corners)
-            indices.push_back((uint32_t) c.v);
+        sizes.push_back((uint32_t) (d->elemFirst[k + 1] - d->elemFirst[k]));
+        for (uint64_t c = d->elemFirst[k]; c < d->elemFirst[k + 1]; ++c)
+            indices.push_back(d->cornerV[c]);
     }
-    build_mesh(doc.positions, sizes, indices, F, V, filename + ":" + name);
+    build_mesh(d->positions, sizes, indices, F, V, d->filename + ":" + name);
     if (polygons)
         *polygons = sizes.size();
 }
 
-void splice_obj(const std::string &input, const std::string &output,
-                const std::vector<Replacement> &replacements) {
+namespace {
+
+/* New geometry of a replaced object: polygons (counter-clockwise, as OBJ),
+   only the vertices they use */
+struct TargetGeometry {
+    std::vector<Vector3f> positions;
+    std::vector<uint32_t> sizes, indices;
+};
+
+void target_geometry(const Replacement &r, TargetGeometry &t) {
+    MatrixXu fetchedF;
+    MatrixXf fetchedV;
+    const MatrixXu *F = &r.F;
+    const MatrixXf *V = &r.V;
+    if (r.fetch) {
+        r.fetch(fetchedF, fetchedV);
+        F = &fetchedF;
+        V = &fetchedV;
+    }
+    std::vector<uint32_t> faceIds, ccw;
+    extracted_polygons(*F, t.sizes, ccw, faceIds);
+    if (t.sizes.empty())
+        throw std::runtime_error("OBJ writer: the new mesh of \"" + r.name + "\" is empty!");
+    std::vector<int64_t> remap((size_t) V->cols(), -1);
+    for (uint32_t index : ccw) {
+        if (index >= V->cols())
+            throw std::runtime_error("OBJ writer: vertex index out of range!");
+        remap[index] = 0;
+    }
+    for (uint32_t i = 0; i < (uint32_t) V->cols(); ++i) {
+        if (remap[i] < 0)
+            continue;
+        if (!V->col(i).allFinite())
+            throw std::runtime_error("OBJ writer: invalid vertex position!");
+        remap[i] = (int64_t) t.positions.size();
+        t.positions.push_back(V->col(i));
+    }
+    t.indices.reserve(ccw.size());
+    for (uint32_t index : ccw)
+        t.indices.push_back((uint32_t) remap[index]);
+}
+
+} // namespace
+
+void Scene::splice(const std::string &output, const std::vector<Replacement> &replacements) const {
     Timer<> timer;
     cout << "Writing \"" << output << "\" (" << replacements.size() << " object"
          << (replacements.size() > 1 ? "s" : "") << " replaced) .. ";
     cout.flush();
 
-    Doc doc = parse(input);
+    const Doc &doc = *d;
     const size_t nObjects = doc.names.size();
 
-    /* New geometry of each target: polygons (counter-clockwise, as OBJ),
-       only the vertices they use */
-    struct Target {
-        std::vector<Vector3f> positions;
-        std::vector<uint32_t> sizes, indices;
-        std::string material;
-        bool active = false;
-    };
-    std::vector<Target> targets(nObjects);
+    /* Targets, checked and counted first: their geometry is built again
+       when written, one at a time */
+    std::vector<const Replacement *> targets(nObjects, nullptr);
+    std::vector<int64_t> targetVertices(nObjects, 0);
+    std::vector<std::string> materialOf(nObjects);
     std::vector<std::string> notes;
     for (const Replacement &r : replacements) {
-        const int id = find_object(doc, r.name);
-        Target &t = targets[id];
-        if (t.active)
+        const int id = doc.find_object(r.name);
+        if (targets[id])
             throw std::runtime_error("Object \"" + r.name + "\" is replaced twice!");
-        t.active = true;
-        std::vector<uint32_t> faceIds, ccw;
-        extracted_polygons(r.F, t.sizes, ccw, faceIds);
-        if (t.sizes.empty())
-            throw std::runtime_error("OBJ writer: the new mesh of \"" + r.name + "\" is empty!");
-        std::vector<int64_t> remap((size_t) r.V.cols(), -1);
-        for (uint32_t index : ccw) {
-            if (index >= r.V.cols())
-                throw std::runtime_error("OBJ writer: vertex index out of range!");
-            if (remap[index] < 0) {
-                remap[index] = 0;
-            }
-        }
-        for (uint32_t i = 0; i < (uint32_t) r.V.cols(); ++i) {
-            if (remap[i] < 0)
-                continue;
-            if (!r.V.col(i).allFinite())
-                throw std::runtime_error("OBJ writer: invalid vertex position!");
-            remap[i] = (int64_t) t.positions.size();
-            t.positions.push_back(r.V.col(i));
-        }
-        for (uint32_t index : ccw)
-            t.indices.push_back((uint32_t) remap[index]);
+        targets[id] = &r;
+        TargetGeometry t;
+        target_geometry(r, t);
+        targetVertices[id] = (int64_t) t.positions.size();
     }
 
     /* What the targets used, and what the other objects still need */
     std::vector<char> vT(doc.positions.size(), 0), vK(doc.positions.size(), 0);
     std::vector<char> tT(doc.texcoords, 0), tK(doc.texcoords, 0);
     std::vector<char> nT(doc.normals, 0), nK(doc.normals, 0);
-    std::vector<std::map<std::string, size_t>> materials(nObjects);   /* faces per material */
-    std::vector<std::vector<std::string>> materialOrder(nObjects);
+    std::vector<std::map<uint32_t, size_t>> materials(nObjects);   /* faces per material */
+    std::vector<std::vector<uint32_t>> materialOrder(nObjects);
     std::vector<char> hadUvs(nObjects, 0);
-    for (const Elem &e : doc.elems) {
-        const bool target = targets[e.object].active;
-        for (const Corner &c : e.corners) {
-            (target ? vT : vK)[(size_t) c.v] = 1;
-            if (c.hasVt) {
-                (target ? tT : tK)[(size_t) c.vt] = 1;
+    for (size_t k = 0; k < doc.elems(); ++k) {
+        const int obj = doc.elemObject[k];
+        const bool target = targets[obj] != nullptr;
+        for (uint64_t c = doc.elemFirst[k]; c < doc.elemFirst[k + 1]; ++c) {
+            (target ? vT : vK)[doc.cornerV[c]] = 1;
+            if (doc.cornerT[c] != NONE) {
+                (target ? tT : tK)[doc.cornerT[c]] = 1;
                 if (target)
-                    hadUvs[e.object] = 1;
+                    hadUvs[obj] = 1;
             }
-            if (c.hasVn) {
-                (target ? nT : nK)[(size_t) c.vn] = 1;
+            if (doc.cornerN[c] != NONE) {
+                (target ? nT : nK)[doc.cornerN[c]] = 1;
                 if (target)
-                    hadUvs[e.object] = 1;
+                    hadUvs[obj] = 1;
             }
         }
-        if (target && e.type == 'f') {
-            if (materials[e.object][e.material]++ == 0)
-                materialOrder[e.object].push_back(e.material);
+        if (target && doc.elemType[k] == 'f') {
+            if (materials[obj][doc.elemMaterial[k]]++ == 0)
+                materialOrder[obj].push_back(doc.elemMaterial[k]);
         }
     }
     for (size_t id = 0; id < nObjects; ++id) {
-        if (!targets[id].active)
+        if (!targets[id])
             continue;
         /* OBJ faces inherit the last "usemtl": an object cannot be left
            without material, so keep its most used one (the first in file
            order on a tie) rather than inheriting another object's */
-        std::string best;
+        uint32_t best = 0;
         size_t bestCount = 0;
-        for (const std::string &m : materialOrder[id]) {
+        for (uint32_t m : materialOrder[id]) {
             if (materials[id][m] > bestCount) {
                 best = m;
                 bestCount = materials[id][m];
             }
         }
-        targets[id].material = best;
+        materialOf[id] = doc.strings[best];
         if (materials[id].size() > 1)
-            notes.push_back(doc.names[id] + ": kept material \"" + best + "\" (its most used), dropped " +
+            notes.push_back(doc.names[id] + ": kept material \"" + materialOf[id] + "\" (its most used), dropped " +
                             std::to_string(materials[id].size() - 1) +
                             " other(s): per-face materials cannot follow the new faces");
         if (hadUvs[id])
@@ -406,37 +573,36 @@ void splice_obj(const std::string &input, const std::string &output,
     };
 
     /* Pass 1: new numbering, in output order */
-    const size_t n = doc.lines.size();
-    std::vector<int> firstLine(nObjects, -1);
-    for (size_t i = 0; i < n; ++i)
-        if (doc.lineObject[i] >= 0 && firstLine[doc.lineObject[i]] < 0)
-            firstLine[doc.lineObject[i]] = (int) i;
+    std::vector<int64_t> firstLine(nObjects, -1);
+    doc.each_line([&](size_t i, Kind, int obj, size_t) {
+        if (obj >= 0 && firstLine[obj] < 0)
+            firstLine[obj] = (int64_t) i;
+    });
 
     std::vector<int64_t> newV(doc.positions.size(), -1), newT(doc.texcoords, -1), newN(doc.normals, -1);
     std::vector<int64_t> base(nObjects, 0);
     {
         int64_t cv = 0, ct = 0, cn = 0;
         size_t kv = 0, kt = 0, kn = 0;
-        for (size_t i = 0; i < n; ++i) {
-            const int obj = doc.lineObject[i];
-            if (obj >= 0 && targets[obj].active && firstLine[obj] == (int) i) {
+        doc.each_line([&](size_t i, Kind kind, int obj, size_t) {
+            if (obj >= 0 && targets[obj] && firstLine[obj] == (int64_t) i) {
                 base[obj] = cv;
-                cv += (int64_t) targets[obj].positions.size();
+                cv += targetVertices[obj];
             }
-            if (doc.kinds[i] == Position) {
+            if (kind == Position) {
                 if (keep(vT, vK, kv))
                     newV[kv] = cv++;
                 ++kv;
-            } else if (doc.kinds[i] == TexCoord) {
+            } else if (kind == TexCoord) {
                 if (keep(tT, tK, kt))
                     newT[kt] = ct++;
                 ++kt;
-            } else if (doc.kinds[i] == Normal) {
+            } else if (kind == Normal) {
                 if (keep(nT, nK, kn))
                     newN[kn] = cn++;
                 ++kn;
             }
-        }
+        });
     }
 
     /* Pass 2: write (into a temporary file, removed on any error) */
@@ -451,22 +617,22 @@ void splice_obj(const std::string &input, const std::string &output,
         if (!os)
             throw std::runtime_error("Unable to create \"" + temp + "\"!");
         const std::string &eol = doc.eol;
-        std::string outMaterial, outSmooth;
+        uint32_t outMaterial = 0, outSmooth = 0;
+        std::string keyword, rest;
         size_t kv = 0, kt = 0, kn = 0;
         char buf[128];
-        for (size_t i = 0; i < n; ++i) {
-            const int obj = doc.lineObject[i];
-            const bool target = obj >= 0 && targets[obj].active;
-            const Kind kind = doc.kinds[i];
+        doc.each_line([&](size_t i, Kind kind, int obj, size_t elem) {
+            const bool target = obj >= 0 && targets[obj] != nullptr;
 
-            if (target && firstLine[obj] == (int) i) {
+            if (target && firstLine[obj] == (int64_t) i) {
                 if (kind == Header)
-                    os << doc.lines[i] << eol;
-                const Target &t = targets[obj];
-                if (!t.material.empty()) {
-                    os << "usemtl " << t.material << eol;
-                    outMaterial = t.material;
+                    doc.write_line(os, i);
+                if (!materialOf[obj].empty()) {
+                    os << "usemtl " << materialOf[obj] << eol;
+                    outMaterial = doc.stringIds.at(materialOf[obj]);
                 }
+                TargetGeometry t;
+                target_geometry(*targets[obj], t);
                 for (const Vector3f &p : t.positions) {
                     snprintf(buf, sizeof(buf), "v %.9g %.9g %.9g", p.x(), p.y(), p.z());
                     os << buf << eol;
@@ -480,56 +646,57 @@ void splice_obj(const std::string &input, const std::string &output,
                     offset += size;
                 }
                 if (kind == Header)
-                    continue;
+                    return;
             }
 
             if (kind == Position || kind == TexCoord || kind == Normal) {
                 size_t &k = kind == Position ? kv : (kind == TexCoord ? kt : kn);
                 const std::vector<int64_t> &map = kind == Position ? newV : (kind == TexCoord ? newT : newN);
                 if (map[k] >= 0)
-                    os << doc.lines[i] << eol;
+                    doc.write_line(os, i);
                 ++k;
-                continue;
+                return;
             }
             if (target)
-                continue;   /* the rest of a replaced object: faces, materials, groups, comments */
+                return;   /* the rest of a replaced object: faces, materials, groups, comments */
 
             if (kind == Element) {
-                const Elem &e = doc.elems[(size_t) doc.lineElem[i]];
                 /* Keep the inherited material / smoothing state even if a
                    replaced object used to set it */
-                if (e.material != outMaterial && !e.material.empty()) {
-                    os << "usemtl " << e.material << eol;
-                    outMaterial = e.material;
+                const uint32_t material = doc.elemMaterial[elem], smooth = doc.elemSmooth[elem];
+                if (material != outMaterial && material != 0) {
+                    os << "usemtl " << doc.strings[material] << eol;
+                    outMaterial = material;
                 }
-                if (e.smooth != outSmooth && !e.smooth.empty()) {
-                    os << "s " << e.smooth << eol;
-                    outSmooth = e.smooth;
+                if (smooth != outSmooth && smooth != 0) {
+                    os << "s " << doc.strings[smooth] << eol;
+                    outSmooth = smooth;
                 }
-                os << e.type;
-                for (const Corner &c : e.corners) {
-                    const int64_t v = newV[(size_t) c.v];
+                os << doc.elemType[elem];
+                for (uint64_t c = doc.elemFirst[elem]; c < doc.elemFirst[elem + 1]; ++c) {
+                    const int64_t v = newV[doc.cornerV[c]];
                     if (v < 0)
                         throw std::runtime_error("OBJ writer: internal error (dropped vertex still used)!");
                     os << " " << (v + 1);
-                    if (c.hasVt || c.hasVn) {
+                    const bool hasT = doc.cornerT[c] != NONE, hasN = doc.cornerN[c] != NONE;
+                    if (hasT || hasN) {
                         os << "/";
-                        if (c.hasVt)
-                            os << (newT[(size_t) c.vt] + 1);
-                        if (c.hasVn)
-                            os << "/" << (newN[(size_t) c.vn] + 1);
+                        if (hasT)
+                            os << (newT[doc.cornerT[c]] + 1);
+                        if (hasN)
+                            os << "/" << (newN[doc.cornerN[c]] + 1);
                     }
                 }
                 os << eol;
             } else {
-                std::string keyword;
-                if (kind == Material)
-                    split_keyword(doc.lines[i], keyword, outMaterial);
-                if (kind == Smooth)
-                    split_keyword(doc.lines[i], keyword, outSmooth);
-                os << doc.lines[i] << eol;
+                if (kind == Material || kind == Smooth) {
+                    split_keyword(doc.line(i), keyword, rest);
+                    auto it = doc.stringIds.find(rest);
+                    (kind == Material ? outMaterial : outSmooth) = it->second;
+                }
+                doc.write_line(os, i);
             }
-        }
+        });
         os.flush();
         if (!os)
             throw std::runtime_error("Error while writing \"" + temp + "\" (disk full?)!");
@@ -540,6 +707,24 @@ void splice_obj(const std::string &input, const std::string &output,
     cout << "done. (took " << timeString(timer.value()) << ")" << endl;
     for (const std::string &note : notes)
         cout << "   " << note << endl;
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Shortcuts                                                                */
+/* ------------------------------------------------------------------------- */
+
+std::vector<ObjectInfo> list_objects(const std::string &filename) {
+    return Scene(filename).objects();
+}
+
+void load_object(const std::string &filename, const std::string &name,
+                 MatrixXu &F, MatrixXf &V, uint64_t *polygons) {
+    Scene(filename).load(name, F, V, polygons);
+}
+
+void splice_obj(const std::string &input, const std::string &output,
+                const std::vector<Replacement> &replacements) {
+    Scene(input).splice(output, replacements);
 }
 
 } // namespace objscene

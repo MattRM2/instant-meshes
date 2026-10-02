@@ -659,6 +659,12 @@ def build(cover_image=None):
         "Point clouds (.aln) accept face counts, not percentages.",
         "The per-mesh mode (-m / --others, Alembic and OBJ) is available on the command line; the interface "
         "remeshes the whole loaded file.",
+        "<b>Memory</b>, per-mesh mode: the remeshing itself takes about 800 bytes per input vertex, for one mesh "
+        "at a time (the peak is that of the largest remeshed mesh, not of the scene). An Alembic file is read on "
+        "demand; an OBJ scene is parsed once and kept at about 3x its file size. Remeshed meshes wait in a "
+        "temporary file next to the output (.spool.tmp, removed at the end).",
+        "A mesh whose longest edges are much longer than the target edge length is subdivided before "
+        "remeshing (heavier): the log warns about it and lists those meshes at the end.",
     ])
     story += [Spacer(1, 4 * mm), SubHeader("6.3", "Credits and licenses"), Spacer(1, 3 * mm),
               p("Instant Meshes: Wenzel Jakob, Marco Tarini, Daniele Panozzo, Olga Sorkine-Hornung, "

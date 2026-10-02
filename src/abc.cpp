@@ -320,6 +320,25 @@ std::vector<uint8_t> Archive::sample(const Property &property) {
     return result;
 }
 
+uint64_t Archive::sample_count(const Property &property) {
+    if (property.type == Property::Compound)
+        fail("property \"" + property.name + "\" has no values");
+    if (property.samples == 0)
+        return 0;
+    std::vector<uint64_t> g = mIn.group(property.group);
+    if (g.empty() || !is_data(g[0]))
+        fail("property \"" + property.name + "\" has no sample data");
+    const uint64_t size = mIn.data_size(g[0]);
+    if (size == 0)
+        return 0;
+    if (size < 16)
+        fail("truncated sample in property \"" + property.name + "\"");
+    const uint64_t element = (uint64_t) pod_size(property.pod) * property.extent;
+    if (element == 0 || (size - 16) % element != 0)
+        fail("sample size mismatch in property \"" + property.name + "\"");
+    return (size - 16) / element;
+}
+
 std::vector<double> Archive::sample_doubles(const Property &property) {
     std::vector<uint8_t> raw = sample(property);
     const uint32_t size = pod_size(property.pod);
@@ -515,6 +534,13 @@ private:
                 path[mFilter.size()] == '/');
     }
 
+    /* 'path' is the filter itself or one of its ancestors */
+    bool on_path(const std::string &path) const {
+        return path == mFilter ||
+               (mFilter.size() > path.size() && mFilter.compare(0, path.size(), path) == 0 &&
+                mFilter[path.size()] == '/');
+    }
+
     void visit(const Object &object, const std::string &path,
                const Eigen::Matrix4d &parent, uint32_t depth, bool viaInstance) {
         if (depth > MAX_OBJECT_DEPTH)
@@ -542,6 +568,9 @@ private:
 
         for (const Object &child : mAr.children(object)) {
             const std::string childPath = (path == "/" ? "" : path) + "/" + child.name;
+            /* Loading one mesh: only its ancestors are walked */
+            if (mExact && !on_path(childPath))
+                continue;
             auto it = child.meta.find("isInstance");
             if (it != child.meta.end() && it->second == "1") {
                 /* Instance: the object at ".instanceSource" appears here */
@@ -573,6 +602,21 @@ private:
         if ((P.pod != PodFloat32 && P.pod != PodFloat64) || P.extent != 3 || P.type != Property::Array)
             mAr.fail("mesh \"" + path + "\" has positions of an unsupported type");
 
+        if (!mGeometry) {
+            /* Listing: the counts come from the stored sizes, the geometry
+               is not read (it is checked when the mesh is loaded) */
+            MeshSummary summary;
+            summary.path = path;
+            summary.vertices = mAr.sample_count(P);
+            summary.faces = mAr.sample_count(faceCounts);
+            summary.animated = P.samples > 1 || faceIndices.samples > 1 || faceCounts.samples > 1;
+            summary.instanced = viaInstance;
+            summary.world = world;
+            meshes.push_back(summary);
+            mGroups.push_back(object.group);
+            return;
+        }
+
         std::vector<double> p = mAr.sample_doubles(P);
         std::vector<uint32_t> counts = mAr.sample_indices(faceCounts);
         std::vector<uint32_t> corners = mAr.sample_indices(faceIndices);
@@ -596,8 +640,6 @@ private:
         summary.world = world;
         meshes.push_back(summary);
         mGroups.push_back(object.group);
-        if (!mGeometry)
-            return;
 
         const uint64_t base = positions.size();
         if (base + nVertices > 0x7fffffffULL || indices.size() + corners.size() > 0x7fffffffULL)

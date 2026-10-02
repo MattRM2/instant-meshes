@@ -356,7 +356,8 @@ SECTIONS = [
     (4, "Command Line", ["4.1 Batch mode", "4.2 Options", "4.3 Examples"]),
     (5, "Per-Mesh Remeshing (Alembic and OBJ)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
                                                  "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
-                                                 "5.5 Touching objects: --keep-border"]),
+                                                 "5.5 Touching objects: --keep-border",
+                                                 "5.6 Following a long run: --progress"]),
     (6, "Reference", ["6.1 Accuracy of the targets", "6.2 Limitations", "6.3 Credits and licenses"]),
 ]
 
@@ -546,7 +547,7 @@ def build(cover_image=None):
                      ["-m, --mesh <name>=<target>", "Per-mesh remeshing of an .abc or .obj (section 5)"],
                      ["--others <target>", "Target for every other mesh of the scene"],
                      ["--list / --dry-run", "List the meshes (--sort asc|desc, --top <n>) / print the plan"],
-                     ["--skip-failed", "Copy unchanged the meshes that cannot be remeshed, and go on"],
+                     ["--skip-failed / --progress", "Copy failed meshes unchanged and go on / print the progress"],
                      ["-V, --version", "Print the version"]],
                     [58 * mm, W - 2 * MARGIN - 58 * mm], pad=(2.5, 3.5), literal_first=True),
               Spacer(1, 4 * mm), KeepTogether([SubHeader("4.3", "Examples"), Spacer(1, 3 * mm),
@@ -640,6 +641,19 @@ def build(cover_image=None):
         "--keep-border (float precision), through Alembic transforms too.",
         "Neighbours touch but are not welded: their border vertices lie on the same line, not at the same places. "
         "A border vertex farther than one edge length from the input border is left in place and counted in the log.",
+    ]))]
+    story += [Spacer(1, 4 * mm), KeepTogether([SubHeader("5.6", "Following a long run: --progress"), Spacer(1, 3 * mm),
+              p("With <b>--progress</b>, a block that stands out in the log is printed before the first mesh and "
+                "after each remeshed (or skipped) mesh: the percentage, a bar, the meshes done, the elapsed time "
+                "and an estimate of the time left."),
+              Spacer(1, 3 * mm),
+              codeblock(['InstantMeshes.exe scene.abc -o scene_retopo.abc -m "Rock_*=50%" --progress',
+                         ">" * 74,
+                         ">>> Progress  20%  [######------------------------]  3/15 meshes  elapsed 1.2m, ~4.8m left",
+                         ">" * 74])] + bullets([
+        "The percentage is weighted by the <b>input faces</b> of the planned meshes: a large mesh counts more than "
+        "a small one, as it takes longer to remesh. The mesh count is shown next to it.",
+        "Per-mesh mode only (-m / --others); the last block, at 100%, comes before the file is written.",
     ]))]
     story += [PageBreak()]
 

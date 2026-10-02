@@ -387,6 +387,30 @@ static std::vector<abc::MeshSummary> list_scene(const std::string &input) {
     return scene_meshes(objscene::Scene(input));
 }
 
+/* --progress: a block that stands out in a long log
+   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+   >>> Progress  20%  [######------------------------]  3/15 meshes  elapsed ...
+   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> */
+static void print_progress(double fraction, size_t done, size_t total, double elapsedMs,
+                           const std::string &last) {
+    fraction = std::min(1.0, std::max(0.0, fraction));
+    const int percent = done == total && total > 0 ? 100 : std::min(99, (int) std::floor(fraction * 100));
+    const int width = 30, filled = (int) std::round(fraction * width);
+    const std::string rule(74, '>');
+    cout << endl << rule << endl
+         << ">>> Progress " << std::setw(3) << percent << "%  ["
+         << std::string((size_t) filled, '#') << std::string((size_t) (width - filled), '-') << "]  "
+         << done << "/" << total << " meshes";
+    if (done > 0) {
+        cout << "  elapsed " << timeString(elapsedMs);
+        if (done < total && fraction > 0)
+            cout << ", ~" << timeString(elapsedMs * (1 - fraction) / fraction) << " left";
+    }
+    if (!last.empty())
+        cout << "  (" << last << ")";
+    cout << endl << rule << endl;
+}
+
 /* Remeshed meshes waiting for the final write, kept in a temporary file
    (removed at the end, whatever happens) rather than in memory */
 class Spool {
@@ -487,7 +511,7 @@ void batch_list(const std::string &input, int sort, int top) {
 
 void batch_process_objects(const std::string &input, const std::string &output,
                            const RemeshParams &params, const std::vector<MeshRule> &rules,
-                           const FaceTarget &others, bool dryRun, bool skipFailed) {
+                           const FaceTarget &others, bool dryRun, bool skipFailed, bool progress) {
     /* An OBJ file is parsed once for the plan, the loads and the write */
     const bool obj = is_obj_file(input);
     std::unique_ptr<objscene::Scene> objScene;
@@ -574,6 +598,16 @@ void batch_process_objects(const std::string &input, const std::string &output,
     cout << "   Output file            = " << output << endl;
     print_settings(params);
 
+    /* --progress: weighted by input faces, the remeshing time follows them */
+    uint64_t totalFaces = 0, doneFaces = 0;
+    size_t done = 0;
+    for (const Item &i : plan)
+        if (i.remesh)
+            totalFaces += i.mesh->faces;
+    Timer<> clock;
+    if (progress)
+        print_progress(0, 0, count, 0, "");
+
     /* The new meshes wait on disk for the final write, not in memory */
     Spool spool(output + ".spool.tmp");
     std::vector<abc::Replacement> replacements;
@@ -582,6 +616,7 @@ void batch_process_objects(const std::string &input, const std::string &output,
         if (!i.remesh)
             continue;
         cout << endl << "=== " << i.mesh->path << " -> " << i.target.text << endl;
+        const size_t skippedBefore = skipped.size();
         try {
             MatrixXu F;
             MatrixXf V, N;
@@ -616,6 +651,13 @@ void batch_process_objects(const std::string &input, const std::string &output,
                 throw;
             cout << "Skipped, kept unchanged: " << e.what() << endl;
             skipped.push_back(i.mesh->path + ": " + e.what());
+        }
+        if (progress) {
+            doneFaces += i.mesh->faces;
+            ++done;
+            const double fraction = totalFaces > 0 ? (double) doneFaces / totalFaces : (double) done / count;
+            print_progress(fraction, done, count, (double) clock.value(),
+                           i.mesh->path + (skipped.size() > skippedBefore ? " skipped" : " done"));
         }
     }
 

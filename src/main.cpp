@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
     std::string batchOutput;
     std::vector<MeshRule> meshRules;
     FaceTarget others;
-    bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false;
+    bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false, progress = false;
     int listSort = 0, listTop = 0;
     #if defined(__APPLE__)
         bool launched_from_finder = false;
@@ -163,6 +163,8 @@ int main(int argc, char **argv) {
                 dryRun = true;
             } else if (strcmp("--skip-failed", argv[i]) == 0) {
                 skipFailed = true;
+            } else if (strcmp("--progress", argv[i]) == 0) {
+                progress = true;
             } else if (strcmp("--keep-border", argv[i]) == 0) {
                 keepBorder = true;
             } else if (strcmp("--compat", argv[i]) == 0 || strcmp("-C", argv[i]) == 0) {
@@ -235,6 +237,10 @@ int main(int argc, char **argv) {
         cerr << "Error: --keep-border needs an .obj or .abc output (its border faces are polygons)!" << endl;
         help = true;
     }
+    if (progress && !objectMode) {
+        cerr << "Error: --progress applies to the -m / --others per-mesh mode!" << endl;
+        help = true;
+    }
     if (skipFailed && !objectMode) {
         cerr << "Error: --skip-failed applies to the -m / --others per-mesh mode!" << endl;
         help = true;
@@ -283,6 +289,8 @@ int main(int argc, char **argv) {
         cout << "       --dry-run             Print the plan of -m / --others and stop" << endl;
         cout << "       --skip-failed         A mesh that cannot be remeshed (e.g. no faces for its" << endl;
         cout << "                             target) is copied unchanged instead of stopping" << endl;
+        cout << "       --progress            Print the progress after each remeshed mesh (in %" << endl;
+        cout << "                             of the input faces, elapsed and remaining time)" << endl;
         cout << "       --list                List the polygon meshes of an .abc file / objects of an .obj" << endl;
         cout << "       --sort asc|desc       With --list: by ascending / descending face count" << endl;
         cout << "       --top <n>             With --list: only the first <n> (e.g. --sort desc --top 10)" << endl;
@@ -320,7 +328,7 @@ int main(int argc, char **argv) {
             if (listMeshes)
                 batch_list(args[0], listSort, listTop);
             else if (objectMode)
-                batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun, skipFailed);
+                batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun, skipFailed, progress);
             else
                 batch_process(args[0], batchOutput, params);
             return 0;

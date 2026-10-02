@@ -313,6 +313,26 @@ def test_skip_failed(exe, tmp):
         code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshB=1", "--skip-failed")
         code2, meshes = list_meshes(exe, out)
         check(code == 0 and meshes == {A: 7872, B: 576}, "%s: all skipped, scene copied: %s" % (ext, meshes))
+    # --progress: a block after each mesh, skipped ones included, 100% at the end
+    scene = os.path.join(DATA, "scene_ab.abc")
+    out = os.path.join(tmp, "progress.abc")
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%", "-m", "MeshB=1", "--skip-failed", "--progress")
+    lines = [l for l in log.splitlines() if l.startswith(">>> Progress")]
+    check(code == 0 and len(lines) == 3 and "  0%" in lines[0] and "0/2 meshes" in lines[0],
+          "--progress: start block (%s)" % lines[:1])
+    check(len(lines) == 3 and "1/2 meshes" in lines[1] and "/Props/MeshA/MeshA done" in lines[1] and
+          "left" in lines[1] and "%" in lines[1], "--progress: after MeshA (%s)" % lines[1:2])
+    check(len(lines) == 3 and "100%" in lines[2] and "2/2 meshes" in lines[2] and
+          "/Props/MeshB/MeshB skipped" in lines[2] and "[" + "#" * 30 + "]" in lines[2],
+          "--progress: 100%% at the end (%s)" % lines[2:])
+    check(log.count(">" * 74) == 6, "--progress: blocks of three lines")
+    # weighted by input faces: MeshA holds 7872 of 8448 faces
+    check(len(lines) == 3 and " 93%" in lines[1], "--progress: weighted by faces (%s)" % lines[1:2])
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "MeshA=50%")
+    check(">>> Progress" not in log, "no progress block without --progress")
+    code, log = run(exe, os.path.join(DATA, "cube_quads.obj"), "-o", os.path.join(tmp, "e.obj"),
+                    "-f", "50%", "--progress")
+    check(code != 0 and "--progress applies to the -m / --others" in log, "--progress needs -m / --others")
     code, log = run(exe, os.path.join(DATA, "cube_quads.obj"), "-o", os.path.join(tmp, "e.obj"),
                     "-f", "50%", "--skip-failed")
     check(code != 0 and "--skip-failed applies to the -m / --others" in log, "--skip-failed needs -m / --others")

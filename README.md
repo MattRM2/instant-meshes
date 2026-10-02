@@ -40,6 +40,7 @@ InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 | `--sort asc\|desc`, `--top <n>` | Avec `--list` : tri par nombre de faces croissant / décroissant, et seulement les n premiers (`--sort desc --top 10` = les 10 objets les plus lourds) |
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
 | `--keep-border` | Replace le bord libre remaillé exactement sur le bord d'origine (coins et courbes compris) : des objets qui se touchent, comme des plaques de sol, restent jointifs après un remaillage séparé. Implique `-b` ; sortie `.obj` ou `.abc` |
+| `--progress` | Affiche un bloc de progression bien visible (3 lignes) avant le premier maillage et après chaque maillage traité : pourcentage pondéré par les faces d'entrée, barre, maillages faits / total, temps écoulé et temps restant estimé |
 | `--skip-failed` | Un maillage impossible à remailler (ex. aucune face pour une cible trop petite) est recopié intact au lieu de tout arrêter ; la liste des maillages sautés est affichée à la fin |
 
 Exemple, par objet :

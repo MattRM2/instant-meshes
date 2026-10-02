@@ -137,6 +137,30 @@ def test_mesh_rules(exe, tmp):
     check(code == 0 and meshes == {A: 7872, B: 576}, "--list scene_ab: %s" % meshes)
     code, log = run(exe, os.path.join(DATA, "instances.abc"), "--list")
     check(code == 0 and log.count("(instanced)") == 2, "--list flags instances")
+
+    # --sort / --top
+    def listed(*extra):
+        code, log = run(exe, scene, "--list", *extra)
+        return code, [l.split()[0] for l in log.splitlines() if l.strip().startswith("/")], log
+    code, order, log = listed("--sort", "asc")
+    check(code == 0 and order == [B, A] and "(ascending)" in log, "--sort asc: %s" % order)
+    code, order, log = listed("--sort", "DESC")
+    check(code == 0 and order == [A, B] and "(descending)" in log, "--sort desc: %s" % order)
+    code, order, log = listed("--sort", "asc", "--top", "1")
+    check(code == 0 and order == [B] and "first 1 shown" in log and ": 2," in log, "--top 1: %s" % order)
+    code, order, log = listed("--top", "5")
+    check(code == 0 and order == [A, B] and "shown" not in log, "--top larger than the list")
+    code, order, log = listed()
+    check(code == 0 and order == [A, B] and "face count" not in log, "--list alone keeps the file order")
+    for args, expect in ((["--list", "--sort", "big"], "Invalid --sort order"),
+                         (["--list", "--top", "0"], "Invalid --top count"),
+                         (["--sort", "asc"], "--sort and --top apply to --list"),
+                         (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=50%", "--top", "3"],
+                          "--sort and --top apply to --list")):
+        code, log = run(exe, scene, *args)
+        check(code != 0 and expect in log and "Optimizing" not in log, "%s -> '%s'" % (" ".join(args), expect))
+    code, log = run(exe, os.path.join(DATA, "scene_ab.obj"), "--list", "--sort", "desc", "--top", "1")
+    check(code == 0 and "/MeshA" in log and "/MeshB" not in log, "OBJ --list --sort desc --top 1")
     code, log = run(exe, os.path.join(DATA, "animated.abc"), "--list")
     check(code == 0 and "(animated)" in log, "--list flags animation")
 

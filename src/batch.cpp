@@ -368,16 +368,35 @@ static std::string mesh_flags(const abc::MeshSummary &m) {
     return flags;
 }
 
-void batch_list(const std::string &input) {
-    const std::vector<abc::MeshSummary> meshes = list_scene(input);
+void batch_list(const std::string &input, int sort, int top) {
+    const std::vector<abc::MeshSummary> all = list_scene(input);
+    /* Sorted through pointers: MeshSummary holds an aligned Eigen matrix */
+    std::vector<const abc::MeshSummary *> meshes;
+    for (const abc::MeshSummary &m : all)
+        meshes.push_back(&m);
+    if (sort != 0)
+        std::sort(meshes.begin(), meshes.end(),
+                  [sort](const abc::MeshSummary *a, const abc::MeshSummary *b) {
+                      if (a->faces != b->faces)
+                          return sort > 0 ? a->faces < b->faces : a->faces > b->faces;
+                      return a->path < b->path;
+                  });
+    if (top > 0 && (size_t) top < meshes.size())
+        meshes.resize((size_t) top);
+
     size_t width = 0;
-    for (const abc::MeshSummary &m : meshes)
-        width = std::max(width, m.path.size());
-    cout << "Polygon meshes in \"" << input << "\": " << meshes.size() << endl;
-    for (const abc::MeshSummary &m : meshes)
-        cout << "   " << std::left << std::setw((int) width) << m.path << std::right
-             << "  " << std::setw(9) << m.faces << " faces  " << std::setw(9) << m.vertices
-             << " vertices" << mesh_flags(m) << endl;
+    for (const abc::MeshSummary *m : meshes)
+        width = std::max(width, m->path.size());
+    cout << "Polygon meshes in \"" << input << "\": " << all.size();
+    if (sort != 0)
+        cout << ", by face count " << (sort > 0 ? "(ascending)" : "(descending)");
+    if (meshes.size() < all.size())
+        cout << ", first " << meshes.size() << " shown";
+    cout << endl;
+    for (const abc::MeshSummary *m : meshes)
+        cout << "   " << std::left << std::setw((int) width) << m->path << std::right
+             << "  " << std::setw(9) << m->faces << " faces  " << std::setw(9) << m->vertices
+             << " vertices" << mesh_flags(*m) << endl;
 }
 
 void batch_process_objects(const std::string &input, const std::string &output,

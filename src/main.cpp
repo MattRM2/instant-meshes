@@ -34,6 +34,7 @@ int main(int argc, char **argv) {
     std::vector<MeshRule> meshRules;
     FaceTarget others;
     bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false;
+    int listSort = 0, listTop = 0;
     #if defined(__APPLE__)
         bool launched_from_finder = false;
     #endif
@@ -138,6 +139,26 @@ int main(int argc, char **argv) {
                 others = parse_face_target(argv[i]);
             } else if (strcmp("--list", argv[i]) == 0) {
                 listMeshes = true;
+            } else if (strcmp("--sort", argv[i]) == 0) {
+                if (++i >= argc) {
+                    cerr << "Missing --sort order (asc or desc)!" << endl;
+                    return -1;
+                }
+                const std::string order = str_tolower(argv[i]);
+                if (order == "asc")
+                    listSort = 1;
+                else if (order == "desc")
+                    listSort = -1;
+                else
+                    throw std::runtime_error("Invalid --sort order \"" + std::string(argv[i]) + "\" (asc or desc)");
+            } else if (strcmp("--top", argv[i]) == 0) {
+                if (++i >= argc) {
+                    cerr << "Missing --top count!" << endl;
+                    return -1;
+                }
+                listTop = str_to_int32_t(argv[i]);
+                if (listTop <= 0)
+                    throw std::runtime_error("Invalid --top count \"" + std::string(argv[i]) + "\"");
             } else if (strcmp("--dry-run", argv[i]) == 0) {
                 dryRun = true;
             } else if (strcmp("--skip-failed", argv[i]) == 0) {
@@ -196,6 +217,10 @@ int main(int argc, char **argv) {
     const std::string sceneExt = args.size() == 1 ? extension_of(args[0]) : std::string();
     if ((listMeshes || objectMode || dryRun) && (sceneExt != ".abc" && sceneExt != ".obj")) {
         cerr << "Error: --list, -m, --others and --dry-run need one Alembic (.abc) or OBJ (.obj) input file!" << endl;
+        help = true;
+    }
+    if ((listSort != 0 || listTop > 0) && !listMeshes) {
+        cerr << "Error: --sort and --top apply to --list!" << endl;
         help = true;
     }
     if (dryRun && !objectMode) {
@@ -259,6 +284,8 @@ int main(int argc, char **argv) {
         cout << "       --skip-failed         A mesh that cannot be remeshed (e.g. no faces for its" << endl;
         cout << "                             target) is copied unchanged instead of stopping" << endl;
         cout << "       --list                List the polygon meshes of an .abc file / objects of an .obj" << endl;
+        cout << "       --sort asc|desc       With --list: by ascending / descending face count" << endl;
+        cout << "       --top <n>             With --list: only the first <n> (e.g. --sort desc --top 10)" << endl;
         cout << "   -C, --compat              Compatibility mode to load snapshots from old software versions" << endl;
         cout << "   -k, --knn <count>         Point cloud mode: number of adjacent points to consider" << endl;
         cout << "   -F, --fullscreen          Open a full-screen window" << endl;
@@ -291,7 +318,7 @@ int main(int argc, char **argv) {
     if (listMeshes || objectMode || (!batchOutput.empty() && args.size() == 1)) {
         try {
             if (listMeshes)
-                batch_list(args[0]);
+                batch_list(args[0], listSort, listTop);
             else if (objectMode)
                 batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun, skipFailed);
             else

@@ -37,6 +37,7 @@ InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 | `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) ou les objets d'un `.obj` |
 | `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier (`.abc` ou `.obj`) |
 | `--others <cible>` | Remaille aussi tous les autres maillages ; sans cette option ils sont recopiés intacts |
+| `--sort asc\|desc`, `--top <n>` | Avec `--list` : tri par nombre de faces croissant / décroissant, et seulement les n premiers (`--sort desc --top 10` = les 10 objets les plus lourds) |
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
 | `--keep-border` | Replace le bord libre remaillé exactement sur le bord d'origine (coins et courbes compris) : des objets qui se touchent, comme des plaques de sol, restent jointifs après un remaillage séparé. Implique `-b` ; sortie `.obj` ou `.abc` |
 | `--skip-failed` | Un maillage impossible à remailler (ex. aucune face pour une cible trop petite) est recopié intact au lieu de tout arrêter ; la liste des maillages sautés est affichée à la fin |

@@ -65,8 +65,10 @@ extern void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
 extern void batch_process(const std::string &input, const std::string &output,
                           const RemeshParams &params);
 
-/// Prints the polygon meshes of an Alembic file, or the objects of an OBJ file (--list)
-extern void batch_list(const std::string &input);
+/// Prints the polygon meshes of an Alembic file, or the objects of an OBJ file (--list);
+/// 'sort' > 0 by ascending face count, < 0 descending, 0 file order; 'top' > 0 keeps
+/// only the first ones
+extern void batch_list(const std::string &input, int sort = 0, int top = 0);
 
 /**
  * Alembic (or OBJ) input -> same format output, per-mesh targets (-m / --others): each

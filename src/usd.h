@@ -68,6 +68,11 @@ struct Property {
 
     /* .usdc: where the default value and the time samples are (decoded by Layer::value()) */
     uint64_t crateDefault = 0, crateSamples = 0;
+
+    /* A property of a composed stage (open_stage()): the property its value
+       comes from, in the layer that holds it (Layer::value() reads it there) */
+    const Property *origin = nullptr;
+    const class Layer *owner = nullptr;
 };
 
 struct Prim {
@@ -92,6 +97,8 @@ public:
     /// Reads a .usda, .usdc or .usdz file (the format is detected from the
     /// content: a .usd file may be text or binary); throws on any error
     explicit Layer(const std::string &filename);
+    /// An empty layer named 'filename' (a composed stage, see open_stage())
+    Layer(const std::string &filename, const std::string &format);
     ~Layer();
 
     const std::string &filename() const { return mFilename; }
@@ -100,6 +107,8 @@ public:
 
     std::map<std::string, Value> meta;        ///< upAxis, metersPerUnit, defaultPrim, subLayers...
     Prim root;                                ///< the pseudo-root, path "/"
+    /// A composed stage: the layers its properties come from (kept open)
+    std::vector<std::shared_ptr<const Layer>> sources;
 
     /// The prim at a path (nullptr if absent)
     const Prim *prim(const std::string &path) const;

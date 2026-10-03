@@ -60,13 +60,22 @@ Mat4 rotation(int axis, double degrees) {
     return m;
 }
 
+/* Whether the transform ops of a prim of this type count: USD applies them
+   to Xformable prims only, not to a typeless prim, a Scope, a material... */
+bool xformable(const std::string &type) {
+    static const std::set<std::string> not_xformable { "Scope", "Material", "Shader", "NodeGraph", "GeomSubset",
+        "BlendShape", "SkelAnimation", "Backdrop", "CollectionAPI", "RenderSettings", "RenderProduct", "RenderVar",
+        "RenderPass", "PhysicsScene", "PhysicsCollisionGroup", "PhysicsMaterial" };
+    return !type.empty() && !not_xformable.count(type);
+}
+
 /* Local matrix of a prim (column vectors: p' = M p): xformOpOrder, op by
    op, outermost first; 'reset' if it starts with !resetXformStack! */
 Mat4 local_transform(const Layer &layer, const Prim &prim, bool &reset, bool &animated) {
     Mat4 M = Mat4::Identity();
     reset = false;
     const Property *order = prim.property("xformOpOrder");
-    if (!order)
+    if (!order || !xformable(prim.type))
         return M;
     const Value ops = first_value(layer, *order);
     for (const std::string &entry : ops.strings) {
@@ -1070,22 +1079,20 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         const Placement &pl = places[i];
         const Prim *src = layer.prim(r.path);
 
-        /* the render side: purpose "render" on the render scope (on the mesh
-           too when a purpose authored below the scope would hide it), the
-           proxyPrim relationship */
-        std::vector<std::string> renderAt { pl.renderScope.empty() ? r.path : pl.renderScope };
-        if (!pl.renderScope.empty()) {
+        /* the render side: purpose "render" on the render scope and on the
+           mesh itself (a typeless scope is not imageable: its purpose would
+           not reach the mesh), the proxyPrim relationship */
+        std::vector<std::string> renderAt;
+        if (!pl.renderScope.empty())
+            renderAt.push_back(pl.renderScope);
+        renderAt.push_back(r.path);
+        for (const std::string &at : renderAt) {
             std::string own;
-            for (std::string p = r.path; p.size() > pl.renderScope.size(); p = parent_of(p))
-                if (const Prim *q = layer.prim(p))
-                    if (authored_purpose(layer, *q, own)) {
-                        renderAt.push_back(r.path);
-                        break;
-                    }
-        }
-        for (const std::string &at : renderAt)
-            if (computed_purpose(layer, at) != "render" && renderSet.insert(at).second)
+            const Prim *q = layer.prim(at);
+            const bool authored = q && authored_purpose(layer, *q, own) && own == "render";
+            if (!authored && renderSet.insert(at).second)
                 node(at).lines.push_back("uniform token purpose = \"render\"");
+        }
         node(r.path).lines.push_back("rel proxyPrim = <" + pl.proxy + ">");
 
         /* the proxy: the prims missing on its path are defined, with the
@@ -1099,8 +1106,8 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
             const Prim *mirror = layer.prim(pl.source(r.path, prefix));
             if (prefix == pl.proxy)
                 n.type = "Mesh";
-            else
-                n.type = mirror && mirror->type == "Scope" ? "Scope" : "Xform";
+            else    /* a Scope (imageable, no transform) for what is not xformable */
+                n.type = mirror && xformable(mirror->type) ? "Xform" : "Scope";
             if (prefix == pl.proxyScope)
                 n.lines.push_back("uniform token purpose = \"proxy\"");
             if (mirror && n.type != "Scope")

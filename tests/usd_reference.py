@@ -7,6 +7,10 @@ library (the pxr module that ships with Blender 4.x / 5.x).
         and usd_asset.usdc (geo/render convention, for --proxy)
     blender -b --factory-startup --python tests/usd_reference.py -- dump <file>
         prints the layer in the canonical form of build/Release/usd_dump.exe
+    blender -b --factory-startup --python tests/usd_reference.py -- compose <dir>
+        writes the assembly of tests/data/compose (every composition arc)
+    blender -b --factory-startup --python tests/usd_reference.py -- dump_stage <file>
+        prints the composed stage as usd_dump --stage does
 
 Set USD_WRITE_NEW_USDC_FILES_AS_VERSION (e.g. 0.8.0) before starting
 Blender to write an older Crate version.
@@ -238,17 +242,128 @@ def make_asset(path):
     stage.GetRootLayer().Save()
 
 
+def make_compose(out):
+    """An assembly that exercises every composition arc (tests/data/compose):
+    a prop asset with a variant set, referenced, payloaded (binary copy),
+    instanced, a sublayer, inherits, specializes, an internal reference, an
+    inactive prim, an override of a referenced mesh"""
+    os.makedirs(out, exist_ok=True)
+
+    # The prop: /Prop/geo/render/Box, material bound inside the asset,
+    # variant set "size" (small by default: a scale op in the variant)
+    prop = Usd.Stage.CreateNew(os.path.join(out, "prop.usda"))
+    UsdGeom.SetStageUpAxis(prop, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(prop, 0.01)
+    root = UsdGeom.Xform.Define(prop, "/Prop")
+    prop.SetDefaultPrim(root.GetPrim())
+    Usd.ModelAPI(root.GetPrim()).SetKind(Kind.Tokens.component)
+    mtl = UsdShade.Material.Define(prop, "/Prop/mtl/wood")
+    box, _ = sphere(prop, "/Prop/geo/render/Box", 4, 8, 1.0)
+    UsdShade.MaterialBindingAPI.Apply(box.GetPrim()).Bind(mtl)
+    vset = root.GetPrim().GetVariantSets().AddVariantSet("size")
+    for name, s in (("small", 0.5), ("big", 2.0)):
+        vset.AddVariant(name)
+        vset.SetVariantSelection(name)
+        with vset.GetVariantEditContext():
+            UsdGeom.Xform(prop.GetPrimAtPath("/Prop/geo")).AddScaleOp().Set(Gf.Vec3f(s, s, s))
+    vset.SetVariantSelection("small")
+    prop.GetRootLayer().Save()
+    Sdf.Layer.FindOrOpen(os.path.join(out, "prop.usda")).Export(os.path.join(out, "prop.usdc"))
+
+    # A sublayer of the assembly: a mesh of its own, an opinion on propA
+    extra = Usd.Stage.CreateNew(os.path.join(out, "assembly_extra.usda"))
+    over = extra.OverridePrim("/World/propA")
+    UsdGeom.Xform(over).AddRotateYOp().Set(45.0)
+    e, _ = sphere(extra, "/World/extra", 3, 6, 0.5)
+    e.AddTranslateOp().Set(Gf.Vec3d(0, 3, 0))
+    extra.GetRootLayer().Save()
+
+    stage = Usd.Stage.CreateNew(os.path.join(out, "assembly.usda"))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    stage.GetRootLayer().subLayerPaths.append("./assembly_extra.usda")
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+
+    a = UsdGeom.Xform.Define(stage, "/World/propA")                 # reference, default prim
+    a.GetPrim().GetReferences().AddReference("./prop.usda")
+    a.AddTranslateOp().Set(Gf.Vec3d(-4, 0, 0))
+    b = UsdGeom.Xform.Define(stage, "/World/propB")                 # reference with prim path, big variant
+    b.GetPrim().GetReferences().AddReference("./prop.usda", "/Prop")
+    b.GetPrim().GetVariantSets().GetVariantSet("size").SetVariantSelection("big")
+    b.AddTranslateOp().Set(Gf.Vec3d(0, 0, 4))
+    ob = stage.OverridePrim("/World/propB/geo/render/Box")          # local opinion on referenced points
+    UsdGeom.Mesh(ob).GetDisplayColorAttr().Set([Gf.Vec3f(1, 0, 0)])
+    c = UsdGeom.Xform.Define(stage, "/World/propC")                 # payload of the binary copy
+    c.GetPrim().GetPayloads().AddPayload("./prop.usdc")
+    c.AddTranslateOp().Set(Gf.Vec3d(4, 0, 0))
+    i = UsdGeom.Xform.Define(stage, "/World/inst")                  # instance
+    i.GetPrim().GetReferences().AddReference("./prop.usda")
+    i.GetPrim().SetInstanceable(True)
+    i.AddTranslateOp().Set(Gf.Vec3d(0, 0, -4))
+    off = UsdGeom.Xform.Define(stage, "/World/off")                 # inactive
+    off.GetPrim().GetReferences().AddReference("./prop.usda")
+    off.GetPrim().SetActive(False)
+
+    cls = stage.CreateClassPrim("/_tree")                           # inherits: a class with a mesh
+    leaves, _ = sphere(stage, "/_tree/leaves", 3, 6, 1.5)
+    leaves.AddTranslateOp().Set(Gf.Vec3d(0, 2, 0))
+    t = UsdGeom.Xform.Define(stage, "/World/tree")
+    t.GetPrim().GetInherits().AddInherit("/_tree")
+    t.AddTranslateOp().Set(Gf.Vec3d(-4, 0, -4))
+    base = stage.CreateClassPrim("/_rock")                          # specializes
+    rock, _ = sphere(stage, "/_rock/rock", 3, 5, 0.7)
+    r = UsdGeom.Xform.Define(stage, "/World/rock")
+    r.GetPrim().GetSpecializes().AddSpecialize("/_rock")
+    r.AddTranslateOp().Set(Gf.Vec3d(4, 0, -4))
+    copy = UsdGeom.Xform.Define(stage, "/World/treeCopy")           # internal reference
+    copy.GetPrim().GetReferences().AddInternalReference("/World/tree")
+    copy.AddTranslateOp(opSuffix="copy").Set(Gf.Vec3d(-2, 0, -2))
+    stage.GetRootLayer().Save()
+    Sdf.Layer.FindOrOpen(os.path.join(out, "assembly.usda")).Export(os.path.join(out, "assembly.usdc"))
+    world_obj(os.path.join(out, "assembly.usda"), os.path.join(out, "assembly_world.obj"))
+
+
+def dump_stage(path):
+    """The composed stage, in the canonical form of usd_dump --stage"""
+    stage = Usd.Stage.Open(path)
+    layer = stage.GetRootLayer()
+    fmt_name = os.path.splitext(path)[1][1:]
+    if fmt_name == "usd":
+        fmt_name = "usdc" if open(path, "rb").read(8) == b"PXR-USDC" else "usda"
+    print("FORMAT %s" % fmt_name)
+    for key in ("upAxis", "metersPerUnit", "defaultPrim"):
+        if layer.pseudoRoot.HasInfo(key):
+            print("META %s = %s" % (key, summary(layer.pseudoRoot.GetInfo(key))))
+    names = {Sdf.SpecifierDef: "def", Sdf.SpecifierOver: "over", Sdf.SpecifierClass: "class"}
+    it = iter(Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies(Usd.PrimAllPrimsPredicate)))
+    next(it)   # the pseudo-root
+    for prim in it:
+        print("PRIM %s %s %s" % (prim.GetPath(), names[prim.GetSpecifier()], prim.GetTypeName()))
+        for prop in sorted(prim.GetAuthoredProperties(), key=lambda p: p.GetName()):
+            if isinstance(prop, Usd.Relationship):
+                print("  REL %s [%s]" % (prop.GetName(), " | ".join(str(p) for p in prop.GetTargets())))
+                continue
+            uniform = "uniform " if prop.GetVariability() == Sdf.VariabilityUniform else ""
+            samples = prop.GetTimeSamples()
+            ts = " (timeSamples)" if samples else ""
+            print("  ATTR %s %s%s = %s%s" % (prop.GetName(), uniform, prop.GetTypeName(),
+                                            summary(prop.Get(Usd.TimeCode.Default())), ts))
+            for t in samples:
+                print("    SAMPLE %s: %s" % (fmt(t), summary(prop.Get(t))))
+
+
 def world_obj(path, obj):
     """The meshes of the composed stage at their first frame, in world space,
     counter-clockwise (left-handed meshes reversed), in traversal order,
-    without the instances: what Instant Meshes must load from the layer"""
+    without the instances: what Instant Meshes must load from the stage"""
     stage = Usd.Stage.Open(path)
     time = Usd.TimeCode.EarliestTime()
     cache = UsdGeom.XformCache(time)
     base = 1
     with open(obj, "w", newline="\n") as f:
         for prim in stage.Traverse():
-            if prim.GetTypeName() != "Mesh" or prim.IsInstanceProxy() or str(prim.GetPath()).startswith("/World/geo/Var"):
+            if prim.GetTypeName() != "Mesh" or prim.IsInstanceProxy():
                 continue
             mesh = UsdGeom.Mesh(prim)
             m = cache.GetLocalToWorldTransform(prim)
@@ -368,3 +483,8 @@ if args[0] == "make":
     print("[OK] usd reference data in", out)
 elif args[0] == "dump":
     dump(args[1])
+elif args[0] == "compose":
+    make_compose(os.path.abspath(args[1]))
+    print("[OK] composition data in", args[1])
+elif args[0] == "dump_stage":
+    dump_stage(args[1])

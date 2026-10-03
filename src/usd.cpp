@@ -253,6 +253,11 @@ Layer::Layer(const std::string &filename) : mFilename(filename), d(new Impl()) {
     }
 }
 
+Layer::Layer(const std::string &filename, const std::string &format)
+    : mFilename(filename), mFormat(format), d(new Impl()) {
+    root.path = "/";
+}
+
 Layer::~Layer() { }
 
 const Prim *Layer::prim(const std::string &path) const {
@@ -272,6 +277,8 @@ const Prim *Layer::prim(const std::string &path) const {
 }
 
 Value Layer::value(const Property &property) const {
+    if (property.origin)
+        return property.owner->value(*property.origin);
     if (d->crate && property.crateDefault != 0) {
         Value v = d->crate->value(property.crateDefault);
         v.type = property.type;
@@ -281,12 +288,16 @@ Value Layer::value(const Property &property) const {
 }
 
 size_t Layer::count(const Property &property) const {
+    if (property.origin)
+        return property.owner->count(*property.origin);
     if (d->crate && property.crateDefault != 0)
         return (size_t) d->crate->count(property.crateDefault);
     return property.value.size();
 }
 
 Value Layer::samples(const Property &property) const {
+    if (property.origin)
+        return property.owner->samples(*property.origin);
     if (!property.hasTimeSamples)
         return Value();
     if (d->crate) {

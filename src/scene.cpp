@@ -5,6 +5,7 @@
 #include "scene.h"
 #include "objscene.h"
 #include "usdscene.h"
+#include "usdstage.h"
 
 namespace {
 
@@ -73,11 +74,12 @@ private:
     objscene::Scene mScene;
 };
 
-/* USD: the layer is read once (attribute values on demand); the output is a
-   .usda layer over the input */
+/* USD: the stage is composed once (attribute values read on demand); the
+   output is a .usda layer over the input */
 class UsdScene : public SceneFile {
 public:
-    explicit UsdScene(const std::string &filename) : SceneFile(filename), mLayer(filename) { }
+    explicit UsdScene(const std::string &filename)
+        : SceneFile(filename), mStage(usd::open_stage(filename)), mLayer(*mStage) { }
 
     std::vector<SceneMesh> meshes() override { return usd::list_meshes(mLayer); }
 
@@ -99,7 +101,8 @@ public:
     }
 
 private:
-    usd::Layer mLayer;
+    std::shared_ptr<const usd::Layer> mStage;
+    const usd::Layer &mLayer;
 };
 
 } // namespace

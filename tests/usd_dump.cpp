@@ -4,10 +4,12 @@
     tests/usd_reference.py prints with Pixar's USD library, so that both
     can be compared line by line.
 
-    Usage: usd_dump file.usd
+    Usage: usd_dump [--stage] file.usd
+    --stage: the composed stage (usdstage.h) instead of the layer
 */
 
 #include "usd.h"
+#include "usdstage.h"
 #include <cstdio>
 #include <algorithm>
 #include <cmath>
@@ -82,12 +84,14 @@ static void dump(const Layer &layer, const Prim &p) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: usd_dump file.usd\n");
+    const bool stage = argc == 3 && std::string(argv[1]) == "--stage";
+    if (argc != 2 && !stage) {
+        fprintf(stderr, "Usage: usd_dump [--stage] file.usd\n");
         return 2;
     }
     try {
-        Layer layer(argv[1]);
+        std::shared_ptr<const Layer> opened = stage ? open_stage(argv[2]) : std::make_shared<const Layer>(argv[1]);
+        const Layer &layer = *opened;
         printf("FORMAT %s\n", layer.format().c_str());
         for (const char *key : { "upAxis", "metersPerUnit", "defaultPrim" }) {
             auto it = layer.meta.find(key);

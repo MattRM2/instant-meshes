@@ -752,6 +752,61 @@ Value CrateFile::value(uint64_t rep) {
             if (header & 8) v.deleted = items();
             return v;
         }
+        case TReferenceListOp: case TPayloadListOp: case TPayload: {
+            /* SdfReference: asset (string index), prim path (path index),
+               layer offset (2 doubles), custom data (count, then string
+               index + 8-byte value jump each). SdfPayload: no custom data,
+               a layer offset from 0.8.0. Items as the .usda reader keeps
+               them: "asset<path>", "<path>" or "asset" */
+            const bool reference = type == TReferenceListOp;
+            uint64_t pos = payload;
+            auto item = [&]() {
+                std::string asset = string(get<uint32_t>(pos));
+                const std::string prim = path(get<uint32_t>(pos));
+                if (reference || mVersion >= 0x000800) {
+                    get<double>(pos);
+                    get<double>(pos);
+                }
+                if (reference) {
+                    const uint64_t n = get<uint64_t>(pos);
+                    if (n > mSize / 12)
+                        fail("invalid reference custom data");
+                    for (uint64_t k = 0; k < n; ++k) {
+                        get<uint32_t>(pos);
+                        get<int64_t>(pos);
+                    }
+                }
+                if (!prim.empty())
+                    asset += "<" + prim + ">";
+                return asset;
+            };
+            v.kind = Value::ListOp;
+            if (type == TPayload) {
+                v.isExplicit = true;
+                v.explicitItems.push_back(item());
+                return v;
+            }
+            const uint8_t header = get<uint8_t>(pos);
+            v.isExplicit = header & 1;
+            auto items = [&]() {
+                const uint64_t count = get<uint64_t>(pos);
+                if (count > mSize / 8)
+                    fail("invalid reference list");
+                std::vector<std::string> out;
+                for (uint64_t k = 0; k < count; ++k)
+                    out.push_back(item());
+                return out;
+            };
+            if (header & 2) v.explicitItems = items();
+            if (header & 4) v.appended = items();
+            if (header & 32) v.prepended = items();
+            if (header & 64) {
+                const std::vector<std::string> a = items();
+                v.appended.insert(v.appended.end(), a.begin(), a.end());
+            }
+            if (header & 8) v.deleted = items();
+            return v;
+        }
         case TVariantSelectionMap: {
             v.kind = Value::Dictionary;
             uint64_t pos = payload;

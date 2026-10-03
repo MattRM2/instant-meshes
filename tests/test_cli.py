@@ -517,7 +517,7 @@ def test_usd_scenes(exe, tmp):
     import re
     import shutil
     want = {"/World/geo/MeshA": 10, "/World/geo/Group/MeshB": 5, "/World/geo/MeshC": 1200,
-            "/World/geo/MeshD": 1, "/World/geo/Spin/MeshE": 1}
+            "/World/geo/MeshD": 1, "/World/geo/Spin/MeshE": 1, "/World/geo/Inst/Box": 1, "/World/geo/Var/Lod": 1}
     for ext in ("usda", "usdc", "usdz"):
         src = os.path.join(tmp, "scene." + ext)
         shutil.copy(os.path.join(DATA, "usd_scene." + ext), src)
@@ -607,6 +607,45 @@ def test_usd_proxies(exe, tmp):
           "--proxy next to the mesh")
 
 
+def test_usd_composition(exe, tmp):
+    print("USD composition: sublayers, references, payloads, variants, inherits, specializes")
+    import shutil
+    dump = os.path.join(os.path.dirname(exe), "usd_dump.exe" if os.name == "nt" else "usd_dump")
+    data = os.path.join(DATA, "compose")
+    with open(os.path.join(data, "assembly.dump.txt")) as f:
+        want = [l.rstrip("\n") for l in f]
+    for name in ("assembly.usda", "assembly.usdc"):
+        code, log = run(dump, "--stage", os.path.join(data, name))
+        got = [l for l in log.replace("\r\n", "\n").split("\n") if l and not l.startswith("FORMAT")]
+        check(code == 0 and got == want, "%s composed as Pixar's USD does: %d lines, %d different" % (
+            name, len(got), sum(1 for a, b in zip(got, want) if a != b) + abs(len(got) - len(want))))
+
+    work = os.path.join(tmp, "compose")
+    shutil.copytree(data, work)
+    scene = os.path.join(work, "assembly.usda")
+    code, meshes = list_meshes(exe, scene)
+    check(code == 0 and len(meshes) == 8 and meshes.get("/World/propB/geo/render/Box") == 32 and
+          meshes.get("/World/treeCopy/leaves") == 18 and meshes.get("/World/rock/rock") == 15,
+          "--list of the composed stage: %s" % meshes)
+
+    # a mesh that comes from a reference, replaced by an over in the layer
+    out = os.path.join(work, "assembly_retopo.usda")
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "World/propB/geo/render/Box=300%")
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check(code == 0 and 'over "propB"' in text and "faceVertexCounts" in text and "@./assembly.usda@" in text,
+          "-m on a referenced mesh")
+    code, log = run(exe, scene, "-o", out, "-m", "World/inst/*=50%")
+    check(code != 0 and "instanced" in log, "an instanced mesh is refused")
+
+    # proxies of referenced meshes: geo/proxy inside each reference
+    out = os.path.join(work, "assembly_proxy.usda")
+    code, log = run(exe, scene, "-o", out, "-d", "--proxy", "-m", "propA=200%", "-m", "propC=200%")
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check(code == 0 and "rel proxyPrim = </World/propA/geo/proxy/Box>" in text and
+          "rel material:binding = </World/propA/mtl/wood>" in text and
+          "rel proxyPrim = </World/propC/geo/proxy/Box>" in text, "--proxy on referenced meshes")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -647,6 +686,7 @@ def main():
         test_usd_reader(exe, tmp)
         test_usd_scenes(exe, tmp)
         test_usd_proxies(exe, tmp)
+        test_usd_composition(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

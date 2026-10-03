@@ -8,6 +8,7 @@
 #include "usd.h"
 #include "usdc.h"
 #include "usdscene.h"
+#include "usdstage.h"
 #include "meshio.h"
 #include <pcg32.h>
 #include <chrono>
@@ -176,9 +177,40 @@ static void test_proxy_paths() {
     CHECK(where.size() == 2 && where[0] == "/World/geo/MeshA_proxy" && where[1] == "/World/geo/Spin/MeshE_proxy");
 }
 
+/* A composed stage (tests/data/compose: sublayer, references, payload,
+   variants, inherits, specializes, instance): the meshes where Pixar's USD
+   places them, the material bindings mapped into the stage */
+static void test_compose() {
+    std::cout << "usd: composed stage, meshes in world space" << std::endl;
+    MatrixXu Ft;
+    MatrixXf Vt;
+    load_obj(data_path("compose/assembly_world.obj"), Ft, Vt);
+    for (const char *name : { "compose/assembly.usda", "compose/assembly.usdc" }) {
+        MatrixXu F;
+        MatrixXf V, N;
+        CHECK(error_of([&] { load_mesh_or_pointcloud(data_path(name), F, V, N); }) == "");
+        CHECK(F == Ft && V.cols() == Vt.cols());
+        if (V.cols() == Vt.cols())
+            CHECK((V - Vt).cwiseAbs().maxCoeff() < 1e-5f);
+    }
+    std::shared_ptr<const Layer> stage = open_stage(data_path("compose/assembly.usdc"));
+    const Prim *box = stage->prim("/World/propB/geo/render/Box");
+    const Property *binding = box ? box->property("material:binding") : nullptr;
+    CHECK(binding && binding->targets.size() == 1 && binding->targets[0] == "/World/propB/mtl/wood");
+    std::vector<abc::MeshSummary> meshes = list_meshes(*stage);
+    size_t instanced = 0;
+    for (const abc::MeshSummary &m : meshes)
+        instanced += m.instanced;
+    CHECK(meshes.size() == 8 && instanced == 1 && !stage->prim("/World/off/geo"));
+    /* a layer without arcs is read as is */
+    std::shared_ptr<const Layer> plain = open_stage(data_path("usd_asset.usdc"));
+    CHECK(plain->sources.empty() && plain->prim("/Asset/geo/render/Body"));
+}
+
 void test_usd(int fuzz_scale) {
     test_read();
     test_world();
+    test_compose();
     test_proxy_paths();
     test_fuzz(fuzz_scale);
 }

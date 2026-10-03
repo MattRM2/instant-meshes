@@ -1,0 +1,117 @@
+META upAxis = s1 [Y]
+META metersPerUnit = n=1 sum=0.01 [0.01]
+META defaultPrim = s1 [World]
+PRIM /World def Xform
+PRIM /World/propA def Xform
+  ATTR xformOp:rotateY float = n=1 sum=45 [45]
+  ATTR xformOp:translate double3 = n=3 sum=-4 [-4 0 0]
+  ATTR xformOpOrder uniform token[] = s2 [xformOp:rotateY | xformOp:translate]
+PRIM /World/propA/geo def 
+  ATTR xformOp:scale float3 = n=3 sum=1.5 [0.5 0.5 0.5]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:scale]
+PRIM /World/propA/geo/render def 
+PRIM /World/propA/geo/render/Box def Mesh
+  ATTR faceVertexCounts int[] = n=32 sum=112 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=112 sum=1400 [0 2 1 0]
+  REL material:binding [/World/propA/mtl/wood]
+  ATTR points point3f[] = n=78 sum=0 [0 1 0 0.7071]
+  ATTR primvars:st texCoord2f[] = n=224 sum=112 [0.0625 1 0.125 0.75]
+PRIM /World/propA/mtl def 
+PRIM /World/propA/mtl/wood def Material
+PRIM /World/extra def Mesh
+  ATTR faceVertexCounts int[] = n=18 sum=60 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=60 sum=390 [0 2 1 0]
+  ATTR points point3f[] = n=42 sum=0 [0 0.5 0 0.433]
+  ATTR primvars:st texCoord2f[] = n=120 sum=60 [0.08333 1 0.1667 0.6667]
+  ATTR xformOp:translate double3 = n=3 sum=3 [0 3 0]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /World/propB def Xform
+  ATTR xformOp:translate double3 = n=3 sum=4 [0 0 4]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /World/propB/geo def 
+  ATTR xformOp:scale float3 = n=3 sum=6 [2 2 2]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:scale]
+PRIM /World/propB/geo/render def 
+PRIM /World/propB/geo/render/Box def Mesh
+  ATTR faceVertexCounts int[] = n=32 sum=112 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=112 sum=1400 [0 2 1 0]
+  REL material:binding [/World/propB/mtl/wood]
+  ATTR points point3f[] = n=78 sum=0 [0 1 0 0.7071]
+  ATTR primvars:displayColor color3f[] = n=3 sum=1 [1 0 0]
+  ATTR primvars:st texCoord2f[] = n=224 sum=112 [0.0625 1 0.125 0.75]
+PRIM /World/propB/mtl def 
+PRIM /World/propB/mtl/wood def Material
+PRIM /World/propC def Xform
+  ATTR xformOp:translate double3 = n=3 sum=4 [4 0 0]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /World/propC/geo def 
+  ATTR xformOp:scale float3 = n=3 sum=1.5 [0.5 0.5 0.5]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:scale]
+PRIM /World/propC/geo/render def 
+PRIM /World/propC/geo/render/Box def Mesh
+  ATTR faceVertexCounts int[] = n=32 sum=112 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=112 sum=1400 [0 2 1 0]
+  REL material:binding [/World/propC/mtl/wood]
+  ATTR points point3f[] = n=78 sum=0 [0 1 0 0.7071]
+  ATTR primvars:st texCoord2f[] = n=224 sum=112 [0.0625 1 0.125 0.75]
+PRIM /World/propC/mtl def 
+PRIM /World/propC/mtl/wood def Material
+PRIM /World/inst def Xform
+  ATTR xformOp:translate double3 = n=3 sum=-4 [0 0 -4]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /World/inst/geo def 
+  ATTR xformOp:scale float3 = n=3 sum=1.5 [0.5 0.5 0.5]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:scale]
+PRIM /World/inst/geo/render def 
+PRIM /World/inst/geo/render/Box def Mesh
+  ATTR faceVertexCounts int[] = n=32 sum=112 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=112 sum=1400 [0 2 1 0]
+  REL material:binding [/World/inst/mtl/wood]
+  ATTR points point3f[] = n=78 sum=0 [0 1 0 0.7071]
+  ATTR primvars:st texCoord2f[] = n=224 sum=112 [0.0625 1 0.125 0.75]
+PRIM /World/inst/mtl def 
+PRIM /World/inst/mtl/wood def Material
+PRIM /World/off def Xform
+PRIM /World/tree def Xform
+  ATTR xformOp:translate double3 = n=3 sum=-8 [-4 0 -4]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /World/tree/leaves def Mesh
+  ATTR faceVertexCounts int[] = n=18 sum=60 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=60 sum=390 [0 2 1 0]
+  ATTR points point3f[] = n=42 sum=0 [0 1.5 0 1.299]
+  ATTR primvars:st texCoord2f[] = n=120 sum=60 [0.08333 1 0.1667 0.6667]
+  ATTR xformOp:translate double3 = n=3 sum=2 [0 2 0]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /World/rock def Xform
+  ATTR xformOp:translate double3 = n=3 sum=0 [4 0 -4]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /World/rock/rock def Mesh
+  ATTR faceVertexCounts int[] = n=15 sum=50 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=50 sum=275 [0 2 1 0]
+  ATTR points point3f[] = n=36 sum=0 [0 0.7 0 0.6062]
+  ATTR primvars:st texCoord2f[] = n=100 sum=50 [0.1 1 0.2 0.6667]
+PRIM /World/treeCopy def Xform
+  ATTR xformOp:translate double3 = n=3 sum=-8 [-4 0 -4]
+  ATTR xformOp:translate:copy double3 = n=3 sum=-4 [-2 0 -2]
+  ATTR xformOpOrder uniform token[] = s2 [xformOp:translate | xformOp:translate:copy]
+PRIM /World/treeCopy/leaves def Mesh
+  ATTR faceVertexCounts int[] = n=18 sum=60 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=60 sum=390 [0 2 1 0]
+  ATTR points point3f[] = n=42 sum=0 [0 1.5 0 1.299]
+  ATTR primvars:st texCoord2f[] = n=120 sum=60 [0.08333 1 0.1667 0.6667]
+  ATTR xformOp:translate double3 = n=3 sum=2 [0 2 0]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /_tree class 
+PRIM /_tree/leaves def Mesh
+  ATTR faceVertexCounts int[] = n=18 sum=60 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=60 sum=390 [0 2 1 0]
+  ATTR points point3f[] = n=42 sum=0 [0 1.5 0 1.299]
+  ATTR primvars:st texCoord2f[] = n=120 sum=60 [0.08333 1 0.1667 0.6667]
+  ATTR xformOp:translate double3 = n=3 sum=2 [0 2 0]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:translate]
+PRIM /_rock class 
+PRIM /_rock/rock def Mesh
+  ATTR faceVertexCounts int[] = n=15 sum=50 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=50 sum=275 [0 2 1 0]
+  ATTR points point3f[] = n=36 sum=0 [0 0.7 0 0.6062]
+  ATTR primvars:st texCoord2f[] = n=100 sum=50 [0.1 1 0.2 0.6667]

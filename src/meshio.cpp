@@ -14,6 +14,7 @@
 #include "meshio.h"
 #include "abc.h"
 #include "usdscene.h"
+#include "usdstage.h"
 #include "normal.h"
 #include <unordered_map>
 #include <fstream>
@@ -42,10 +43,10 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
         cout << "Loading \"" << filename << "\" .. ";
         cout.flush();
         Timer<> timer;
-        usd::Layer layer(filename);
-        usd::load_all(layer, F, V, polygons, uvs);
+        const std::shared_ptr<const usd::Layer> stage = usd::open_stage(filename);
+        usd::load_all(*stage, F, V, polygons, uvs);
         if (units)
-            *units = usd::stage_units(layer);
+            *units = usd::stage_units(*stage);
         cout << "done. (V=" << V.cols() << ", F=" << F.cols() << ", took " << timeString(timer.value()) << ")" << endl;
     } else if (extension == ".ply") {
         load_ply(filename, F, V, N, false, progress);

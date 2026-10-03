@@ -1,0 +1,67 @@
+META upAxis = s1 [Y]
+META metersPerUnit = n=1 sum=0.01 [0.01]
+META defaultPrim = s1 [World]
+PRIM /World def Xform
+PRIM /World/geo def Scope
+PRIM /World/geo/MeshA def Mesh
+  ATTR faceVertexCounts int[] = n=10 sum=48 [4 4 4 4]
+  ATTR faceVertexIndices int[] = n=48 sum=360 [0 1 9 8]
+  REL material:binding [/World/mtl/blue]
+  ATTR normals normal3f[] = n=144 sum=48 [0 1 0 0]
+  ATTR points point3f[] = n=48 sum=0 [1 -1 0 0.7071]
+  ATTR primvars:st texCoord2f[] = n=96 sum=23.12 [0 0.3 0.05 0.31]
+  ATTR primvars:st:indices int[] = n=48 sum=1128 [0 1 2 3]
+  ATTR subdivisionScheme uniform token = s1 [none]
+  ATTR xformOp:rotateXYZ float3 = n=3 sum=60 [10 20 30]
+  ATTR xformOp:scale float3 = n=3 sum=4 [1 2 1]
+  ATTR xformOp:translate double3 = n=3 sum=-2.5 [-3 0.5 0]
+  ATTR xformOpOrder uniform token[] = s3 [xformOp:translate | xformOp:rotateXYZ | xformOp:scale]
+PRIM /World/geo/MeshA/top def GeomSubset
+  ATTR elementType uniform token = s1 [face]
+  ATTR familyName uniform token = s1 [materialBind]
+  ATTR indices int[] = n=1 sum=9 [9]
+  REL material:binding [/World/mtl/red]
+PRIM /World/geo/Group def Xform
+  ATTR xformOp:orient quatf = n=4 sum=1.307 [0.9239 0 0.3827 0]
+  ATTR xformOp:transform matrix4d = n=16 sum=10 [1.5 0 0 0]
+  ATTR xformOpOrder uniform token[] = s2 [xformOp:transform | xformOp:orient]
+PRIM /World/geo/Group/MeshB def Mesh
+  ATTR faceVertexCounts int[] = n=5 sum=16 [3 3 3 3]
+  ATTR faceVertexIndices int[] = n=16 sum=34 [0 1 4 1]
+  ATTR orientation uniform token = s1 [leftHanded]
+  ATTR points point3f[] = n=15 sum=6 [0 0 0 1]
+  ATTR primvars:uv texCoord2f[] = n=10 sum=5 [0 0 1 0]
+PRIM /World/geo/MeshC def Mesh
+  ATTR faceVertexCounts int[] = n=1200 sum=4800 [4 4 4 4]
+  ATTR faceVertexIndices int[] = n=4800 sum=3.048e+06 [0 41 42 1]
+  ATTR points point3f[] = n=3813 sum=4.448e+04 [0 0 0 1]
+  ATTR primvars:displayColor color3f[] = n=3 sum=1.75 [0.25 0.5 1]
+  ATTR xformOp:scale float3 = n=3 sum=0.3 [0.1 0.1 0.1]
+  ATTR xformOp:translate double3 = n=3 sum=-2 [0 -2 0]
+  ATTR xformOpOrder uniform token[] = s2 [xformOp:translate | xformOp:scale]
+PRIM /World/geo/MeshD def Mesh
+  ATTR faceVertexCounts int[] = n=1 sum=3 [3]
+  ATTR faceVertexIndices int[] = n=3 sum=3 [0 1 2]
+  ATTR points point3f[] = - (timeSamples)
+    SAMPLE 1: n=9 sum=2 [0 0 0 1]
+    SAMPLE 2: n=9 sum=4 [0 0 0 2]
+PRIM /World/geo/Spin def Xform
+  ATTR xformOp:rotateY float = - (timeSamples)
+    SAMPLE 1: n=1 sum=0 [0]
+    SAMPLE 10: n=1 sum=90 [90]
+  ATTR xformOpOrder uniform token[] = s1 [xformOp:rotateY]
+PRIM /World/geo/Spin/MeshE def Mesh
+  ATTR faceVertexCounts int[] = n=1 sum=4 [4]
+  ATTR faceVertexIndices int[] = n=4 sum=6 [0 1 2 3]
+  ATTR points point3f[] = n=12 sum=4 [0 0 0 1]
+PRIM /World/geo/Inst def Xform
+PRIM /World/geo/Var def Xform
+PRIM /World/mtl def Scope
+PRIM /World/mtl/red def Material
+PRIM /World/mtl/blue def Material
+PRIM /World/Cam def Camera
+PRIM /Proto class 
+PRIM /Proto/Box def Mesh
+  ATTR faceVertexCounts int[] = n=1 sum=3 [3]
+  ATTR faceVertexIndices int[] = n=3 sum=3 [0 1 2]
+  ATTR points point3f[] = n=9 sum=2 [0 0 0 1]

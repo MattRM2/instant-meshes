@@ -4,3 +4,5 @@
 *.pdf binary
 *.png binary
 ext/xatlas/** -text
+*.usdc binary
+*.usdz binary

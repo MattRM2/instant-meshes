@@ -498,6 +498,19 @@ def test_uv_transfer(exe, tmp):
         check(code != 0 and expect in log and "Optimizing" not in log, "%s -> '%s'" % (" ".join(args), expect))
 
 
+def test_usd_reader(exe, tmp):
+    print("USD reader: the same layer in .usda / .usdc / .usdz, as Pixar's USD reads it")
+    dump = os.path.join(os.path.dirname(exe), "usd_dump.exe" if os.name == "nt" else "usd_dump")
+    if not os.path.exists(dump):
+        return
+    with open(os.path.join(DATA, "usd_scene.dump.txt")) as f:
+        want = [l.rstrip("\n") for l in f]
+    for name in ("usd_scene.usda", "usd_scene.usdc", "usd_scene.usdz"):
+        code, log = run(dump, os.path.join(DATA, name))
+        got = [l for l in log.replace("\r\n", "\n").split("\n") if l and not l.startswith("FORMAT")]
+        check(code == 0 and got == want, "%s: %d lines, %d different" % (
+            name, len(got), sum(1 for a, b in zip(got, want) if a != b) + abs(len(got) - len(want))))
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -535,6 +548,7 @@ def main():
         test_skip_failed(exe, tmp)
         test_keep_border(exe, tmp)
         test_uv_transfer(exe, tmp)
+        test_usd_reader(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

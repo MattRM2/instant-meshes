@@ -18,6 +18,7 @@ int main(int argc, char **argv) {
     test_objscene();
     test_border();
     test_uv();
+    test_usd(long_run ? 10 : 1);
     std::cout << std::endl << g_passed << " passed, " << g_failed << " failed" << std::endl;
     return g_failed == 0 ? 0 : 1;
 }

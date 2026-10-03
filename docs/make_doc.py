@@ -353,7 +353,8 @@ SECTIONS = [
     (2, "The Matt Dark Interface", ["2.1 Panel reference", "2.2 Target: faces or percentage",
                                     "2.3 Flow line colors", "2.4 Typical workflow"]),
     (3, "Alembic and USD Support", ["3.1 What is read", "3.2 What is written", "3.3 Robustness",
-                                    "3.4 USD: what is read", "3.5 USD: the .usda layer written"]),
+                                    "3.4 USD: what is read", "3.5 USD: the .usda layer written",
+                                    "3.6 USD: proxies (--proxy)"]),
     (4, "Command Line", ["4.1 Batch mode", "4.2 Options", "4.3 Examples"]),
     (5, "Per-Mesh Remeshing (Alembic, OBJ, USD)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
                                                  "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
@@ -571,6 +572,29 @@ def build(cover_image=None):
         ".usda with another name than the input; the sublayer path is relative when both sit in the same folder.",
         "Whole-file mode reads USD like any mesh and can write a standalone <b>.usda</b> stage.",
     ])
+    story += [Spacer(1, 4 * mm), SubHeader("3.6", "USD: proxies (--proxy)"), Spacer(1, 3 * mm),
+              p("With <b>--proxy</b>, -m and --others keep the meshes of the scene and add their remeshed copy as "
+                "a <b>proxy</b>: the light mesh viewports show while the renderer keeps the original. This is "
+                "the USD purpose mechanism, understood by usdview, Houdini / Solaris, Maya and Blender."),
+              Spacer(1, 3 * mm),
+              codeblock(['InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%',
+                         'InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy -m "Hero=10%" --others 3%'])]
+    story += bullets([
+        "The original gets purpose <b>render</b> and a <b>proxyPrim</b> relationship to its proxy; the proxy is "
+        "a new Mesh with purpose <b>proxy</b>, no subdivision and the material of the original (the most used "
+        "one of its GeomSubsets).",
+        "The proxy gets the <b>UVs of the original</b> (--uv transfer is the default with --proxy; --uv none or "
+        "--uv unwrap change it).",
+        "Assets under the <b>geo/render</b> convention get their proxies in <b>geo/proxy</b>, same hierarchy: "
+        "/Asset/geo/render/Body gets /Asset/geo/proxy/Body. The new prims copy the transforms of those they "
+        "mirror, animation included, so the proxies follow. Never below the render scope: some importers "
+        "(Blender) skip it whole when proxies are asked for.",
+        "Elsewhere, the proxy is a sibling named <b>&lt;name&gt;_proxy</b>, with the transform of the mesh.",
+        "Proxy and guide meshes get no proxy (--list shows the purpose); a proxy path already used is an error, "
+        "found before any computation. --dry-run shows where each proxy will go.",
+        "Blender imports the render meshes by default: tick <b>Proxy</b> in the USD import options to see the "
+        "proxies.",
+    ])
     story += [PageBreak()]
 
     # ---------------- 4 command line
@@ -596,6 +620,7 @@ def build(cover_image=None):
                      ["--uv <mode>", "UVs of the output: none (default), transfer or unwrap (section 6)"],
                      ["-m, --mesh <name>=<target>", "Per-mesh remeshing of an .abc, .obj or USD scene (section 5)"],
                      ["--others <target>", "Target for every other mesh of the scene"],
+                     ["--proxy", "USD: keep the meshes, add the remeshed copies as proxies (3.6)"],
                      ["--list / --dry-run", "List the meshes (--sort asc|desc, --top <n>) / print the plan"],
                      ["--skip-failed / --progress", "Copy failed meshes unchanged and go on / print the progress"],
                      ["-V, --version", "Print the version"]],
@@ -608,7 +633,9 @@ def build(cover_image=None):
                          "# Replace the input file in place",
                          "InstantMeshes.exe scene.abc -o scene.abc -f 60%",
                          "# A USD asset: a .usda layer over it, the original untouched",
-                         'InstantMeshes.exe asset.usdz -o asset_retopo.usda -m "Hero=40%" --uv transfer'])]),
+                         'InstantMeshes.exe asset.usdz -o asset_retopo.usda -m "Hero=40%" --uv transfer',
+                         "# Viewport proxies at 5% for every mesh of a USD asset",
+                         "InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%"])]),
               PageBreak()]
 
     # ---------------- 5 per-mesh

@@ -41,6 +41,7 @@ InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 | `-f 75%` | Objectif en pourcentage des polygones d'origine (tels qu'affichés dans Blender) ; `-f 5000` = nombre de faces |
 | `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) ou les objets d'un `.obj` ou d'un fichier USD |
 | `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier (`.abc` ou `.obj`), ou dans un calque `.usda` posé sur un fichier USD |
+| `--proxy` | USD : garde les maillages et ajoute leur copie remaillée comme **proxy** (purpose `proxy`, `proxyPrim` sur l'original passé en `render`, matériau de l'original, UV transférées par défaut) dans le calque `.usda` |
 | `--others <cible>` | Remaille aussi tous les autres maillages ; sans cette option ils sont recopiés intacts |
 | `--sort asc\|desc`, `--top <n>` | Avec `--list` : tri par nombre de faces croissant / décroissant, et seulement les n premiers (`--sort desc --top 10` = les 10 objets les plus lourds) |
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
@@ -101,6 +102,25 @@ InstantMeshes.exe asset.usdc -o asset_retopo.usda -m "Hero*=50%" --uv transfer
   à leur matériau le plus utilisé. Métadonnées de la scène recopiées.
 - Pas encore : références, payloads, sous-calques et variantes ne sont pas
   composés (seuls les maillages du fichier lui-même sont vus).
+
+Proxies USD (`--proxy`) : les maillages visés par `-m` / `--others` sont
+gardés, leur copie remaillée est ajoutée comme proxy (ce que les viewports
+affichent, le rendu garde l'original).
+
+```
+InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%
+```
+
+- Convention `geo/render` : `/Asset/geo/render/Body` reçoit
+  `/Asset/geo/proxy/Body`, même hiérarchie, transformations recopiées
+  (animation comprise). Jamais sous le scope `render`, que Blender ignore en
+  bloc quand on importe les proxies.
+- Sinon : un frère `<nom>_proxy` avec la transformation du maillage.
+- Les maillages `proxy` / `guide` n'en reçoivent pas ; un chemin de proxy
+  déjà pris est une erreur, détectée avant tout calcul (`--dry-run` montre
+  où chaque proxy ira).
+- Blender importe les maillages de rendu par défaut : cocher **Proxy** dans les
+  options d'import USD pour voir les proxies.
 
 Mémoire, en mode par objet : un seul maillage est remaillé à la fois (environ
 800 octets par sommet d'entrée), le pic est donc celui du plus gros objet

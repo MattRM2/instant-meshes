@@ -103,6 +103,7 @@ struct Scene::Doc {
     std::vector<uint32_t> cornerV, cornerT, cornerN;  /* 0-based; NONE if absent */
 
     std::vector<Vector3f> positions;
+    std::vector<float> uv;                   /* u, v of every "vt" line */
     size_t texcoords = 0, normals = 0;
     std::vector<std::string> names;
     std::map<std::string, int> ids;
@@ -317,6 +318,13 @@ void Scene::Doc::parse() {
             positions.push_back(p);
             kinds[i] = Position;
         } else if (is(kb, ke, "vt")) {
+            buffer.assign(rb, re);
+            char *end = nullptr;
+            const char *s = buffer.c_str();
+            const float u = (float) strtod(s, &end);
+            const float v = (float) strtod(end, nullptr);
+            uv.push_back(u);
+            uv.push_back(v);
             ++texcoords;
             kinds[i] = TexCoord;
         } else if (is(kb, ke, "vn")) {
@@ -434,17 +442,47 @@ std::vector<ObjectInfo> Scene::objects() const {
     return meshes;
 }
 
-void Scene::load(const std::string &name, MatrixXu &F, MatrixXf &V, uint64_t *polygons) const {
+void Scene::load(const std::string &name, MatrixXu &F, MatrixXf &V, uint64_t *polygons,
+                 std::vector<UVSet> *uvs) const {
     const int id = d->find_object(name);
-    std::vector<uint32_t> sizes, indices;
+    std::vector<uint32_t> sizes, indices, texcoords;
+    bool withoutUV = false;
     for (size_t k = 0; k < d->elems(); ++k) {
         if (d->elemObject[k] != id || d->elemType[k] != 'f')
             continue;
         sizes.push_back((uint32_t) (d->elemFirst[k + 1] - d->elemFirst[k]));
-        for (uint64_t c = d->elemFirst[k]; c < d->elemFirst[k + 1]; ++c)
+        for (uint64_t c = d->elemFirst[k]; c < d->elemFirst[k + 1]; ++c) {
             indices.push_back(d->cornerV[c]);
+            texcoords.push_back(d->cornerT[c]);
+            withoutUV |= d->cornerT[c] == NONE;
+        }
     }
-    build_mesh(d->positions, sizes, indices, F, V, d->filename + ":" + name);
+
+    /* One UV set when every corner of the object has a texture coordinate;
+       only the values it uses are kept */
+    if (uvs) {
+        uvs->clear();
+        if (!withoutUV && !texcoords.empty()) {
+            std::vector<uint32_t> remap(d->texcoords, NONE);
+            UVSet set;
+            set.name = "uv";
+            std::vector<float> values;
+            for (uint32_t &t : texcoords) {
+                if (remap[t] == NONE) {
+                    remap[t] = (uint32_t) (values.size() / 2);
+                    values.push_back(d->uv[2 * (size_t) t]);
+                    values.push_back(d->uv[2 * (size_t) t + 1]);
+                }
+                t = remap[t];
+            }
+            set.values = Eigen::Map<const MatrixXf>(values.data(), 2, (std::ptrdiff_t) (values.size() / 2));
+            set.corners.swap(texcoords);
+            uvs->push_back(std::move(set));
+        } else if (withoutUV && d->texcoords > 0) {
+            cout << "Warning: some faces of \"" << name << "\" have no texture coordinates, UVs ignored" << endl;
+        }
+    }
+    build_mesh(d->positions, sizes, indices, F, V, d->filename + ":" + name, uvs);
     if (polygons)
         *polygons = sizes.size();
 }
@@ -456,20 +494,27 @@ namespace {
 struct TargetGeometry {
     std::vector<Vector3f> positions;
     std::vector<uint32_t> sizes, indices;
+    std::vector<float> uv;                /* texture coordinates (first UV set) */
+    std::vector<uint32_t> uvIndices;      /* per corner, like 'indices' */
 };
 
 void target_geometry(const Replacement &r, TargetGeometry &t) {
     MatrixXu fetchedF;
     MatrixXf fetchedV;
+    std::vector<CornerUVs> fetchedUVs;
     const MatrixXu *F = &r.F;
     const MatrixXf *V = &r.V;
+    const std::vector<CornerUVs> *uvs = &r.uvs;
     if (r.fetch) {
-        r.fetch(fetchedF, fetchedV);
+        r.fetch(fetchedF, fetchedV, fetchedUVs);
         F = &fetchedF;
         V = &fetchedV;
+        uvs = &fetchedUVs;
     }
-    std::vector<uint32_t> faceIds, ccw;
-    extracted_polygons(*F, t.sizes, ccw, faceIds);
+    std::vector<uint32_t> faceIds, ccw, cornerIds;
+    extracted_polygons(*F, t.sizes, ccw, faceIds, &cornerIds);
+    if (!uvs->empty())
+        indexed_uvs((*uvs)[0], cornerIds, t.uv, t.uvIndices);
     if (t.sizes.empty())
         throw std::runtime_error("OBJ writer: the new mesh of \"" + r.name + "\" is empty!");
     std::vector<int64_t> remap((size_t) V->cols(), -1);
@@ -505,7 +550,7 @@ void Scene::splice(const std::string &output, const std::vector<Replacement> &re
     /* Targets, checked and counted first: their geometry is built again
        when written, one at a time */
     std::vector<const Replacement *> targets(nObjects, nullptr);
-    std::vector<int64_t> targetVertices(nObjects, 0);
+    std::vector<int64_t> targetVertices(nObjects, 0), targetTexcoords(nObjects, 0);
     std::vector<std::string> materialOf(nObjects);
     std::vector<std::string> notes;
     for (const Replacement &r : replacements) {
@@ -516,6 +561,7 @@ void Scene::splice(const std::string &output, const std::vector<Replacement> &re
         TargetGeometry t;
         target_geometry(r, t);
         targetVertices[id] = (int64_t) t.positions.size();
+        targetTexcoords[id] = (int64_t) (t.uv.size() / 2);
     }
 
     /* What the targets used, and what the other objects still need */
@@ -566,7 +612,9 @@ void Scene::splice(const std::string &output, const std::vector<Replacement> &re
                             std::to_string(materials[id].size() - 1) +
                             " other(s): per-face materials cannot follow the new faces");
         if (hadUvs[id])
-            notes.push_back(doc.names[id] + ": dropped UVs and normals (no longer matching the topology)");
+            notes.push_back(doc.names[id] + (targetTexcoords[id] > 0
+                ? ": new UVs written, normals dropped (no longer matching the topology)"
+                : ": dropped UVs and normals (no longer matching the topology)"));
     }
     auto keep = [](const std::vector<char> &target, const std::vector<char> &kept, size_t i) {
         return !target[i] || kept[i];
@@ -580,7 +628,7 @@ void Scene::splice(const std::string &output, const std::vector<Replacement> &re
     });
 
     std::vector<int64_t> newV(doc.positions.size(), -1), newT(doc.texcoords, -1), newN(doc.normals, -1);
-    std::vector<int64_t> base(nObjects, 0);
+    std::vector<int64_t> base(nObjects, 0), baseT(nObjects, 0);
     {
         int64_t cv = 0, ct = 0, cn = 0;
         size_t kv = 0, kt = 0, kn = 0;
@@ -588,6 +636,8 @@ void Scene::splice(const std::string &output, const std::vector<Replacement> &re
             if (obj >= 0 && targets[obj] && firstLine[obj] == (int64_t) i) {
                 base[obj] = cv;
                 cv += targetVertices[obj];
+                baseT[obj] = ct;
+                ct += targetTexcoords[obj];
             }
             if (kind == Position) {
                 if (keep(vT, vK, kv))
@@ -637,11 +687,19 @@ void Scene::splice(const std::string &output, const std::vector<Replacement> &re
                     snprintf(buf, sizeof(buf), "v %.9g %.9g %.9g", p.x(), p.y(), p.z());
                     os << buf << eol;
                 }
+                for (size_t k = 0; k < t.uv.size(); k += 2) {
+                    snprintf(buf, sizeof(buf), "vt %.9g %.9g", t.uv[k], t.uv[k + 1]);
+                    os << buf << eol;
+                }
+                const bool withUVs = !t.uvIndices.empty();
                 size_t offset = 0;
                 for (uint32_t size : t.sizes) {
                     os << "f";
-                    for (uint32_t k = 0; k < size; ++k)
+                    for (uint32_t k = 0; k < size; ++k) {
                         os << " " << (base[obj] + t.indices[offset + k] + 1);
+                        if (withUVs)
+                            os << "/" << (baseT[obj] + t.uvIndices[offset + k] + 1);
+                    }
                     os << eol;
                     offset += size;
                 }
@@ -718,8 +776,8 @@ std::vector<ObjectInfo> list_objects(const std::string &filename) {
 }
 
 void load_object(const std::string &filename, const std::string &name,
-                 MatrixXu &F, MatrixXf &V, uint64_t *polygons) {
-    Scene(filename).load(name, F, V, polygons);
+                 MatrixXu &F, MatrixXf &V, uint64_t *polygons, std::vector<UVSet> *uvs) {
+    Scene(filename).load(name, F, V, polygons, uvs);
 }
 
 void splice_obj(const std::string &input, const std::string &output,

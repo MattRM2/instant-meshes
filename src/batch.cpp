@@ -24,6 +24,7 @@
 #include "extract.h"
 #include "bvh.h"
 #include "border.h"
+#include "scene.h"
 #include <iomanip>
 #include <fstream>
 #include <functional>
@@ -363,28 +364,9 @@ void batch_process(const std::string &input, const std::string &output,
     write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr);
 }
 
-static bool is_obj_file(const std::string &filename) {
-    return filename.size() > 4 && str_tolower(filename.substr(filename.size() - 4)) == ".obj";
-}
-
-/* Objects of a parsed OBJ file, as mesh summaries ("/name") */
-static std::vector<abc::MeshSummary> scene_meshes(const objscene::Scene &scene) {
-    std::vector<abc::MeshSummary> result;
-    for (const objscene::ObjectInfo &o : scene.objects()) {
-        abc::MeshSummary m;
-        m.path = "/" + o.name;
-        m.vertices = o.vertices;
-        m.faces = o.faces;
-        result.push_back(m);
-    }
-    return result;
-}
-
-/* Polygon meshes of an Alembic file, or objects of an OBJ file */
+/* Polygon meshes of a scene file (Alembic meshes, OBJ objects) */
 static std::vector<abc::MeshSummary> list_scene(const std::string &input) {
-    if (!is_obj_file(input))
-        return abc::list_meshes(input);
-    return scene_meshes(objscene::Scene(input));
+    return SceneFile::open(input)->meshes();
 }
 
 /* --progress: a block that stands out in a long log
@@ -423,18 +405,25 @@ public:
             std::remove(mPath.c_str());
     }
 
-    /* Stores a mesh, returns the function that reads it back */
-    std::function<void(MatrixXu &, MatrixXf &)> put(const MatrixXu &F, const MatrixXf &V) {
+    typedef std::function<void(MatrixXu &, MatrixXf &, std::vector<CornerUVs> &)> Fetch;
+
+    /* Stores a mesh and its UV sets, returns the function that reads them back */
+    Fetch put(const MatrixXu &F, const MatrixXf &V, const std::vector<CornerUVs> &uvs) {
         if (!mOut.is_open()) {
             mOut.open(mPath, std::ios::binary | std::ios::trunc);
             if (!mOut)
                 throw std::runtime_error("Unable to create \"" + mPath + "\"!");
             mCreated = true;
         }
-        const Record r { mSize, (uint32_t) F.rows(), (uint64_t) F.cols(), (uint64_t) V.cols() };
+        Record r { mSize, (uint32_t) F.rows(), (uint64_t) F.cols(), (uint64_t) V.cols(), {} };
         write(F.data(), sizeof(MatrixXu::Scalar) * (size_t) F.size());
         write(V.data(), sizeof(MatrixXf::Scalar) * (size_t) V.size());
-        return [this, r](MatrixXu &Fo, MatrixXf &Vo) { get(r, Fo, Vo); };
+        for (const CornerUVs &set : uvs) {
+            r.uvNames.push_back(set.name);
+            r.uvCorners.push_back((uint64_t) set.corners.cols());
+            write(set.corners.data(), sizeof(MatrixXf::Scalar) * (size_t) set.corners.size());
+        }
+        return [this, r](MatrixXu &Fo, MatrixXf &Vo, std::vector<CornerUVs> &uvo) { get(r, Fo, Vo, uvo); };
     }
 
 private:
@@ -442,6 +431,8 @@ private:
         uint64_t offset;
         uint32_t rows;
         uint64_t faces, vertices;
+        std::vector<std::string> uvNames;
+        std::vector<uint64_t> uvCorners;
     };
 
     void write(const void *data, size_t size) {
@@ -451,7 +442,7 @@ private:
         mSize += size;
     }
 
-    void get(const Record &r, MatrixXu &F, MatrixXf &V) {
+    void get(const Record &r, MatrixXu &F, MatrixXf &V, std::vector<CornerUVs> &uvs) {
         mOut.flush();
         std::ifstream in(mPath, std::ios::binary);
         in.seekg((std::streamoff) r.offset);
@@ -459,6 +450,13 @@ private:
         V.resize(3, (std::ptrdiff_t) r.vertices);
         in.read((char *) F.data(), (std::streamsize) (sizeof(MatrixXu::Scalar) * (size_t) F.size()));
         in.read((char *) V.data(), (std::streamsize) (sizeof(MatrixXf::Scalar) * (size_t) V.size()));
+        uvs.resize(r.uvNames.size());
+        for (size_t i = 0; i < uvs.size(); ++i) {
+            uvs[i].name = r.uvNames[i];
+            uvs[i].corners.resize(2, (std::ptrdiff_t) r.uvCorners[i]);
+            in.read((char *) uvs[i].corners.data(),
+                    (std::streamsize) (sizeof(MatrixXf::Scalar) * (size_t) uvs[i].corners.size()));
+        }
         if (!in)
             throw std::runtime_error("Unable to read back \"" + mPath + "\"!");
     }
@@ -512,12 +510,10 @@ void batch_list(const std::string &input, int sort, int top) {
 void batch_process_objects(const std::string &input, const std::string &output,
                            const RemeshParams &params, const std::vector<MeshRule> &rules,
                            const FaceTarget &others, bool dryRun, bool skipFailed, bool progress) {
-    /* An OBJ file is parsed once for the plan, the loads and the write */
-    const bool obj = is_obj_file(input);
-    std::unique_ptr<objscene::Scene> objScene;
-    if (obj)
-        objScene.reset(new objscene::Scene(input));
-    const std::vector<abc::MeshSummary> meshes = obj ? scene_meshes(*objScene) : abc::list_meshes(input);
+    /* Opened once for the plan, the loads and the write (an OBJ file is
+       parsed once) */
+    const std::unique_ptr<SceneFile> scene = SceneFile::open(input);
+    const std::vector<abc::MeshSummary> meshes = scene->meshes();
 
     /* Plan: the last matching rule wins, then --others, else untouched */
     struct Item {
@@ -621,10 +617,7 @@ void batch_process_objects(const std::string &input, const std::string &output,
             MatrixXu F;
             MatrixXf V, N;
             uint64_t polygons = 0;
-            if (obj)
-                objScene->load(i.mesh->path.substr(1), F, V, &polygons);
-            else
-                abc::load_abc_mesh(input, i.mesh->path, F, V, &polygons);
+            scene->load(i.mesh->path, F, V, &polygons);
 
             RemeshParams p = params;
             p.scale = -1;
@@ -643,7 +636,7 @@ void batch_process_objects(const std::string &input, const std::string &output,
                                      std::to_string(report.subdivided) + " triangles");
             abc::Replacement r;
             r.path = i.mesh->path;
-            r.fetch = spool.put(Fr, Vr);
+            r.fetch = spool.put(Fr, Vr, std::vector<CornerUVs>());
             replacements.push_back(std::move(r));
         } catch (const std::exception &e) {
             /* --skip-failed: keep this object as it is and go on */
@@ -676,16 +669,5 @@ void batch_process_objects(const std::string &input, const std::string &output,
             cout << "   " << s << endl;
         cout << endl;
     }
-    if (obj) {
-        std::vector<objscene::Replacement> objects;
-        for (abc::Replacement &r : replacements) {
-            objscene::Replacement o;
-            o.name = r.path.substr(1);
-            o.fetch = r.fetch;
-            objects.push_back(std::move(o));
-        }
-        objScene->splice(output, objects);
-    } else {
-        abc::splice_abc(input, output, replacements);
-    }
+    scene->write(output, replacements);
 }

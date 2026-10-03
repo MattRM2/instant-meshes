@@ -492,19 +492,51 @@ private:
 
 /* Geometry of a PolyMesh ready to be written */
 struct MeshData {
+    /* An indexed face-varying UV set (corners clockwise, like faceIndices) */
+    struct UV {
+        std::string name;
+        std::vector<float> values;
+        std::vector<uint32_t> indices;
+    };
+
     std::vector<float> P;
     std::vector<int32_t> faceIndices, faceCounts;
+    std::vector<UV> uvs;
     double bounds[6] = { DBL_MAX, DBL_MAX, DBL_MAX, -DBL_MAX, -DBL_MAX, -DBL_MAX };
     size_t irregular = 0;
 
+    /* A UV set as Alembic's OV2fGeomParam (the layout Blender writes) */
+    static OutProperty uv_property(const std::string &name, const UV &uv, bool primary) {
+        MetaData meta {{ "arrayExtent", "1" }, { "geoScope", "fvr" }, { "interpretation", "vector" },
+                       { "isGeomParam", "true" }, { "podExtent", "2" }, { "podName", "float32_t" }};
+        if (primary)
+            meta["sourceName"] = uv.name;
+        return make_compound(name, meta, {
+            make_value(".vals", Property::Array, PodFloat32, 2, uv.values.data(), uv.values.size(), meta),
+            make_value(".indices", Property::Array, PodUint32, 1, uv.indices.data(), uv.indices.size())
+        });
+    }
+
+    /* P, faces and the first UV set (.geom/uv) */
     std::vector<OutProperty> geom_properties() const {
-        return {
+        std::vector<OutProperty> result {
             make_value(".selfBnds", Property::Scalar, PodFloat64, 6, bounds, 6, {{ "interpretation", "box" }}),
             make_value("P", Property::Array, PodFloat32, 3, P.data(), P.size(),
                        {{ "geoScope", "vtx" }, { "interpretation", "point" }}),
             make_value(".faceIndices", Property::Array, PodInt32, 1, faceIndices.data(), faceIndices.size()),
             make_value(".faceCounts", Property::Array, PodInt32, 1, faceCounts.data(), faceCounts.size())
         };
+        if (!uvs.empty())
+            result.push_back(uv_property("uv", uvs[0], true));
+        return result;
+    }
+
+    /* The other UV sets, for .arbGeomParams */
+    std::vector<OutProperty> arb_properties() const {
+        std::vector<OutProperty> result;
+        for (size_t i = 1; i < uvs.size(); ++i)
+            result.push_back(uv_property(uvs[i].name, uvs[i], false));
+        return result;
     }
 };
 
@@ -512,10 +544,11 @@ struct MeshData {
    clockwise. Only the vertices used by polygons are kept, in their
    original order: quad-dominant extraction leaves the centers of irregular
    faces unused (Blender's OBJ importer drops them too). */
-MeshData make_mesh_data(const MatrixXu &F, const MatrixXf &V, const Eigen::Matrix4d &transform) {
+MeshData make_mesh_data(const MatrixXu &F, const MatrixXf &V, const Eigen::Matrix4d &transform,
+                        const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>()) {
     MeshData m;
-    std::vector<uint32_t> sizes, ccw, faceIds;
-    m.irregular = extracted_polygons(F, sizes, ccw, faceIds);
+    std::vector<uint32_t> sizes, ccw, faceIds, cornerIds;
+    m.irregular = extracted_polygons(F, sizes, ccw, faceIds, &cornerIds);
     if (sizes.empty() || V.cols() == 0)
         throw std::runtime_error("Alembic writer: the mesh is empty!");
     if (V.cols() > 0x7fffffff || ccw.size() > 0x7fffffff)
@@ -551,6 +584,22 @@ MeshData make_mesh_data(const MatrixXu &F, const MatrixXf &V, const Eigen::Matri
         for (uint32_t k = 0; k < sizes[f]; ++k)
             m.faceIndices[offset + k] = remap[ccw[offset + sizes[f] - 1 - k]];
         offset += sizes[f];
+    }
+
+    /* UV sets: indexed, corners clockwise like the faces */
+    for (const CornerUVs &set : uvs) {
+        MeshData::UV uv;
+        uv.name = set.name.empty() ? "uv" : set.name;
+        std::vector<uint32_t> index;
+        indexed_uvs(set, cornerIds, uv.values, index);
+        uv.indices.resize(index.size());
+        offset = 0;
+        for (size_t f = 0; f < sizes.size(); ++f) {
+            for (uint32_t k = 0; k < sizes[f]; ++k)
+                uv.indices[offset + k] = index[offset + sizes[f] - 1 - k];
+            offset += sizes[f];
+        }
+        m.uvs.push_back(std::move(uv));
     }
     return m;
 }
@@ -588,11 +637,12 @@ public:
 
         MeshData build() const {
             if (!replacement->fetch)
-                return make_mesh_data(replacement->F, replacement->V, toLocal);
+                return make_mesh_data(replacement->F, replacement->V, toLocal, replacement->uvs);
             MatrixXu F;
             MatrixXf V;
-            replacement->fetch(F, V);
-            return make_mesh_data(F, V, toLocal);
+            std::vector<CornerUVs> uvs;
+            replacement->fetch(F, V, uvs);
+            return make_mesh_data(F, V, toLocal, uvs);
         }
     };
 
@@ -694,25 +744,37 @@ private:
             children.push_back(new_property(p));
 
         static const std::set<std::string> replaced { ".selfBnds", "P", ".faceIndices", ".faceCounts" };
+        const std::vector<OutProperty> newArb = data.arb_properties();
+        std::set<std::string> newNames;
+        for (const MeshData::UV &uv : data.uvs)
+            newNames.insert(uv.name);
         std::vector<std::string> dropped;
+        bool arbFound = false;
         for (const Property &p : mAr.properties(geom)) {
-            if (replaced.count(p.name))
+            if (replaced.count(p.name) || (p.name == "uv" && !data.uvs.empty()))
                 continue;
             if (p.name == ".arbGeomParams" && p.type == Property::Compound) {
                 std::vector<Built> kept;
                 for (const Property &a : mAr.properties(p)) {
-                    if (per_element(a))
-                        dropped.push_back(a.name);
-                    else
+                    if (per_element(a)) {
+                        if (!newNames.count(a.name))
+                            dropped.push_back(a.name);
+                    } else {
                         kept.push_back(copy_property(a));
+                    }
                 }
+                for (const OutProperty &a : newArb)
+                    kept.push_back(new_property(a));
                 children.push_back(compound(p, kept));
+                arbFound = true;
             } else if (p.name == "N" || p.name == "uv" || p.name == ".velocities" || per_element(p)) {
                 dropped.push_back(p.name);
             } else {
                 children.push_back(copy_property(p));
             }
         }
+        if (!arbFound && !newArb.empty())
+            children.push_back(new_property(make_compound(".arbGeomParams", MetaData(), newArb)));
         if (!dropped.empty()) {
             std::string list;
             for (const std::string &d : dropped)
@@ -858,12 +920,12 @@ uint64_t verify_hashes(const std::string &filename) {
 }
 
 void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V,
-               const ProgressCallback &progress) {
+               const ProgressCallback &progress, const std::vector<CornerUVs> &uvs) {
     Timer<> timer;
     cout << "Writing \"" << filename << "\" (V=" << V.cols() << ", F=" << F.cols() << ") .. ";
     cout.flush();
 
-    const MeshData meshData = make_mesh_data(F, V, Eigen::Matrix4d::Identity());
+    const MeshData meshData = make_mesh_data(F, V, Eigen::Matrix4d::Identity(), uvs);
 
     MetaData polyMeta {{ "schema", "AbcGeom_PolyMesh_v1" }, { "schemaBaseType", "AbcGeom_GeomBase_v1" }};
     MetaData polyObjMeta = polyMeta;
@@ -877,7 +939,11 @@ void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V
     OutObject mesh;
     mesh.name = name;
     mesh.meta = polyObjMeta;
-    mesh.properties.push_back(make_compound(".geom", polyMeta, meshData.geom_properties()));
+    std::vector<OutProperty> geom = meshData.geom_properties();
+    const std::vector<OutProperty> arb = meshData.arb_properties();
+    if (!arb.empty())
+        geom.push_back(make_compound(".arbGeomParams", MetaData(), arb));
+    mesh.properties.push_back(make_compound(".geom", polyMeta, geom));
 
     const uint8_t inherits = 1, matrixOp = 0x30;
     const double identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };

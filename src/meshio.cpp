@@ -25,9 +25,11 @@ extern "C" {
 }
 
 void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf &V, MatrixXf &N,
-              const ProgressCallback &progress, uint64_t *polygons) {
+              const ProgressCallback &progress, uint64_t *polygons, std::vector<UVSet> *uvs) {
     if (polygons)
         *polygons = 0;
+    if (uvs)
+        uvs->clear();
     std::string extension;
     if (filename.size() > 4)
         extension = str_tolower(filename.substr(filename.size()-4));
@@ -37,9 +39,9 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
         if (polygons)
             *polygons = F.cols();   /* the PLY reader only accepts triangles */
     } else if (extension == ".obj")
-        load_obj(filename, F, V, progress, polygons);
+        load_obj(filename, F, V, progress, polygons, uvs);
     else if (extension == ".abc")
-        abc::load_abc(filename, F, V, "", progress, polygons);
+        abc::load_abc(filename, F, V, "", progress, polygons, uvs);
     else if (extension == ".aln")
         load_pointcloud(filename, V, N, progress);
     else
@@ -49,7 +51,7 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
 void write_mesh(const std::string &filename, const MatrixXu &F,
                 const MatrixXf &V, const MatrixXf &N, const MatrixXf &Nf,
                 const MatrixXf &UV, const MatrixXf &C,
-                const ProgressCallback &progress) {
+                const ProgressCallback &progress, const std::vector<CornerUVs> &uvs) {
     std::string extension;
     if (filename.size() > 4)
         extension = str_tolower(filename.substr(filename.size()-4));
@@ -57,9 +59,9 @@ void write_mesh(const std::string &filename, const MatrixXu &F,
     if (extension == ".ply")
         write_ply(filename, F, V, N, Nf, UV, C, progress);
     else if (extension == ".obj")
-        write_obj(filename, F, V, N, Nf, UV, C, progress);
+        write_obj(filename, F, V, N, Nf, UV, C, progress, uvs);
     else if (extension == ".abc")
-        abc::write_abc(filename, F, V, progress);
+        abc::write_abc(filename, F, V, progress, uvs);
     else
         throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc are supported)");
 }
@@ -429,12 +431,28 @@ void triangulate_polygon(const std::vector<Vector3f> &p,
 void build_mesh(const std::vector<Vector3f> &positions,
                 const std::vector<uint32_t> &sizes,
                 const std::vector<uint32_t> &indices,
-                MatrixXu &F, MatrixXf &V, const std::string &source) {
+                MatrixXu &F, MatrixXf &V, const std::string &source,
+                std::vector<UVSet> *uvs) {
     /* New index of every position, assigned on first use */
     std::vector<uint32_t> remap(positions.size(), (uint32_t) -1);
     std::vector<uint32_t> used, triangles;
     std::vector<Vector3f> polygon;
     std::vector<uint32_t> tris;
+
+    /* UV sets: polygon corners in, triangle corners out */
+    std::vector<std::vector<uint32_t>> uvCorners;
+    if (uvs) {
+        for (const UVSet &set : *uvs) {
+            if (set.corners.size() != indices.size() || set.values.rows() != 2)
+                throw std::runtime_error("UV set \"" + set.name + "\" does not match the faces of \"" +
+                                         source + "\"!");
+            for (uint32_t index : set.corners)
+                if (index >= set.values.cols())
+                    throw std::runtime_error("UV index out of range in set \"" + set.name + "\" of \"" +
+                                             source + "\"!");
+        }
+        uvCorners.resize(uvs->size());
+    }
 
     size_t offset = 0;
     for (uint32_t size : sizes) {
@@ -443,6 +461,7 @@ void build_mesh(const std::vector<Vector3f> &positions,
         if (size > indices.size() - offset)
             throw std::runtime_error("Face data truncated in \"" + source + "\"!");
         const uint32_t *face = indices.data() + offset;
+        const size_t faceStart = offset;
         offset += size;
 
         polygon.resize(size);
@@ -462,8 +481,12 @@ void build_mesh(const std::vector<Vector3f> &positions,
                 used.push_back(face[corner]);
             }
             triangles.push_back(id);
+            for (size_t s = 0; s < uvCorners.size(); ++s)
+                uvCorners[s].push_back((*uvs)[s].corners[faceStart + corner]);
         }
     }
+    for (size_t s = 0; s < uvCorners.size(); ++s)
+        (*uvs)[s].corners.swap(uvCorners[s]);
 
     F.resize(3, triangles.size() / 3);
     if (!triangles.empty())
@@ -475,13 +498,18 @@ void build_mesh(const std::vector<Vector3f> &positions,
 }
 
 void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
-              const ProgressCallback &progress, uint64_t *polygons) {
+              const ProgressCallback &progress, uint64_t *polygons,
+              std::vector<UVSet> *uvs) {
     std::vector<Vector3f> positions;
+    std::vector<float> texcoords;                 /* u, v of every "vt" line */
+    std::vector<uint32_t> uvCorners;              /* texcoord of every face corner */
+    bool cornerWithoutUV = false;
+    const uint32_t NO_UV = (uint32_t) -1;
 
     /// Position index of a face corner ("p", "p/uv", "p//n" or "p/uv/n"),
     /// converted from 1-based (or negative = relative to the positions read
-    /// so far) to 0-based
-    auto corner_index = [&](const std::string &string) -> uint32_t {
+    /// so far) to 0-based; 'uv' receives the texture coordinate index, if any
+    auto corner_index = [&](const std::string &string, uint32_t &uv) -> uint32_t {
         std::vector<std::string> tokens = str_tokenize(string, '/', true);
         if (tokens.size() < 1 || tokens.size() > 3)
             throw std::runtime_error("Invalid vertex data: \"" + string + "\"");
@@ -491,6 +519,15 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
             throw std::runtime_error("Could not parse vertex index \"" + tokens[0] + "\"");
         if (p == 0 || (p < 0 && (unsigned long long) (-p) > positions.size()) || p > 0xffffffffLL)
             throw std::runtime_error("Vertex index " + tokens[0] + " out of range in OBJ file \"" + filename + "\"!");
+        /* Texture coordinates are only parsed when asked for; a bad one
+           drops the UVs, it never fails the load */
+        uv = NO_UV;
+        if (uvs && tokens.size() >= 2 && !tokens[1].empty()) {
+            const size_t count = texcoords.size() / 2;
+            const long long t = strtoll(tokens[1].c_str(), &end, 10);
+            if (*end == '\0' && t != 0 && !(t < 0 && (unsigned long long) (-t) > count) && t <= 0xffffffffLL)
+                uv = (uint32_t) (t < 0 ? (long long) count + t : t - 1);
+        }
         return (uint32_t) (p < 0 ? (long long) positions.size() + p : p - 1);
     };
 
@@ -514,11 +551,21 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
             Vector3f p;
             line >> p.x() >> p.y() >> p.z();
             positions.push_back(p);
+        } else if (prefix == "vt") {
+            float u = 0, v = 0;
+            line >> u >> v;
+            texcoords.push_back(u);
+            texcoords.push_back(v);
         } else if (prefix == "f") {
             std::string token;
             uint32_t size = 0;
             while (line >> token) {
-                corners.push_back(corner_index(token));
+                uint32_t uv;
+                corners.push_back(corner_index(token, uv));
+                if (uvs) {
+                    uvCorners.push_back(uv);
+                    cornerWithoutUV |= uv == NO_UV;
+                }
                 ++size;
             }
             if (size < 3)
@@ -532,7 +579,25 @@ void load_obj(const std::string &filename, MatrixXu &F, MatrixXf &V,
             throw std::runtime_error("Vertex index " + std::to_string((uint64_t) index + 1) +
                                      " out of range in OBJ file \"" + filename + "\"!");
 
-    build_mesh(positions, faceSizes, corners, F, V, filename);
+    /* One UV set when every face corner has a texture coordinate */
+    if (uvs) {
+        uvs->clear();
+        const size_t count = texcoords.size() / 2;
+        for (uint32_t index : uvCorners)
+            cornerWithoutUV |= index >= count;
+        if (count > 0 && !cornerWithoutUV) {
+            UVSet set;
+            set.name = "uv";
+            set.values = Eigen::Map<const MatrixXf>(texcoords.data(), 2, (std::ptrdiff_t) count);
+            set.corners.swap(uvCorners);
+            uvs->push_back(std::move(set));
+        } else if (count > 0) {
+            cout << "Warning: some faces of \"" << filename
+                 << "\" have no valid texture coordinates, UVs ignored" << endl;
+        }
+    }
+
+    build_mesh(positions, faceSizes, corners, F, V, filename, uvs);
     if (polygons)
         *polygons = faceSizes.size();
 
@@ -632,50 +697,102 @@ void load_pointcloud(const std::string &filename, MatrixXf &V, MatrixXf &N,
 }
 
 size_t extracted_polygons(const MatrixXu &F, std::vector<uint32_t> &sizes,
-                          std::vector<uint32_t> &indices, std::vector<uint32_t> &faceIds) {
+                          std::vector<uint32_t> &indices, std::vector<uint32_t> &faceIds,
+                          std::vector<uint32_t> *cornerIds) {
     sizes.clear();
     indices.clear();
     faceIds.clear();
+    if (cornerIds)
+        cornerIds->clear();
+    const uint32_t rows = (uint32_t) F.rows();
 
     /* Irregular faces: quads with F(2) == F(3) are directed edges (F(0) ->
        F(1)) of the polygon whose id is F(2) */
-    std::map<uint32_t, std::pair<uint32_t, std::map<uint32_t, uint32_t>>> irregular;
+    struct Irregular {
+        uint32_t last = 0;                        /* column, for the face normal */
+        std::map<uint32_t, uint32_t> next;        /* F(0) -> F(1) */
+        std::map<uint32_t, uint32_t> column;      /* F(0) -> its column */
+    };
+    std::map<uint32_t, Irregular> irregular;
 
     for (uint32_t f = 0; f < F.cols(); ++f) {
-        if (F.rows() == 4 && F(2, f) == F(3, f)) {
-            auto &value = irregular[F(2, f)];
-            value.first = f;
-            value.second[F(0, f)] = F(1, f);
+        if (rows == 4 && F(2, f) == F(3, f)) {
+            Irregular &value = irregular[F(2, f)];
+            value.last = f;
+            value.next[F(0, f)] = F(1, f);
+            value.column[F(0, f)] = f;
             continue;
         }
-        for (uint32_t j = 0; j < F.rows(); ++j)
+        for (uint32_t j = 0; j < rows; ++j) {
             indices.push_back(F(j, f));
-        sizes.push_back((uint32_t) F.rows());
+            if (cornerIds)
+                cornerIds->push_back(f * rows + j);
+        }
+        sizes.push_back(rows);
         faceIds.push_back(f);
     }
 
     /* Walk each edge loop (same traversal as the historical OBJ writer,
        including its behaviour on open loops) */
-    for (auto item : irregular) {
-        auto face = item.second;
-        uint32_t v = face.second.begin()->first, first = v, i = 0, size = 0;
+    for (auto &item : irregular) {
+        Irregular &face = item.second;
+        uint32_t v = face.next.begin()->first, first = v, i = 0, size = 0;
         while (true) {
             indices.push_back(v);
+            if (cornerIds) {
+                auto it = face.column.find(v);
+                cornerIds->push_back(it != face.column.end() ? it->second * rows : face.last * rows);
+            }
             ++size;
-            v = face.second[v];
-            if (v == first || ++i == face.second.size())
+            v = face.next[v];
+            if (v == first || ++i == face.next.size())
                 break;
         }
         sizes.push_back(size);
-        faceIds.push_back(face.first);
+        faceIds.push_back(face.last);
     }
     return irregular.size();
+}
+
+void indexed_uvs(const CornerUVs &set, const std::vector<uint32_t> &cornerIds,
+                 std::vector<float> &values, std::vector<uint32_t> &index) {
+    values.clear();
+    index.clear();
+    index.reserve(cornerIds.size());
+    std::unordered_map<uint64_t, uint32_t> seen;
+    for (uint32_t id : cornerIds) {
+        if (id >= set.corners.cols())
+            throw std::runtime_error("UV set \"" + set.name + "\" does not match the mesh!");
+        const float u = set.corners(0, id), v = set.corners(1, id);
+        if (!std::isfinite(u) || !std::isfinite(v))
+            throw std::runtime_error("UV set \"" + set.name + "\" holds invalid values!");
+        uint32_t bu, bv;
+        memcpy(&bu, &u, 4);
+        memcpy(&bv, &v, 4);
+        auto it = seen.insert(std::make_pair(((uint64_t) bu << 32) | bv, (uint32_t) (values.size() / 2))).first;
+        if (it->second == values.size() / 2) {
+            values.push_back(u);
+            values.push_back(v);
+        }
+        index.push_back(it->second);
+    }
+}
+
+CornerUVs corner_uvs(const UVSet &set, const MatrixXu &F) {
+    if (F.rows() != 3 || set.corners.size() != 3 * (size_t) F.cols())
+        throw std::runtime_error("UV set \"" + set.name + "\" does not match the triangles!");
+    CornerUVs result;
+    result.name = set.name;
+    result.corners.resize(2, (std::ptrdiff_t) set.corners.size());
+    for (size_t c = 0; c < set.corners.size(); ++c)
+        result.corners.col((std::ptrdiff_t) c) = set.values.col(set.corners[c]);
+    return result;
 }
 
 void write_obj(const std::string &filename, const MatrixXu &F,
                 const MatrixXf &V, const MatrixXf &N, const MatrixXf &Nf,
                 const MatrixXf &UV, const MatrixXf &C,
-                const ProgressCallback &progress) {
+                const ProgressCallback &progress, const std::vector<CornerUVs> &uvs) {
     Timer<> timer;
     cout << "Writing \"" << filename << "\" (V=" << V.cols()
          << ", F=" << F.cols() << ") .. ";
@@ -698,8 +815,20 @@ void write_obj(const std::string &filename, const MatrixXu &F,
     for (uint32_t i=0; i<UV.cols(); ++i)
         os << "vt " << UV(0, i) << " " << UV(1, i) << endl;
 
-    std::vector<uint32_t> sizes, indices, faceIds;
-    const size_t nIrregular = extracted_polygons(F, sizes, indices, faceIds);
+    std::vector<uint32_t> sizes, indices, faceIds, cornerIds, uvIndex;
+    const size_t nIrregular = extracted_polygons(F, sizes, indices, faceIds, &cornerIds);
+
+    /* Texture coordinates (first UV set): "v/vt/vn" corners */
+    const bool withUVs = !uvs.empty();
+    if (withUVs) {
+        std::vector<float> values;
+        indexed_uvs(uvs[0], cornerIds, values, uvIndex);
+        char buf[64];
+        for (size_t i = 0; i < values.size(); i += 2) {
+            snprintf(buf, sizeof(buf), "vt %.9g %.9g", values[i], values[i + 1]);
+            os << buf << endl;
+        }
+    }
 
     size_t offset = 0;
     for (size_t k = 0; k < sizes.size(); ++k) {
@@ -707,9 +836,11 @@ void write_obj(const std::string &filename, const MatrixXu &F,
         for (uint32_t j = 0; j < sizes[k]; ++j) {
             uint32_t idx = indices[offset + j] + 1;
             os << idx;
+            if (withUVs)
+                os << "/" << (uvIndex[offset + j] + 1);
             if (Nf.size() > 0)
                 idx = faceIds[k] + 1;
-            os << "//" << idx << " ";
+            os << (withUVs ? "/" : "//") << idx << " ";
         }
         offset += sizes[k];
         os << endl;

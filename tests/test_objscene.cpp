@@ -213,7 +213,7 @@ static void test_scene_once() {
     /* Fetched on demand, as the batch mode does with its spool file */
     objscene::Replacement lazy;
     lazy.name = "Q";
-    lazy.fetch = [&](MatrixXu &Fo, MatrixXf &Vo) { Fo = r.F; Vo = r.V; };
+    lazy.fetch = [&](MatrixXu &Fo, MatrixXf &Vo, std::vector<CornerUVs> &uvo) { Fo = r.F; Vo = r.V; uvo.clear(); };
     const std::string out = temp_path("crlf_out.obj"), outLazy = temp_path("crlf_lazy.obj");
     CHECK(error_of([&] { scene.splice(out, { r }); }) == "");
     CHECK(error_of([&] { scene.splice(outLazy, { lazy }); }) == "");

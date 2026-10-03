@@ -16,6 +16,7 @@ int main(int argc, char **argv) {
     test_abc(long_run ? 10 : 1);
     test_objscene();
     test_border();
+    test_uv();
     std::cout << std::endl << g_passed << " passed, " << g_failed << " failed" << std::endl;
     return g_failed == 0 ? 0 : 1;
 }

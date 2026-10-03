@@ -372,7 +372,7 @@ static void test_fuzz_abc(int scale) {
     auto t0 = std::chrono::steady_clock::now();
 
     const char *files[] = { "cube_quads.abc", "ngon_cylinder.abc", "hierarchy.abc",
-                            "animated.abc", "instances.abc" };
+                            "animated.abc", "instances.abc", "uv_sets.abc" };
     for (const char *name : files) {
         const std::vector<uint8_t> original = read_file(data_path(name));
         const std::string path = temp_path(std::string("fuzzabc_") + name);
@@ -382,7 +382,8 @@ static void test_fuzz_abc(int scale) {
             try {
                 MatrixXu F;
                 MatrixXf V;
-                abc::load_abc(path, F, V);
+                std::vector<UVSet> uvs;   /* the UV reader too */
+                abc::load_abc(path, F, V, "", ProgressCallback(), nullptr, &uvs);
                 ++accepted;
             } catch (const std::runtime_error &) {
                 ++rejected;

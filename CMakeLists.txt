@@ -173,6 +173,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/reorder.h src/reorder.cpp
   src/serializer.h src/serializer.cpp
   src/batch.h src/batch.cpp
+  src/scene.h src/scene.cpp
   src/border.h src/border.cpp
   src/smoothcurve.h src/smoothcurve.cpp
   src/cleanup.h src/cleanup.cpp
@@ -214,7 +215,7 @@ if (INSTANT_MESHES_TESTS)
   add_executable(im_tests
     tests/test_common.h tests/test_main.cpp
     tests/test_meshio.cpp tests/test_ogawa.cpp tests/test_abc.cpp tests/test_objscene.cpp
-    tests/test_border.cpp
+    tests/test_border.cpp tests/test_uv.cpp
     src/border.h src/border.cpp
     src/meshio.h src/meshio.cpp
     src/normal.h src/normal.cpp

@@ -30,6 +30,7 @@
 
 #include "common.h"
 #include "ogawa.h"
+#include "meshio.h"
 #include <functional>
 #include <map>
 
@@ -149,9 +150,12 @@ struct MeshSummary {
 /// Polygon meshes of an archive, in traversal order
 std::vector<MeshSummary> list_meshes(const std::string &filename);
 
-/// Loads exactly the PolyMesh at 'path' (no sub-objects), in world space
+/// Loads exactly the PolyMesh at 'path' (no sub-objects), in world space;
+/// 'uvs' receives its UV sets (.geom/uv, then the 2D parameters of
+/// .arbGeomParams), per triangle corner
 void load_abc_mesh(const std::string &filename, const std::string &path,
-                   MatrixXu &F, MatrixXf &V, uint64_t *polygons = nullptr);
+                   MatrixXu &F, MatrixXf &V, uint64_t *polygons = nullptr,
+                   std::vector<UVSet> *uvs = nullptr);
 
 /// Wildcard match: '*' = any sequence of characters, '?' = one character
 bool glob_match(const std::string &pattern, const std::string &text);
@@ -162,9 +166,10 @@ struct Replacement {
     std::string path;
     MatrixXu F;
     MatrixXf V;
-    /// When set, F and V are left empty and fetched on demand (spool file):
-    /// splice_abc() then holds one new mesh at a time
-    std::function<void(MatrixXu &F, MatrixXf &V)> fetch;
+    std::vector<CornerUVs> uvs;   ///< written as .geom/uv, then .arbGeomParams
+    /// When set, F, V and uvs are left empty and fetched on demand (spool
+    /// file): splice_abc() then holds one new mesh at a time
+    std::function<void(MatrixXu &F, MatrixXf &V, std::vector<CornerUVs> &uvs)> fetch;
 };
 
 /**
@@ -192,7 +197,8 @@ void splice_abc(const std::string &input, const std::string &output,
 void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
               const std::string &object = "",
               const ProgressCallback &progress = ProgressCallback(),
-              uint64_t *polygons = nullptr);
+              uint64_t *polygons = nullptr,
+              std::vector<UVSet> *uvs = nullptr);
 
 /**
  * Writes an extracted mesh (see extracted_polygons()) as a new Alembic
@@ -201,7 +207,8 @@ void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
  * replaced atomically (see ogawa::Writer).
  */
 void write_abc(const std::string &filename, const MatrixXu &F, const MatrixXf &V,
-               const ProgressCallback &progress = ProgressCallback());
+               const ProgressCallback &progress = ProgressCallback(),
+               const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>());
 
 /**
  * Recomputes every sample key (MurmurHash3) and object hash (SpookyHash)

@@ -3,6 +3,7 @@
 */
 
 #include "abc.h"
+#include <deque>
 #include "meshio.h"
 #include <Eigen/Geometry>
 
@@ -509,8 +510,9 @@ class MeshCollector {
 public:
     /* 'filter' selects the meshes at or below a path ("" = all), or exactly
        at that path when 'exact' is set */
-    MeshCollector(Archive &ar, const std::string &filter, bool geometry, bool exact = false)
-        : mAr(ar), mFilter(filter), mGeometry(geometry), mExact(exact) { }
+    MeshCollector(Archive &ar, const std::string &filter, bool geometry, bool exact = false,
+                  bool uvs = false)
+        : mAr(ar), mFilter(filter), mGeometry(geometry), mExact(exact), mWantUVs(uvs) { }
 
     void run() {
         visit(mAr.top(), "/", Eigen::Matrix4d::Identity(), 0, false);
@@ -525,7 +527,133 @@ public:
     std::vector<MeshSummary> meshes;
     uint64_t skippedSubD = 0, skippedFaces = 0;
 
+    /* The UV sets found on every loaded mesh, per polygon corner (aligned
+       with 'indices'); the others are dropped with a warning */
+    std::vector<UVSet> take_uvs(const std::string &source) {
+        std::vector<UVSet> result;
+        for (UVAccum &a : mUVs) {
+            if (a.meshes != meshes.size()) {
+                cout << "Warning: UV set \"" << a.name << "\" is not on every mesh of \"" << source
+                     << "\", ignored" << endl;
+                continue;
+            }
+            UVSet set;
+            set.name = a.name;
+            set.values = Eigen::Map<const MatrixXf>(a.values.data(), 2, (std::ptrdiff_t) (a.values.size() / 2));
+            set.corners.swap(a.corners);
+            result.push_back(std::move(set));
+        }
+        mUVs.clear();
+        return result;
+    }
+
 private:
+    struct UVAccum {
+        std::string key, name;     /* key: "" for the primary set (.geom/uv) */
+        std::vector<float> values;
+        std::vector<uint32_t> corners;
+        size_t meshes = 0;
+    };
+
+    /* A UV parameter of one mesh: its values and, for every corner (file
+       order), the index of its value */
+    struct UVParam {
+        std::string key, name;
+        std::vector<double> values;
+        std::vector<uint32_t> perCorner;
+    };
+
+    static std::string meta_of(const Property &a, const Property &b, const char *key) {
+        auto it = a.meta.find(key);
+        if (it != a.meta.end())
+            return it->second;
+        it = b.meta.find(key);
+        return it != b.meta.end() ? it->second : std::string();
+    }
+
+    /* Reads a 2D GeomParam (indexed compound or plain array); false, with
+       a warning, if it does not fit the mesh */
+    bool read_uv_param(const Property &p, const std::string &path, const std::vector<uint32_t> &counts,
+                       const std::vector<uint32_t> &corners, size_t nVertices, UVParam &out) {
+        Property vals = p, indexProp;
+        bool indexed = false;
+        if (p.type == Property::Compound) {
+            if (!mAr.find(p, ".vals", vals))
+                return false;
+            indexed = mAr.find(p, ".indices", indexProp);
+        }
+        if (vals.type != Property::Array || vals.extent != 2 ||
+            (vals.pod != PodFloat32 && vals.pod != PodFloat64) || vals.samples == 0)
+            return false;
+        const std::string scope = meta_of(p, vals, "geoScope");
+
+        out.values = mAr.sample_doubles(vals);
+        const size_t nValues = out.values.size() / 2;
+        std::vector<uint32_t> items;          /* value of each scope item */
+        size_t nItems;
+        if (scope == "fvr" || scope.empty())
+            nItems = corners.size();
+        else if (scope == "vtx" || scope == "var")
+            nItems = nVertices;
+        else if (scope == "uni")
+            nItems = counts.size();
+        else
+            return false;                     /* constant: not a texture coordinate */
+        if (indexed) {
+            items = mAr.sample_indices(indexProp);
+        } else {
+            items.resize(nValues);
+            for (size_t i = 0; i < nValues; ++i)
+                items[i] = (uint32_t) i;
+        }
+        bool ok = items.size() == nItems;
+        for (uint32_t i : items)
+            ok = ok && i < nValues;
+        if (!ok) {
+            cout << "Warning: UV set \"" << out.name << "\" of \"" << path
+                 << "\" does not match its faces, ignored" << endl;
+            return false;
+        }
+
+        out.perCorner.resize(corners.size());
+        size_t c = 0;
+        for (size_t f = 0; f < counts.size(); ++f)
+            for (uint32_t k = 0; k < counts[f]; ++k, ++c)
+                out.perCorner[c] = scope == "vtx" || scope == "var" ? items[corners[c]]
+                                 : scope == "uni" ? items[f] : items[c];
+        return true;
+    }
+
+    /* The UV parameters of a mesh: .geom/uv, then the 2D vector parameters
+       of .arbGeomParams (where Blender writes its other UV maps) */
+    std::vector<UVParam> read_uv_params(const Property &geom, const std::string &path,
+                                        const std::vector<uint32_t> &counts,
+                                        const std::vector<uint32_t> &corners, size_t nVertices) {
+        std::vector<UVParam> params;
+        Property uv, arb;
+        if (mAr.find(geom, "uv", uv)) {
+            UVParam prm;
+            prm.key = "";
+            prm.name = meta_of(uv, uv, "sourceName");
+            if (prm.name.empty())
+                prm.name = "uv";
+            if (read_uv_param(uv, path, counts, corners, nVertices, prm))
+                params.push_back(std::move(prm));
+        }
+        if (mAr.find(geom, ".arbGeomParams", arb) && arb.type == Property::Compound) {
+            for (const Property &a : mAr.properties(arb)) {
+                const std::string interpretation = meta_of(a, a, "interpretation");
+                if (!interpretation.empty() && interpretation != "vector" && interpretation != "uv")
+                    continue;
+                UVParam prm;
+                prm.key = prm.name = a.name;
+                if (read_uv_param(a, path, counts, corners, nVertices, prm))
+                    params.push_back(std::move(prm));
+            }
+        }
+        return params;
+    }
+
     bool selected(const std::string &path) const {
         if (mExact)
             return path == mFilter;
@@ -651,6 +779,32 @@ private:
             positions.push_back(Vector3f((Float) q.x(), (Float) q.y(), (Float) q.z()));
         }
 
+        /* UV sets of this mesh, appended to the collected ones */
+        std::vector<std::pair<UVAccum *, const UVParam *>> uvTargets;
+        std::vector<uint32_t> uvBase;
+        std::vector<UVParam> params;
+        if (mWantUVs)
+            params = read_uv_params(geom, path, counts, corners, nVertices);
+        for (const UVParam &prm : params) {
+            UVAccum *acc = nullptr;
+            for (UVAccum &a : mUVs)
+                if (a.key == prm.key)
+                    acc = &a;
+            if (!acc) {
+                mUVs.push_back(UVAccum());
+                acc = &mUVs.back();
+                acc->key = prm.key;
+                acc->name = prm.name;
+            }
+            if (acc->meshes != meshes.size() - 1)
+                continue;   /* missing on an earlier mesh: dropped anyway */
+            acc->meshes++;
+            uvBase.push_back((uint32_t) (acc->values.size() / 2));
+            for (double v : prm.values)
+                acc->values.push_back((float) v);
+            uvTargets.emplace_back(acc, &prm);
+        }
+
         /* Alembic polygons are clockwise: reverse every face to get the
            counter-clockwise order of OBJ files */
         size_t offset = 0;
@@ -658,8 +812,12 @@ private:
             if (count < 3) {
                 ++skippedFaces;
             } else {
-                for (uint32_t k = 0; k < count; ++k)
+                for (uint32_t k = 0; k < count; ++k) {
                     indices.push_back((uint32_t) (base + corners[offset + count - 1 - k]));
+                    for (size_t t = 0; t < uvTargets.size(); ++t)
+                        uvTargets[t].first->corners.push_back(
+                            uvBase[t] + uvTargets[t].second->perCorner[offset + count - 1 - k]);
+                }
                 sizes.push_back(count);
             }
             offset += count;
@@ -668,7 +826,8 @@ private:
 
     Archive &mAr;
     std::string mFilter;
-    bool mGeometry, mExact;
+    bool mGeometry, mExact, mWantUVs;
+    std::deque<UVAccum> mUVs;     /* deque: pointers to elements stay valid */
     uint64_t mVisits = 0;
     std::vector<uint64_t> mGroups;                 /* object group of each mesh */
     std::map<uint64_t, uint32_t> mGroupUses;       /* visits per mesh object group */
@@ -684,14 +843,16 @@ std::vector<MeshSummary> list_meshes(const std::string &filename) {
 }
 
 void load_abc_mesh(const std::string &filename, const std::string &path,
-                   MatrixXu &F, MatrixXf &V, uint64_t *polygons) {
+                   MatrixXu &F, MatrixXf &V, uint64_t *polygons, std::vector<UVSet> *uvs) {
     Archive ar(filename);
-    MeshCollector collector(ar, path, true, true);
+    MeshCollector collector(ar, path, true, true, uvs != nullptr);
     collector.run();
     if (collector.meshes.size() != 1)
         ar.fail(collector.meshes.empty() ? "no polygon mesh at \"" + path + "\""
                                          : "\"" + path + "\" is instanced");
-    build_mesh(collector.positions, collector.sizes, collector.indices, F, V, filename + ":" + path);
+    if (uvs)
+        *uvs = collector.take_uvs(filename + ":" + path);
+    build_mesh(collector.positions, collector.sizes, collector.indices, F, V, filename + ":" + path, uvs);
     if (polygons)
         *polygons = collector.sizes.size();
 }
@@ -721,13 +882,13 @@ bool glob_match(const std::string &pattern, const std::string &text) {
 
 void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
               const std::string &object, const ProgressCallback &progress,
-              uint64_t *polygons) {
+              uint64_t *polygons, std::vector<UVSet> *uvs) {
     cout << "Loading \"" << filename << "\" .. ";
     cout.flush();
     Timer<> timer;
 
     Archive ar(filename);
-    MeshCollector collector(ar, object, true);
+    MeshCollector collector(ar, object, true, false, uvs != nullptr);
     collector.run();
 
     if (collector.meshes.empty()) {
@@ -738,7 +899,9 @@ void load_abc(const std::string &filename, MatrixXu &F, MatrixXf &V,
                     : "contains no polygon mesh");
     }
 
-    build_mesh(collector.positions, collector.sizes, collector.indices, F, V, filename);
+    if (uvs)
+        *uvs = collector.take_uvs(filename);
+    build_mesh(collector.positions, collector.sizes, collector.indices, F, V, filename, uvs);
     if (polygons)
         *polygons = collector.sizes.size();
 

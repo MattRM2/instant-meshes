@@ -361,6 +361,87 @@
       "skipped_objects": [],
       "total_vertices": 26,
       "total_triangles": 48
+    },
+    "uv_sets": {
+      "frames": [
+        1,
+        1
+      ],
+      "meshes": [
+        {
+          "name": "Cylinder",
+          "parent": null,
+          "vertices": 32,
+          "faces": 18,
+          "face_sizes": {
+            "4": 16,
+            "16": 2
+          },
+          "triangles": 60,
+          "materials": [],
+          "bbox_yup": [
+            [
+              -3.0,
+              -1.0,
+              -1.0
+            ],
+            [
+              -1.0,
+              1.0,
+              1.0
+            ]
+          ]
+        },
+        {
+          "name": "Grid",
+          "parent": null,
+          "vertices": 35,
+          "faces": 24,
+          "face_sizes": {
+            "4": 24
+          },
+          "triangles": 48,
+          "materials": [],
+          "bbox_yup": [
+            [
+              1.0,
+              -0.0,
+              -1.0
+            ],
+            [
+              3.0,
+              0.0,
+              1.0
+            ]
+          ]
+        },
+        {
+          "name": "NoUV",
+          "parent": null,
+          "vertices": 12,
+          "faces": 20,
+          "face_sizes": {
+            "3": 20
+          },
+          "triangles": 20,
+          "materials": [],
+          "bbox_yup": [
+            [
+              -0.447212,
+              1.5,
+              -0.42532
+            ],
+            [
+              0.447212,
+              2.5,
+              0.42532
+            ]
+          ]
+        }
+      ],
+      "skipped_objects": [],
+      "total_vertices": 79,
+      "total_triangles": 128
     }
   }
 }

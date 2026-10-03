@@ -209,6 +209,50 @@ def case_subd():
     obj.modifiers.new("subd", 'SUBSURF').levels = 1
 
 
+def case_uv_sets():
+    """UV reading / writing: a cylinder with two UV maps (cylindrical with a
+    seam, then planar), n-gon caps, a quad grid with one map, and a mesh
+    without UVs. The UVs are computed, not unwrapped: exact and stable."""
+    reset_scene()
+    bpy.ops.mesh.primitive_cylinder_add(vertices=16, radius=1, depth=2, end_fill_type='NGON',
+                                        location=(-2, 0, 0))
+    cyl = bpy.context.object
+    cyl.name = cyl.data.name = "Cylinder"
+    me = cyl.data
+    while me.uv_layers:
+        me.uv_layers.remove(me.uv_layers[0])
+    main = me.uv_layers.new(name="UVMap")
+    planar = me.uv_layers.new(name="Planar")
+    for poly in me.polygons:
+        # one u per polygon, unwrapped around the seam at angle 0
+        angles = [math.atan2(me.vertices[me.loops[li].vertex_index].co.y,
+                             me.vertices[me.loops[li].vertex_index].co.x) for li in poly.loop_indices]
+        cap = abs(poly.normal.z) > 0.5
+        for li, a in zip(poly.loop_indices, angles):
+            co = me.vertices[me.loops[li].vertex_index].co
+            if cap:
+                uv = (0.25 + 0.2 * co.x, (0.25 if co.z < 0 else 0.75) + 0.2 * co.y)
+            else:
+                if a < 0:
+                    a += 2 * math.pi
+                if a < 1e-6 and max(angles) > math.pi:   # seam: close the strip at u = 1
+                    a = 2 * math.pi
+                uv = (0.5 + 0.5 * a / (2 * math.pi), 0.25 + 0.25 * co.z)
+            main.data[li].uv = uv
+            planar.data[li].uv = (0.5 + 0.4 * co.x, 0.5 + 0.4 * co.z)
+    me.uv_layers.active = main
+
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=6, y_subdivisions=4, size=2, location=(2, 0, 0))
+    grid = bpy.context.object
+    grid.name = grid.data.name = "Grid"
+
+    bpy.ops.mesh.primitive_ico_sphere_add(subdivisions=1, radius=0.5, location=(0, 0, 2))
+    bare = bpy.context.object
+    bare.name = bare.data.name = "NoUV"
+    while bare.data.uv_layers:
+        bare.data.uv_layers.remove(bare.data.uv_layers[0])
+
+
 CASES = {
     "cube_quads": case_cube_quads,
     "ngon_cylinder": case_ngon_cylinder,
@@ -218,7 +262,11 @@ CASES = {
     "animated": case_animated,
     "instances": case_instances,
     "subd": case_subd,
+    "uv_sets": case_uv_sets,
 }
+
+# Cases whose OBJ also carries the (active) UV map
+OBJ_UVS = {"uv_sets"}
 
 # Per-case Alembic export overrides
 ABC_OPTIONS = {
@@ -288,7 +336,7 @@ def export_case(name, outdir):
     bpy.ops.wm.obj_export(
         filepath=base + ".obj", check_existing=False, export_selected_objects=True,
         export_animation=False, apply_modifiers=True, apply_transform=True,
-        export_uv=False, export_normals=False, export_materials=False,
+        export_uv=name in OBJ_UVS, export_normals=False, export_materials=False,
         export_triangulated_mesh=False,
         forward_axis='NEGATIVE_Z', up_axis='Y')
     options = dict(

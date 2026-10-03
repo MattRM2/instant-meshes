@@ -108,6 +108,21 @@ CornerUVs unwrap_uvs(const MatrixXu &F, const MatrixXf &O, const std::string &na
     for (size_t i = 0; i < triCorner.size(); ++i)
         triVertex[i] = indices[triCorner[i]];
 
+    /* xatlas ignores the triangles whose area is below FLT_EPSILON: a dense
+       mesh of a small object (a 20 cm scan of a million faces) would lose
+       them all. It gets the mesh scaled to an average edge length of 1 (the
+       UVs are normalized at the end, the scale does not change them) */
+    double edges = 0;
+    for (size_t t = 0; t < triVertex.size(); t += 3)
+        for (int j = 0; j < 3; ++j)
+            edges += (O.col(triVertex[t + j]) - O.col(triVertex[t + (j + 1) % 3])).norm();
+    const double meanEdge = edges / (double) triVertex.size();
+    MatrixXf Os = O;
+    if (meanEdge > 0 && std::isfinite(meanEdge)) {
+        const Vector3f centre = O.rowwise().mean();
+        Os = (O.colwise() - centre) * (Float) (1.0 / meanEdge);
+    }
+
     /* Pass 1: charts and their parameterization, on the triangles */
     std::vector<Vector2f> cornerUV(indices.size(), Vector2f::Zero());
     std::vector<int32_t> polygonChart(sizes.size(), -1);
@@ -116,7 +131,7 @@ CornerUVs unwrap_uvs(const MatrixXu &F, const MatrixXf &O, const std::string &na
     {
         AtlasGuard guard;
         xatlas::MeshDecl decl;
-        decl.vertexPositionData = O.data();
+        decl.vertexPositionData = Os.data();
         decl.vertexPositionStride = sizeof(float) * 3;
         decl.vertexCount = (uint32_t) O.cols();
         decl.indexData = triVertex.data();
@@ -132,6 +147,8 @@ CornerUVs unwrap_uvs(const MatrixXu &F, const MatrixXf &O, const std::string &na
         xatlas::ComputeCharts(guard.atlas, charts);
         xatlas::PackCharts(guard.atlas, pack_options());
         const xatlas::Atlas &atlas = *guard.atlas;
+        if (atlas.meshCount == 1 && atlas.chartCount == 0)
+            throw std::runtime_error("UV unwrap: xatlas found no chart (degenerate faces only?)!");
         if (atlas.meshCount != 1 || atlas.meshes[0].indexCount != triVertex.size() || atlas.width == 0)
             throw std::runtime_error("UV unwrap: xatlas returned an unexpected mesh!");
         const xatlas::Mesh &mesh = atlas.meshes[0];

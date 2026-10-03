@@ -445,6 +445,12 @@ static void test_unwrap() {
         check_unwrap(Fr, set, posy == 4 ? "quads" : "triangles");
         /* the same result every time */
         CHECK(unwrap_uvs(Fr, Or).corners == set.corners);
+        /* a tiny object (triangle areas below FLT_EPSILON, that xatlas
+           would drop): the same charts, the same UVs */
+        const MatrixXf tiny = (Or * 1e-5f).eval();
+        UnwrapStats tinyStats;
+        const CornerUVs tinyUVs = unwrap_uvs(Fr, tiny, "UVMap", &tinyStats);
+        CHECK(tinyStats.charts == stats.charts && (tinyUVs.corners - set.corners).cwiseAbs().maxCoeff() < 1e-3f);
     }
     /* Quad-dominant output: irregular polygons */
     MatrixXu F, Fr;

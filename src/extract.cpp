@@ -867,6 +867,34 @@ void extract_faces(std::vector<std::vector<TaggedLink> > &adj, MatrixXf &O,
     N.conservativeResize(3, nV);
     O.conservativeResize(3, nV);
 
+    /* Faces through the same vertex twice (seldom, from the subdivision of
+       irregular faces into quads): folded onto themselves, rejected by
+       importers (Blender drops them with a warning). Removed; a triangle of
+       the quad-dominant mode (a, b, c, c) is kept */
+    {
+        uint32_t kept = 0, dropped = 0;
+        for (uint32_t f = 0; f < nF; ++f) {
+            const uint32_t n = posy == 4 && F(2, f) == F(3, f) ? 3 : (uint32_t) F.rows();
+            bool repeated = false;
+            for (uint32_t a = 0; a < n && !repeated; ++a)
+                for (uint32_t b = a + 1; b < n && !repeated; ++b)
+                    repeated = F(a, f) == F(b, f);
+            if (repeated) {
+                ++dropped;
+                continue;
+            }
+            if (kept != f)
+                F.col(kept) = F.col(f);
+            ++kept;
+        }
+        if (dropped > 0) {
+            nF = kept;
+            F.conservativeResize(posy, nF);
+            cout << "Removed " << dropped << " degenerate face" << (dropped > 1 ? "s" : "")
+                 << " (a vertex used twice)" << endl;
+        }
+    }
+
     if (smooth_iterations > 0) {
         cout << "Step 10: Running " << smooth_iterations << " smoothing & reprojection steps ..";
         cout.flush();

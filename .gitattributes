@@ -3,3 +3,4 @@
 *.ttf binary
 *.pdf binary
 *.png binary
+ext/xatlas/** -text

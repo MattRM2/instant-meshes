@@ -43,7 +43,7 @@ int main(int argc, char **argv) {
     try {
         for (int i=1; i<argc; ++i) {
             if (strcmp("--version", argv[i]) == 0 || strcmp("-V", argv[i]) == 0) {
-                cout << INSTANT_MESHES_TITLE << " (MattRM2 fork, native Alembic)" << endl;
+                cout << INSTANT_MESHES_TITLE << " (MattRM2 fork, native Alembic and USD)" << endl;
                 return 0;
             } else if (strcmp("--fullscreen", argv[i]) == 0 || strcmp("-F", argv[i]) == 0) {
                 fullscreen = true;

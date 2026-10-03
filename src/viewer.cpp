@@ -748,7 +748,7 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     about->setCallback([&,ctx]() {
         auto dlg = new MessageDialog(
             this, MessageDialog::Type::Information, "About " INSTANT_MESHES_TITLE,
-            INSTANT_MESHES_TITLE ", MattRM2 fork: native Alembic (.abc) support, per-mesh "
+            INSTANT_MESHES_TITLE ", MattRM2 fork: native Alembic and USD support, per-mesh "
             "remeshing, percentage targets and the Matt Dark interface "
             "(github.com/MattRM2/instant-meshes).\n\n"
             "Instant Meshes is freely available under a BSD-style license. "

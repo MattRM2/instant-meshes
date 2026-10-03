@@ -981,8 +981,8 @@ void Viewer::setFlowColorMode(int mode) {
     } else {
         mFlowColorMode = mode;
         mLayers[FlowLines]->setChecked(true);
-        if (mRes.levels() > 0 && mRes.iterationsQ() > 0)
-            traceFlowLines();
+        /* iterationsQ is 0 after a first solve, -1 before (rejected there) */
+        traceFlowLines();
     }
     mFlowLineSlider->setEnabled(mLayers[FlowLines]->checked());
     repaint();

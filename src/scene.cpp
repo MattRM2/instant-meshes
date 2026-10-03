@@ -90,6 +90,14 @@ public:
         usd::write_overlay(mLayer, output, replacements);
     }
 
+    std::vector<std::string> proxy_paths(const std::vector<std::string> &meshes) override {
+        return usd::proxy_paths(mLayer, meshes);
+    }
+
+    void write_proxies(const std::string &output, const std::vector<SceneReplacement> &proxies) override {
+        usd::write_proxies(mLayer, output, proxies);
+    }
+
 private:
     usd::Layer mLayer;
 };

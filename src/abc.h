@@ -144,6 +144,7 @@ struct MeshSummary {
     uint64_t faces = 0;    ///< polygons, as shown in a DCC (not triangles)
     bool animated = false; ///< positions or topology have several samples
     bool instanced = false;///< reached through an instance, or instanced elsewhere
+    std::string purpose;   ///< USD: computed purpose when not "default" (render, proxy, guide)
     Eigen::Matrix4d world = Eigen::Matrix4d::Identity();  ///< first sample
 };
 

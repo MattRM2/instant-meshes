@@ -34,6 +34,7 @@ int main(int argc, char **argv) {
     std::vector<MeshRule> meshRules;
     FaceTarget others;
     bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false, progress = false;
+    bool proxy = false, uvGiven = false;
     int listSort = 0, listTop = 0;
     RemeshParams::UVMode uvMode = RemeshParams::UVNone;
     #if defined(__APPLE__)
@@ -170,8 +171,11 @@ int main(int argc, char **argv) {
                     return -1;
                 }
                 uvMode = parse_uv_mode(argv[i]);
+                uvGiven = true;
             } else if (strcmp("--progress", argv[i]) == 0) {
                 progress = true;
+            } else if (strcmp("--proxy", argv[i]) == 0) {
+                proxy = true;
             } else if (strcmp("--keep-border", argv[i]) == 0) {
                 keepBorder = true;
             } else if (strcmp("--compat", argv[i]) == 0 || strcmp("-C", argv[i]) == 0) {
@@ -270,6 +274,11 @@ int main(int argc, char **argv) {
         cerr << "Error: --skip-failed applies to the -m / --others per-mesh mode!" << endl;
         help = true;
     }
+    if (proxy && (!objectMode || !usdScene)) {
+        cerr << "Error: --proxy adds proxies to the meshes of a USD scene chosen with -m / --others "
+                "(e.g. scene.usdc -o scene_proxy.usda --proxy --others 5%)!" << endl;
+        help = true;
+    }
     if (objectMode && nConstraints > 0) {
         cerr << "Error: with -m / --others, give the face targets there (-f, -s and -v remesh the whole file)!" << endl;
         help = true;
@@ -304,8 +313,8 @@ int main(int argc, char **argv) {
         cout << "   -i, --intrinsic           Intrinsic mode (extrinsic is the default)" << endl;
         cout << "   -b, --boundaries          Align to boundaries (only applies when the mesh is not closed)" << endl;
         cout << "       --keep-border         Snap the open border back onto the input border (implies -b):" << endl;
-        cout << "                             objects touching along their borders stay closed (.obj/.abc)" << endl;
-        cout << "       --uv <mode>           UVs of the output (.obj/.abc): none (default), transfer" << endl;
+        cout << "                             objects touching along their borders stay closed (.obj/.abc/.usda)" << endl;
+        cout << "       --uv <mode>           UVs of the output (.obj/.abc/.usda): none (default), transfer" << endl;
         cout << "                             (from the input, island by island) or unwrap (new" << endl;
         cout << "                             UVs, xatlas)" << endl;
         cout << "   -r, --rosy <number>     Specifies the orientation symmetry type (2, 4, or 6)" << endl;
@@ -325,6 +334,8 @@ int main(int argc, char **argv) {
         cout << "                             matching -m wins" << endl;
         cout << "       --others <target>     Remesh every other polygon mesh with <target>" << endl;
         cout << "                             (without it, the other objects are copied unchanged)" << endl;
+        cout << "       --proxy               USD: keep the meshes, add their remeshed copy as a proxy" << endl;
+        cout << "                             (purpose proxy, proxyPrim; UVs transferred unless --uv)" << endl;
         cout << "       --dry-run             Print the plan of -m / --others and stop" << endl;
         cout << "       --skip-failed         A mesh that cannot be remeshed (e.g. no faces for its" << endl;
         cout << "                             target) is copied unchanged instead of stopping" << endl;
@@ -362,13 +373,17 @@ int main(int argc, char **argv) {
     params.deterministic = deterministic;
     params.keep_border = keepBorder;
     params.uv = uvMode;
+    /* proxies keep the look of the original: its UVs, unless --uv says otherwise */
+    if (proxy && !uvGiven)
+        params.uv = RemeshParams::UVTransfer;
 
     if (listMeshes || objectMode || (!batchOutput.empty() && args.size() == 1)) {
         try {
             if (listMeshes)
                 batch_list(args[0], listSort, listTop);
             else if (objectMode)
-                batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun, skipFailed, progress);
+                batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun, skipFailed, progress,
+                                      proxy);
             else
                 batch_process(args[0], batchOutput, params);
             return 0;

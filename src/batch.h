@@ -87,10 +87,12 @@ extern void batch_list(const std::string &input, int sort = 0, int top = 0);
  * with 'dryRun' stops there. With 'skipFailed', a mesh that cannot be
  * remeshed (error, no faces) is copied unchanged instead of stopping.
  * With 'progress', a progress block (weighted by input faces) is printed
- * after each mesh.
+ * after each mesh. With 'proxy' (USD), the selected meshes are kept and
+ * the remeshed ones are added as their proxies (purpose "proxy").
  */
 extern void batch_process_objects(const std::string &input, const std::string &output,
                                   const RemeshParams &params,
                                   const std::vector<MeshRule> &rules,
                                   const FaceTarget &others, bool dryRun,
-                                  bool skipFailed = false, bool progress = false);
+                                  bool skipFailed = false, bool progress = false,
+                                  bool proxy = false);

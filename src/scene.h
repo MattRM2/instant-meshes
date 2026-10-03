@@ -1,6 +1,6 @@
 /*
     scene.h: A scene file whose polygon meshes are listed, loaded one at a
-    time and replaced, whatever its format (Alembic, OBJ; USD to come).
+    time and replaced, whatever its format (Alembic, OBJ, USD).
     Used by the per-mesh mode (-m / --others / --list).
 */
 
@@ -39,6 +39,20 @@ public:
     /// Writes the scene to 'output' (same format) with the given meshes
     /// replaced, everything else copied; 'output' may be the file itself
     virtual void write(const std::string &output, const std::vector<SceneReplacement> &replacements) = 0;
+
+    /// USD: where the proxies of these meshes go (--proxy); throws for the
+    /// formats without proxies or a mesh that cannot get one
+    virtual std::vector<std::string> proxy_paths(const std::vector<std::string> &meshes) {
+        (void) meshes;
+        throw std::runtime_error("--proxy needs a USD scene (.usd/.usda/.usdc/.usdz)");
+    }
+
+    /// USD: writes 'output', a layer adding the given meshes as proxies
+    virtual void write_proxies(const std::string &output, const std::vector<SceneReplacement> &proxies) {
+        (void) output;
+        (void) proxies;
+        throw std::runtime_error("--proxy needs a USD scene (.usd/.usda/.usdc/.usdz)");
+    }
 
 protected:
     explicit SceneFile(const std::string &filename) : mFilename(filename) { }

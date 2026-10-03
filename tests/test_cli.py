@@ -555,6 +555,51 @@ def test_usd_scenes(exe, tmp):
           "OBJ -> .usda read back: %s" % meshes)
 
 
+
+def test_usd_proxies(exe, tmp):
+    print("USD proxies: --proxy")
+    import shutil
+    src = os.path.join(tmp, "asset.usdc")
+    shutil.copy(os.path.join(DATA, "usd_asset.usdc"), src)
+    out = os.path.join(tmp, "asset_proxy.usda")
+
+    code, log = run(exe, src, "-o", out, "--proxy", "--others", "40%", "--dry-run")
+    check(code == 0 and "get a proxy" in log and "proxy: /Asset/geo/proxy/Body" in log and
+          "proxy: /Asset/geo/proxy/Spinner/Wheel" in log and "kept unchanged (guide)" in log and
+          not os.path.exists(out), "--proxy --dry-run plan")
+
+    code, log = run(exe, src, "-o", out, "-d", "--proxy", "--others", "40%")
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check(code == 0 and "@./asset.usdc@" in text and 'def Scope "proxy"' in text and 'def Mesh "Body"' in text and
+          "rel proxyPrim = </Asset/geo/proxy/Body>" in text and 'uniform token purpose = "proxy"' in text and
+          'uniform token purpose = "render"' in text and "texCoord2f[] primvars:st" in text and
+          "xformOp:rotateX.timeSamples" in text and "rel material:binding = </Asset/mtl/paint>" in text and
+          'over "Helper"' not in text, "--proxy layer (UVs transferred by default, transforms copied)")
+
+    code, log = run(exe, src, "-o", out, "-d", "--proxy", "-m", "Bolt=50%", "--uv", "none")
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check(code == 0 and 'def Mesh "Bolt"' in text and "primvars:st" not in text and 'def Mesh "Body"' not in text,
+          "--proxy --uv none: no UVs")
+
+    for args, expect in ((["-m", "Helper=50%"], "cannot get a proxy"),
+                         ([], "--proxy adds proxies"),
+                         (["-f", "50%"], "--proxy adds proxies")):
+        code, log = run(exe, src, "-o", out, "--proxy", *args)
+        check(code != 0 and expect in log and "Optimizing" not in log, "--proxy %s -> '%s'" % (" ".join(args), expect))
+    code, log = run(exe, os.path.join(DATA, "scene_ab.abc"), "-o", os.path.join(tmp, "x.abc"), "--proxy",
+                    "--others", "50%")
+    check(code != 0 and "--proxy adds proxies" in log, "--proxy refused on Alembic")
+
+    # next to the meshes without geo/render
+    scene = os.path.join(tmp, "pscene.usdc")
+    shutil.copy(os.path.join(DATA, "usd_scene.usdc"), scene)
+    out = os.path.join(tmp, "pscene_proxy.usda")
+    code, log = run(exe, scene, "-o", out, "-d", "--proxy", "-m", "MeshA=300%", "-m", "MeshC=30%")
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check(code == 0 and 'def Mesh "MeshA_proxy"' in text and "rel proxyPrim = </World/geo/MeshA_proxy>" in text,
+          "--proxy next to the mesh")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -594,6 +639,7 @@ def main():
         test_uv_transfer(exe, tmp)
         test_usd_reader(exe, tmp)
         test_usd_scenes(exe, tmp)
+        test_usd_proxies(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

@@ -160,8 +160,25 @@ static void test_world() {
     CHECK(contains(error_of([&] { load_mesh(layer, "/Proto/Box", F, V); }), "no polygon mesh"));
 }
 
+/* Where --proxy puts the proxies: geo/render mirrored to geo/proxy (even
+   below an animated transform), else <name>_proxy next to the mesh */
+static void test_proxy_paths() {
+    std::cout << "usd: proxy placement" << std::endl;
+    Layer asset(data_path("usd_asset.usdc"));
+    std::vector<abc::MeshSummary> meshes = list_meshes(asset);
+    CHECK(meshes.size() == 4 && meshes[3].path == "/Asset/geo/guide/Helper" && meshes[3].purpose == "guide" &&
+          meshes[0].purpose.empty());
+    std::vector<std::string> where = proxy_paths(asset, { "/Asset/geo/render/Body", "/Asset/geo/render/Spinner/Wheel" });
+    CHECK(where.size() == 2 && where[0] == "/Asset/geo/proxy/Body" && where[1] == "/Asset/geo/proxy/Spinner/Wheel");
+    CHECK(contains(error_of([&] { proxy_paths(asset, { "/Asset/geo/guide/Helper" }); }), "purpose \"guide\""));
+    Layer scene(data_path("usd_scene.usdc"));
+    where = proxy_paths(scene, { "/World/geo/MeshA", "/World/geo/Spin/MeshE" });
+    CHECK(where.size() == 2 && where[0] == "/World/geo/MeshA_proxy" && where[1] == "/World/geo/Spin/MeshE_proxy");
+}
+
 void test_usd(int fuzz_scale) {
     test_read();
     test_world();
+    test_proxy_paths();
     test_fuzz(fuzz_scale);
 }

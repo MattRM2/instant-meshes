@@ -540,6 +540,8 @@ static std::string mesh_flags(const abc::MeshSummary &m) {
         flags += " (animated)";
     if (m.instanced)
         flags += " (instanced)";
+    if (!m.purpose.empty())
+        flags += " (" + m.purpose + ")";
     return flags;
 }
 
@@ -576,7 +578,8 @@ void batch_list(const std::string &input, int sort, int top) {
 
 void batch_process_objects(const std::string &input, const std::string &output,
                            const RemeshParams &params, const std::vector<MeshRule> &rules,
-                           const FaceTarget &others, bool dryRun, bool skipFailed, bool progress) {
+                           const FaceTarget &others, bool dryRun, bool skipFailed, bool progress,
+                           bool proxy) {
     /* Opened once for the plan, the loads and the write (an OBJ file is
        parsed once) */
     const std::unique_ptr<SceneFile> scene = SceneFile::open(input);
@@ -592,6 +595,10 @@ void batch_process_objects(const std::string &input, const std::string &output,
     std::vector<Item> plan;
     std::vector<size_t> matches(rules.size(), 0);
     std::vector<std::string> refused;
+    /* --proxy: proxy and guide meshes do not get one */
+    auto unfit = [proxy](const abc::MeshSummary &m) {
+        return m.animated || m.instanced || (proxy && (m.purpose == "proxy" || m.purpose == "guide"));
+    };
     for (const abc::MeshSummary &m : meshes) {
         Item item { &m, FaceTarget(), "", false };
         int rule = -1;
@@ -605,10 +612,10 @@ void batch_process_objects(const std::string &input, const std::string &output,
             item.target = rules[rule].target;
             item.reason = "-m " + rules[rule].text;
             item.remesh = true;
-            if (m.animated || m.instanced)
+            if (unfit(m))
                 refused.push_back(m.path + mesh_flags(m) + ", selected by -m " + rules[rule].text);
         } else if (others.valid()) {
-            if (m.animated || m.instanced) {
+            if (unfit(m)) {
                 item.reason = "kept unchanged" + mesh_flags(m);
             } else {
                 item.target = others;
@@ -629,7 +636,20 @@ void batch_process_objects(const std::string &input, const std::string &output,
         std::string list;
         for (const std::string &s : refused)
             list += "\n   " + s;
-        throw std::runtime_error("Animated or instanced meshes cannot be remeshed:" + list);
+        throw std::runtime_error(proxy ? "Animated, instanced, proxy or guide meshes cannot get a proxy:" + list
+                                       : "Animated or instanced meshes cannot be remeshed:" + list);
+    }
+
+    /* --proxy: where each proxy goes, checked before any computation */
+    std::map<std::string, std::string> proxyOf;
+    if (proxy) {
+        std::vector<std::string> targets;
+        for (const Item &i : plan)
+            if (i.remesh)
+                targets.push_back(i.mesh->path);
+        const std::vector<std::string> where = scene->proxy_paths(targets);
+        for (size_t k = 0; k < targets.size(); ++k)
+            proxyOf[targets[k]] = where[k];
     }
 
     size_t width = 0, count = 0;
@@ -638,16 +658,18 @@ void batch_process_objects(const std::string &input, const std::string &output,
         count += i.remesh;
     }
     cout << endl << "Plan for \"" << input << "\" (" << count << " of " << plan.size()
-         << " polygon meshes remeshed):" << endl;
+         << (proxy ? " polygon meshes get a proxy):" : " polygon meshes remeshed):") << endl;
     for (const Item &i : plan) {
         cout << "   " << std::left << std::setw((int) width) << i.mesh->path << std::right
              << "  " << std::setw(9) << i.mesh->faces << " faces";
         if (i.remesh) {
-            cout << "  -> " << i.target.text;
+            cout << "  -> " << (proxy ? "proxy " : "") << i.target.text;
             if (i.target.percent > 0)
                 cout << " (~" << (uint64_t) std::round(i.mesh->faces * i.target.percent / 100.0) << ")";
         }
         cout << "   [" << i.reason << "]" << endl;
+        if (proxy && i.remesh)
+            cout << "   " << std::string(width, ' ') << "  proxy: " << proxyOf[i.mesh->path] << endl;
     }
     if (count == 0)
         throw std::runtime_error("Nothing to remesh!");
@@ -678,7 +700,7 @@ void batch_process_objects(const std::string &input, const std::string &output,
     for (const Item &i : plan) {
         if (!i.remesh)
             continue;
-        cout << endl << "=== " << i.mesh->path << " -> " << i.target.text << endl;
+        cout << endl << "=== " << i.mesh->path << " -> " << (proxy ? "proxy " : "") << i.target.text << endl;
         const size_t skippedBefore = skipped.size();
         try {
             MatrixXu F;
@@ -752,5 +774,11 @@ void batch_process_objects(const std::string &input, const std::string &output,
             cout << "   " << s << endl;
         cout << endl;
     }
-    scene->write(output, replacements);
+    if (proxy) {
+        if (replacements.empty())
+            throw std::runtime_error("No proxy could be made, nothing written!");
+        scene->write_proxies(output, replacements);
+    } else {
+        scene->write(output, replacements);
+    }
 }

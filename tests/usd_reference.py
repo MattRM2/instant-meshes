@@ -3,7 +3,8 @@ usd_reference.py -- USD reference data and ground truth, with Pixar's USD
 library (the pxr module that ships with Blender 4.x / 5.x).
 
     blender -b --factory-startup --python tests/usd_reference.py -- make <dir>
-        writes usd_scene.usda / .usdc / .usdz (the same scene in every format)
+        writes usd_scene.usda / .usdc / .usdz (the same scene in every format),
+        and usd_asset.usdc (geo/render convention, for --proxy)
     blender -b --factory-startup --python tests/usd_reference.py -- dump <file>
         prints the layer in the canonical form of build/Release/usd_dump.exe
 
@@ -144,6 +145,99 @@ def make_scene(path):
     stage.GetRootLayer().Save()
 
 
+def sphere(stage, path, rings=12, segs=24, radius=1.0):
+    """A UV sphere of quads (triangles at the poles), with face-varying st"""
+    pts = [Gf.Vec3f(0, radius, 0)]
+    for r in range(1, rings):
+        t = math.pi * r / rings
+        for s in range(segs):
+            p = 2 * math.pi * s / segs
+            pts.append(Gf.Vec3f(radius * math.sin(t) * math.cos(p), radius * math.cos(t),
+                                radius * math.sin(t) * math.sin(p)))
+    pts.append(Gf.Vec3f(0, -radius, 0))
+    south = len(pts) - 1
+    ring = lambda r, s: 1 + (r - 1) * segs + s % segs
+    counts, idx, st = [], [], []
+    for s in range(segs):
+        counts.append(3)
+        idx += [0, ring(1, s + 1), ring(1, s)]
+        st += [Gf.Vec2f((s + 0.5) / segs, 1), Gf.Vec2f((s + 1.0) / segs, 1 - 1.0 / rings),
+               Gf.Vec2f(s / segs, 1 - 1.0 / rings)]
+    for r in range(1, rings - 1):
+        for s in range(segs):
+            counts.append(4)
+            idx += [ring(r, s), ring(r, s + 1), ring(r + 1, s + 1), ring(r + 1, s)]
+            v0, v1 = 1 - r / rings, 1 - (r + 1) / rings
+            st += [Gf.Vec2f(s / segs, v0), Gf.Vec2f((s + 1) / segs, v0), Gf.Vec2f((s + 1) / segs, v1),
+                   Gf.Vec2f(s / segs, v1)]
+    for s in range(segs):
+        counts.append(3)
+        idx += [south, ring(rings - 1, s), ring(rings - 1, s + 1)]
+        st += [Gf.Vec2f((s + 0.5) / segs, 0), Gf.Vec2f(s / segs, 1.0 / rings),
+               Gf.Vec2f((s + 1.0) / segs, 1.0 / rings)]
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr(pts)
+    mesh.CreateFaceVertexCountsAttr(counts)
+    mesh.CreateFaceVertexIndicesAttr(idx)
+    UsdGeom.PrimvarsAPI(mesh).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
+                                            UsdGeom.Tokens.faceVarying).Set(st)
+    return mesh, len(counts)
+
+
+def make_asset(path):
+    """An asset under the geo/render convention, for --proxy: a body with
+    GeomSubsets, a part whose material is bound on its parent, a wheel under
+    an animated transform, a guide mesh"""
+    stage = Usd.Stage.CreateNew(path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    stage.SetStartTimeCode(1)
+    stage.SetEndTimeCode(24)
+    asset = UsdGeom.Xform.Define(stage, "/Asset")
+    stage.SetDefaultPrim(asset.GetPrim())
+    Usd.ModelAPI(asset.GetPrim()).SetKind(Kind.Tokens.component)
+    UsdGeom.Scope.Define(stage, "/Asset/mtl")
+    paint = UsdShade.Material.Define(stage, "/Asset/mtl/paint")
+    metal = UsdShade.Material.Define(stage, "/Asset/mtl/metal")
+    rubber = UsdShade.Material.Define(stage, "/Asset/mtl/rubber")
+    geo = UsdGeom.Xform.Define(stage, "/Asset/geo")
+    geo.AddTranslateOp().Set(Gf.Vec3d(0, 1, 0))
+    UsdGeom.Scope.Define(stage, "/Asset/geo/render")
+
+    body, n = sphere(stage, "/Asset/geo/render/Body", 12, 24, 2.0)
+    body.AddRotateXYZOp().Set(Gf.Vec3f(0, 30, 0))
+    body.AddScaleOp().Set(Gf.Vec3f(1.5, 1, 1))
+    UsdShade.MaterialBindingAPI.Apply(body.GetPrim()).Bind(paint)
+    bottom = UsdGeom.Subset.Define(stage, "/Asset/geo/render/Body/bottom")
+    bottom.CreateElementTypeAttr(UsdGeom.Tokens.face)
+    bottom.CreateFamilyNameAttr("materialBind")
+    bottom.CreateIndicesAttr(list(range(n - 24 * 3, n)))
+    UsdShade.MaterialBindingAPI.Apply(bottom.GetPrim()).Bind(rubber)
+
+    parts = UsdGeom.Xform.Define(stage, "/Asset/geo/render/Parts")
+    parts.AddTranslateOp().Set(Gf.Vec3d(0, 2.2, 0))
+    parts.AddScaleOp().Set(Gf.Vec3f(0.5, 0.5, 0.5))
+    UsdShade.MaterialBindingAPI.Apply(parts.GetPrim()).Bind(metal)
+    sphere(stage, "/Asset/geo/render/Parts/Bolt", 8, 16, 1.0)
+
+    spinner = UsdGeom.Xform.Define(stage, "/Asset/geo/render/Spinner")
+    spinner.AddTranslateOp().Set(Gf.Vec3d(3.5, 0, 0))
+    rot = spinner.AddRotateXOp()
+    rot.Set(0.0, 1)
+    rot.Set(180.0, 24)
+    wheel, _ = sphere(stage, "/Asset/geo/render/Spinner/Wheel", 10, 20, 0.8)
+    wheel.AddScaleOp().Set(Gf.Vec3f(0.4, 1, 1))
+    UsdShade.MaterialBindingAPI.Apply(wheel.GetPrim()).Bind(rubber)
+
+    guide = UsdGeom.Scope.Define(stage, "/Asset/geo/guide")
+    guide.CreatePurposeAttr(UsdGeom.Tokens.guide)
+    helper = UsdGeom.Mesh.Define(stage, "/Asset/geo/guide/Helper")
+    helper.CreatePointsAttr([Gf.Vec3f(-3, -2, -3), Gf.Vec3f(3, -2, -3), Gf.Vec3f(3, -2, 3), Gf.Vec3f(-3, -2, 3)])
+    helper.CreateFaceVertexCountsAttr([4])
+    helper.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    stage.GetRootLayer().Save()
+
+
 def world_obj(path, obj):
     """The meshes of the composed stage at their first frame, in world space,
     counter-clockwise (left-handed meshes reversed), in traversal order,
@@ -267,6 +361,10 @@ if args[0] == "make":
     if not suffix:
         UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(usdc), os.path.join(out, "usd_scene.usdz"))
         world_obj(usda, os.path.join(out, "usd_scene_world.obj"))
+        asset = os.path.join(out, "usd_asset.usda")
+        make_asset(asset)
+        Sdf.Layer.FindOrOpen(asset).Export(os.path.join(out, "usd_asset.usdc"))
+        os.remove(asset)
     print("[OK] usd reference data in", out)
 elif args[0] == "dump":
     dump(args[1])

@@ -43,6 +43,28 @@ void load_all(const Layer &layer, MatrixXu &F, MatrixXf &V, uint64_t *polygons =
 void write_overlay(const Layer &layer, const std::string &output,
                    const std::vector<abc::Replacement> &replacements);
 
+/**
+ * Where the proxy of each mesh goes, in the same order. Under the geo/render
+ * convention (a "render" ancestor), .../geo/render/<path> gets
+ * .../geo/proxy/<path>, whose prims copy the transforms of those they
+ * mirror (animation included); otherwise the proxy is a sibling named
+ * <name>_proxy. Throws when a mesh cannot get one (proxy or guide itself,
+ * proxy path already used).
+ */
+std::vector<std::string> proxy_paths(const Layer &layer, const std::vector<std::string> &meshes);
+
+/**
+ * Writes 'output' (.usda), a layer over 'layer' that adds a proxy to each
+ * given mesh (the new mesh of a replacement, in world space). The proxy is
+ * a new Mesh with purpose "proxy", the transform of the original (its
+ * points in the same local space), no subdivision, the material of the
+ * original (the most used one of its GeomSubsets) and the given UV sets;
+ * the original gets purpose "render" (on the render scope under the
+ * geo/render convention) and a proxyPrim relationship to its proxy.
+ */
+void write_proxies(const Layer &layer, const std::string &output,
+                   const std::vector<abc::Replacement> &proxies);
+
 /// A new .usda stage holding one extracted mesh (whole-file output)
 void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &V,
                 const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>());

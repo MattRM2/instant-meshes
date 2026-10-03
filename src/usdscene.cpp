@@ -155,19 +155,38 @@ bool instanceable(const Prim &p) {
     return a && a->kind == Value::Numbers && a->num() != 0;
 }
 
+/* The purpose authored on a prim: false when none ('value': "" for "default") */
+bool authored_purpose(const Layer &layer, const Prim &p, std::string &value) {
+    const Property *q = p.property("purpose");
+    if (!q || q->relationship)
+        return false;
+    const Value v = first_value(layer, *q);
+    if (v.kind != Value::Strings)
+        return false;
+    value = v.str() == "default" ? std::string() : v.str();
+    return true;
+}
+
+/* Computed purpose (UsdGeomImageable): the prim's own when authored, else
+   its parent's ("" = default) */
+std::string child_purpose(const Layer &layer, const Prim &p, const std::string &parent) {
+    std::string own;
+    return authored_purpose(layer, p, own) ? own : parent;
+}
+
 /* Walks the defined, active prims with their world matrix */
 struct Walker {
     const Layer &layer;
-    std::function<void(const Prim &, const Mat4 &, bool instanced)> onMesh;
+    std::function<void(const Prim &, const Mat4 &, bool instanced, const std::string &purpose)> onMesh;
     std::function<void(const Prim &, const Mat4 &)> onPrim;
     size_t visits = 0;
 
     void run() {
         for (const auto &c : layer.root.children)
-            visit(*c, Mat4::Identity(), false, 0);
+            visit(*c, Mat4::Identity(), false, std::string(), 0);
     }
 
-    void visit(const Prim &p, const Mat4 &parent, bool instanced, int depth) {
+    void visit(const Prim &p, const Mat4 &parent, bool instanced, const std::string &parentPurpose, int depth) {
         if (p.specifier != Specifier::Def || !active(p))
             return;
         if (depth > 1000 || ++visits > 100000000)
@@ -176,12 +195,13 @@ struct Walker {
         const Mat4 local = local_transform(layer, p, reset, animated);
         const Mat4 world = reset ? local : Mat4(parent * local);
         const bool inst = instanced || instanceable(p) || p.type == "PointInstancer";
+        const std::string purpose = child_purpose(layer, p, parentPurpose);
         if (onPrim)
             onPrim(p, world);
         if (p.type == "Mesh" && onMesh)
-            onMesh(p, world, inst);
+            onMesh(p, world, inst, purpose);
         for (const auto &c : p.children)
-            visit(*c, world, inst, depth + 1);
+            visit(*c, world, inst, purpose, depth + 1);
     }
 };
 
@@ -363,11 +383,12 @@ struct Collector {
 std::vector<abc::MeshSummary> list_meshes(const Layer &layer) {
     std::vector<abc::MeshSummary> result;
     Walker w { layer, nullptr, nullptr };
-    w.onMesh = [&](const Prim &p, const Mat4 &world, bool instanced) {
+    w.onMesh = [&](const Prim &p, const Mat4 &world, bool instanced, const std::string &purpose) {
         abc::MeshSummary m;
         m.path = p.path;
         m.world = world;
         m.instanced = instanced;
+        m.purpose = purpose;
         const Property *pp = p.property("points"), *pc = p.property("faceVertexCounts"),
                        *pi = p.property("faceVertexIndices");
         if (pp) {
@@ -393,7 +414,7 @@ void load_mesh(const Layer &layer, const std::string &path, MatrixXu &F, MatrixX
     c.wantUVs = uvs != nullptr;
     bool found = false;
     Walker w { layer, nullptr, nullptr };
-    w.onMesh = [&](const Prim &p, const Mat4 &world, bool) {
+    w.onMesh = [&](const Prim &p, const Mat4 &world, bool, const std::string &) {
         if (p.path == path && !found) {
             found = true;
             c.add(p, world);
@@ -414,7 +435,7 @@ void load_all(const Layer &layer, MatrixXu &F, MatrixXf &V, uint64_t *polygons, 
     c.wantUVs = uvs != nullptr;
     size_t instanced = 0;
     Walker w { layer, nullptr, nullptr };
-    w.onMesh = [&](const Prim &p, const Mat4 &world, bool inst) {
+    w.onMesh = [&](const Prim &p, const Mat4 &world, bool inst, const std::string &) {
         if (inst)
             ++instanced;
         else
@@ -578,6 +599,85 @@ void write_geometry(std::ostream &os, const MeshOut &m, const std::string &ind,
     }
 }
 
+/* Sublayer path of the input, relative when the output is next to it */
+std::string sublayer_path(const Layer &layer, const std::string &output) {
+    auto dir_of = [](const std::string &p) {
+        const size_t s = p.find_last_of("/\\");
+        return s == std::string::npos ? std::string() : p.substr(0, s + 1);
+    };
+    std::string sub = layer.filename();
+    if (str_tolower(dir_of(sub)) == str_tolower(dir_of(output)))
+        sub = "./" + sub.substr(dir_of(sub).size());
+    for (char &c : sub)
+        if (c == '\\')
+            c = '/';
+    return sub;
+}
+
+/* Layer header: the stage metadata of the input, the input as sublayer */
+void write_header(std::ostream &os, const Layer &layer, const std::string &sub, const std::string &doc) {
+    os << "#usda 1.0\n(\n";
+    os << "    doc = " << quote(doc) << "\n";
+    for (const char *key : { "defaultPrim", "upAxis" }) {
+        auto it = layer.meta.find(key);
+        if (it != layer.meta.end() && it->second.kind == Value::Strings)
+            os << "    " << key << " = " << quote(it->second.str()) << "\n";
+    }
+    for (const char *key : { "metersPerUnit", "kilogramsPerUnit", "startTimeCode", "endTimeCode",
+                             "timeCodesPerSecond", "framesPerSecond" }) {
+        auto it = layer.meta.find(key);
+        if (it != layer.meta.end() && it->second.kind == Value::Numbers && !it->second.numbers.empty())
+            os << "    " << key << " = " << num(it->second.num()) << "\n";
+    }
+    os << "    subLayers = [\n        @" << sub << "@\n    ]\n)\n";
+}
+
+/* The material bound to most faces of a mesh: its own binding and those of
+   its GeomSubsets, by face count ('own': the mesh's own binding) */
+std::string most_used_material(const Layer &layer, const Prim &prim, std::string &own,
+                               std::vector<const Prim *> &subsets) {
+    std::map<std::string, size_t> faces;
+    size_t inSubsets = 0;
+    for (const auto &child : prim.children) {
+        if (child->type != "GeomSubset")
+            continue;
+        subsets.push_back(child.get());
+        size_t count = 0;
+        if (const Property *ip = child->property("indices"))
+            count = layer.count(*ip);
+        inSubsets += count;
+        if (const Property *b = child->property("material:binding"))
+            if (!b->targets.empty())
+                faces[b->targets[0]] += count;
+    }
+    own.clear();
+    if (const Property *b = prim.property("material:binding"))
+        if (!b->targets.empty())
+            own = b->targets[0];
+    const Property *pc = prim.property("faceVertexCounts");
+    const size_t total = pc ? layer.count(*pc) : 0;
+    if (!own.empty() && total > inSubsets)
+        faces[own] += total - inSubsets;
+    std::string best;
+    size_t most = 0;
+    for (const auto &kv : faces)
+        if (kv.second > most) {
+            most = kv.second;
+            best = kv.first;
+        }
+    return best;
+}
+
+/* The UV sets keep the type of the primvar of the same name on 'prim' */
+std::map<std::string, std::string> uv_types(const Prim &prim, const MeshOut &m) {
+    std::map<std::string, std::string> types;
+    for (const MeshOut::UV &uv : m.uvs)
+        if (const Property *q = prim.property("primvars:" + uv.name))
+            if (!q->relationship && !q->type.empty())
+                types[uv.name] = q->type;
+    return types;
+}
+
 /* One prim of the override tree */
 struct Node {
     std::map<std::string, Node> children;
@@ -622,18 +722,7 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
         n->toLocal = it->second.world.inverse();
     }
 
-    /* Sublayer path, relative when the output is next to the input */
-    auto dir_of = [](const std::string &p) {
-        const size_t s = p.find_last_of("/\\");
-        return s == std::string::npos ? std::string() : p.substr(0, s + 1);
-    };
-    std::string sub = layer.filename();
-    if (str_tolower(dir_of(sub)) == str_tolower(dir_of(output)))
-        sub = "./" + sub.substr(dir_of(sub).size());
-    for (char &c : sub)
-        if (c == '\\')
-            c = '/';
-
+    const std::string sub = sublayer_path(layer, output);
     const std::string temp = output + ".tmp";
     struct TempGuard {
         const std::string &path;
@@ -645,20 +734,7 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
         std::ofstream os(temp, std::ios::binary | std::ios::trunc);
         if (!os)
             throw std::runtime_error("Unable to create \"" + temp + "\"!");
-        os << "#usda 1.0\n(\n";
-        os << "    doc = " << quote("Instant Meshes: remeshed meshes over " + sub) << "\n";
-        for (const char *key : { "defaultPrim", "upAxis" }) {
-            auto it = layer.meta.find(key);
-            if (it != layer.meta.end() && it->second.kind == Value::Strings)
-                os << "    " << key << " = " << quote(it->second.str()) << "\n";
-        }
-        for (const char *key : { "metersPerUnit", "kilogramsPerUnit", "startTimeCode", "endTimeCode",
-                                 "timeCodesPerSecond", "framesPerSecond" }) {
-            auto it = layer.meta.find(key);
-            if (it != layer.meta.end() && it->second.kind == Value::Numbers && !it->second.numbers.empty())
-                os << "    " << key << " = " << num(it->second.num()) << "\n";
-        }
-        os << "    subLayers = [\n        @" << sub << "@\n    ]\n)\n";
+        write_header(os, layer, sub, "Instant Meshes: remeshed meshes over " + sub);
 
         std::function<void(const Node &, const std::string &, const std::string &)> write;
         write = [&](const Node &n, const std::string &path, const std::string &ind) {
@@ -674,41 +750,11 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
                 if (c.replacement) {
                     m = mesh_out(*c.replacement, c.toLocal);
                     /* GeomSubsets: deactivated, the most used material on the mesh */
-                    std::map<std::string, size_t> faces;
-                    size_t inSubsets = 0;
-                    for (const auto &child : prim->children) {
-                        if (child->type != "GeomSubset")
-                            continue;
-                        subsets.push_back(child.get());
-                        size_t count = 0;
-                        if (const Property *ip = child->property("indices"))
-                            count = layer.count(*ip);
-                        inSubsets += count;
-                        if (const Property *b = child->property("material:binding"))
-                            if (!b->targets.empty())
-                                faces[b->targets[0]] += count;
-                    }
                     std::string own;
-                    if (const Property *b = prim->property("material:binding"))
-                        if (!b->targets.empty())
-                            own = b->targets[0];
-                    const Property *pc = prim->property("faceVertexCounts");
-                    const size_t total = pc ? layer.count(*pc) : 0;
-                    if (!own.empty() && total > inSubsets)
-                        faces[own] += total - inSubsets;
-                    size_t best = 0;
-                    for (const auto &kv : faces)
-                        if (kv.second > best) {
-                            best = kv.second;
-                            binding = kv.first;
-                        }
+                    binding = most_used_material(layer, *prim, own, subsets);
                     if (binding == own)
                         binding.clear();
-                    /* the UV sets keep the type of the primvar they replace */
-                    for (const MeshOut::UV &uv : m.uvs)
-                        if (const Property *q = prim->property("primvars:" + uv.name))
-                            if (!q->relationship && !q->type.empty())
-                                uvTypes[uv.name] = q->type;
+                    uvTypes = uv_types(*prim, m);
                 }
                 os << ind << "over " << quote(name);
                 if (!binding.empty())
@@ -763,6 +809,355 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
             }
         };
         write(root, "", "");
+        os.flush();
+        if (!os)
+            throw std::runtime_error("Error while writing \"" + temp + "\" (disk full?)!");
+    }
+    replace_file(temp, output);
+    guard.armed = false;
+    cout << "done. (took " << timeString(timer.value()) << ")" << endl;
+    for (const std::string &n : notes)
+        cout << "   " << n << endl;
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Proxies                                                                  */
+/* ------------------------------------------------------------------------- */
+
+namespace {
+
+std::string parent_of(const std::string &path) {
+    const size_t s = path.rfind('/');
+    return s == 0 || s == std::string::npos ? std::string() : path.substr(0, s);
+}
+
+/* Computed purpose of the prim at 'path', from what the layer authors on it
+   and its ancestors ("" = default) */
+std::string computed_purpose(const Layer &layer, const std::string &path) {
+    std::string purpose, prefix;
+    for (const std::string &name : str_tokenize(path, '/', false)) {
+        prefix += "/" + name;
+        const Prim *p = layer.prim(prefix);
+        if (!p)
+            break;
+        purpose = child_purpose(layer, *p, purpose);
+    }
+    return purpose;
+}
+
+/* Where the proxy of a mesh goes */
+struct Placement {
+    std::string proxy;        ///< path of the proxy mesh
+    std::string renderScope;  ///< geo/render convention: the "render" prim; empty: next to the mesh
+    std::string proxyScope;   ///< geo/render convention: the "proxy" prim mirroring it
+
+    /* The prim of the input a prim of the proxy path mirrors (its
+       transform is copied); "" for the prims above the mirror */
+    std::string source(const std::string &mesh, const std::string &path) const {
+        if (path == proxy)
+            return mesh;
+        if (!proxyScope.empty() && (path == proxyScope || path.compare(0, proxyScope.size() + 1, proxyScope + "/") == 0))
+            return renderScope + path.substr(proxyScope.size());
+        return std::string();
+    }
+};
+
+Placement place_proxy(const std::string &mesh) {
+    const std::vector<std::string> segs = str_tokenize(mesh, '/', false);
+    Placement pl;
+    /* .../geo/render/<path>  ->  .../geo/proxy/<path>: never below the
+       render scope, that some importers skip whole (Blender) */
+    for (size_t k = segs.size() - 1; k-- > 1;) {
+        if (segs[k] != "render")
+            continue;
+        std::string geo;
+        for (size_t j = 0; j < k; ++j)
+            geo += "/" + segs[j];
+        pl.renderScope = geo + "/render";
+        pl.proxyScope = geo + "/proxy";
+        pl.proxy = pl.proxyScope;
+        for (size_t j = k + 1; j < segs.size(); ++j)
+            pl.proxy += "/" + segs[j];
+        return pl;
+    }
+    /* <name>_proxy, a sibling: same parent transforms */
+    pl.proxy = parent_of(mesh) + "/" + segs.back() + "_proxy";
+    return pl;
+}
+
+std::string num17(double x) {
+    char b[40];
+    snprintf(b, sizeof b, "%.17g", x);
+    return b;
+}
+
+/* A transform op value as text (scalars, vectors, quaternions, matrices,
+   token arrays) */
+std::string value_text(const Value &v, const std::string &type) {
+    if (v.kind == Value::Blocked)
+        return "None";
+    const bool array = type.size() > 2 && type.compare(type.size() - 2, 2, "[]") == 0;
+    if (v.kind == Value::Strings) {
+        if (!array)
+            return quote(v.str());
+        std::string s = "[";
+        for (size_t i = 0; i < v.strings.size(); ++i)
+            s += (i ? ", " : "") + quote(v.strings[i]);
+        return s + "]";
+    }
+    auto tuple = [&](size_t at, size_t n) {
+        if (n == 1)
+            return num17(at < v.numbers.size() ? v.numbers[at] : 0);
+        std::string s = "(";
+        for (size_t k = 0; k < n; ++k)
+            s += (k ? ", " : "") + num17(at + k < v.numbers.size() ? v.numbers[at + k] : 0);
+        return s + ")";
+    };
+    auto element = [&](size_t at) {
+        if (v.tuple == 16 || v.tuple == 9 || v.tuple == 4 && type.compare(0, 8, "matrix2d") == 0) {
+            const size_t n = v.tuple == 16 ? 4 : v.tuple == 9 ? 3 : 2;
+            std::string s = "(";
+            for (size_t r = 0; r < n; ++r)
+                s += (r ? ", " : "") + tuple(at + r * n, n);
+            return s + ")";
+        }
+        return tuple(at, (size_t) v.tuple);
+    };
+    if (!array)
+        return element(0);
+    std::string s = "[";
+    for (size_t at = 0; at < v.numbers.size(); at += (size_t) v.tuple)
+        s += (at ? ", " : "") + element(at);
+    return s + "]";
+}
+
+/* The transform of a prim, copied as properties: xformOpOrder and its ops,
+   default values and time samples */
+void copy_transform(const Layer &layer, const Prim &prim, std::vector<std::string> &lines) {
+    const Property *order = prim.property("xformOpOrder");
+    if (!order)
+        return;
+    const Value ops = first_value(layer, *order);
+    lines.push_back("uniform token[] xformOpOrder = " + value_text(ops, "token[]"));
+    std::set<std::string> done;
+    for (const std::string &entry : ops.strings) {
+        const std::string name = entry.compare(0, 8, "!invert!") == 0 ? entry.substr(8) : entry;
+        const Property *op = prim.property(name);
+        if (!op || op->relationship || !done.insert(name).second)
+            continue;
+        const std::string decl = std::string(op->uniform ? "uniform " : "") + op->type + " " + name;
+        const Value d = layer.value(*op);
+        if (d.kind == Value::Numbers || d.kind == Value::Blocked)
+            lines.push_back(decl + " = " + value_text(d, op->type));
+        if (op->hasTimeSamples) {
+            std::string t = decl + ".timeSamples = { ";
+            for (const auto &s : layer.samples(*op).samples)
+                t += num17(s.first) + ": " + value_text(s.second, op->type) + ", ";
+            lines.push_back(t + "}");
+        }
+    }
+}
+
+/* World matrix of a prim of the proxy path: the input's prims where they
+   exist, else the prims they mirror (first frame) */
+Mat4 proxy_world(const Layer &layer, const Placement &pl, const std::string &mesh, const std::string &path) {
+    Mat4 M = Mat4::Identity();
+    std::string prefix;
+    for (const std::string &name : str_tokenize(path, '/', false)) {
+        prefix += "/" + name;
+        const Prim *p = layer.prim(prefix);
+        if (!p) {
+            const std::string src = pl.source(mesh, prefix);
+            p = src.empty() ? nullptr : layer.prim(src);
+        }
+        if (!p)
+            continue;
+        bool reset, animated = false;
+        const Mat4 L = local_transform(layer, *p, reset, animated);
+        M = reset ? L : Mat4(M * L);
+    }
+    return M;
+}
+
+std::vector<Placement> place_proxies(const Layer &layer, const std::vector<std::string> &meshes) {
+    std::vector<Placement> result;
+    std::set<std::string> taken;
+    for (const std::string &m : meshes) {
+        const std::string purpose = computed_purpose(layer, m);
+        if (purpose == "proxy" || purpose == "guide")
+            fail(layer, "\"" + m + "\" has the purpose \"" + purpose + "\": it cannot get a proxy");
+        Placement pl = place_proxy(m);
+        if (layer.prim(pl.proxy))
+            fail(layer, "\"" + pl.proxy + "\", the proxy of \"" + m + "\", already exists (a proxy made earlier?)");
+        if (!taken.insert(pl.proxy).second)
+            fail(layer, "two meshes would get the same proxy \"" + pl.proxy + "\"");
+        result.push_back(pl);
+    }
+    return result;
+}
+
+/* The material of a mesh: the most used one of the mesh and its subsets,
+   else the nearest binding of an ancestor */
+std::string bound_material(const Layer &layer, const Prim &mesh) {
+    std::string own;
+    std::vector<const Prim *> subsets;
+    std::string best = most_used_material(layer, mesh, own, subsets);
+    for (std::string p = parent_of(mesh.path); best.empty() && !p.empty(); p = parent_of(p))
+        if (const Prim *a = layer.prim(p))
+            if (const Property *b = a->property("material:binding"))
+                if (!b->targets.empty())
+                    best = b->targets[0];
+    return best;
+}
+
+/* One prim of the proxy layer: an over, or a prim to define */
+struct ProxyNode {
+    std::map<std::string, ProxyNode> children;
+    std::vector<std::string> order;
+    std::string type;                     ///< prim to define ("Scope", "Xform", "Mesh"); empty: over
+    std::vector<std::string> lines;       ///< properties
+    std::string binding;
+    const abc::Replacement *mesh = nullptr;
+    const Prim *source = nullptr;
+    Mat4 toLocal = Mat4::Identity();
+};
+
+} // namespace
+
+std::vector<std::string> proxy_paths(const Layer &layer, const std::vector<std::string> &meshes) {
+    std::vector<std::string> result;
+    for (const Placement &pl : place_proxies(layer, meshes))
+        result.push_back(pl.proxy);
+    return result;
+}
+
+void write_proxies(const Layer &layer, const std::string &output, const std::vector<abc::Replacement> &proxies) {
+    Timer<> timer;
+    cout << "Writing \"" << output << "\" (" << proxies.size() << " prox" << (proxies.size() > 1 ? "ies" : "y")
+         << ", over \"" << layer.filename() << "\") .. ";
+    cout.flush();
+
+    std::map<std::string, abc::MeshSummary> meshes;
+    for (const abc::MeshSummary &m : list_meshes(layer))
+        meshes[m.path] = m;
+    std::vector<std::string> paths;
+    for (const abc::Replacement &r : proxies) {
+        auto it = meshes.find(r.path);
+        if (it == meshes.end())
+            fail(layer, "no polygon mesh at \"" + r.path + "\"");
+        if (it->second.instanced)
+            fail(layer, "\"" + r.path + "\" is instanced: no proxy is made for it");
+        if (it->second.animated)
+            fail(layer, "\"" + r.path + "\" is animated: a proxy could not follow it");
+        paths.push_back(r.path);
+    }
+    const std::vector<Placement> places = place_proxies(layer, paths);
+
+    ProxyNode root;
+    auto node = [&](const std::string &path) -> ProxyNode & {
+        ProxyNode *n = &root;
+        for (const std::string &name : str_tokenize(path, '/', false)) {
+            if (!n->children.count(name))
+                n->order.push_back(name);
+            n = &n->children[name];
+        }
+        return *n;
+    };
+    std::set<std::string> renderSet;
+    std::vector<std::string> notes;
+    for (size_t i = 0; i < proxies.size(); ++i) {
+        const abc::Replacement &r = proxies[i];
+        const Placement &pl = places[i];
+        const Prim *src = layer.prim(r.path);
+
+        /* the render side: purpose "render" on the render scope (on the mesh
+           too when a purpose authored below the scope would hide it), the
+           proxyPrim relationship */
+        std::vector<std::string> renderAt { pl.renderScope.empty() ? r.path : pl.renderScope };
+        if (!pl.renderScope.empty()) {
+            std::string own;
+            for (std::string p = r.path; p.size() > pl.renderScope.size(); p = parent_of(p))
+                if (const Prim *q = layer.prim(p))
+                    if (authored_purpose(layer, *q, own)) {
+                        renderAt.push_back(r.path);
+                        break;
+                    }
+        }
+        for (const std::string &at : renderAt)
+            if (computed_purpose(layer, at) != "render" && renderSet.insert(at).second)
+                node(at).lines.push_back("uniform token purpose = \"render\"");
+        node(r.path).lines.push_back("rel proxyPrim = <" + pl.proxy + ">");
+
+        /* the proxy: the prims missing on its path are defined, with the
+           transforms of the prims they mirror (animation included) */
+        std::string prefix;
+        for (const std::string &name : str_tokenize(pl.proxy, '/', false)) {
+            prefix += "/" + name;
+            ProxyNode &n = node(prefix);
+            if (layer.prim(prefix) || !n.type.empty())
+                continue;
+            const Prim *mirror = layer.prim(pl.source(r.path, prefix));
+            if (prefix == pl.proxy)
+                n.type = "Mesh";
+            else
+                n.type = mirror && mirror->type == "Scope" ? "Scope" : "Xform";
+            if (prefix == pl.proxyScope)
+                n.lines.push_back("uniform token purpose = \"proxy\"");
+            if (mirror && n.type != "Scope")
+                copy_transform(layer, *mirror, n.lines);
+        }
+        const Mat4 world = proxy_world(layer, pl, r.path, pl.proxy);
+        const double det = world.topLeftCorner<3, 3>().determinant();
+        if (!std::isfinite(det) || std::abs(det) < 1e-12)
+            fail(layer, "\"" + pl.proxy + "\" would have a degenerate transform (zero scale)");
+        ProxyNode &n = node(pl.proxy);
+        n.mesh = &r;
+        n.source = src;
+        n.toLocal = world.inverse();
+        n.binding = bound_material(layer, *src);
+        n.lines.push_back("uniform token purpose = \"proxy\"");
+        n.lines.push_back("uniform token subdivisionScheme = \"none\"");
+        if (const Property *d = src->property("doubleSided"))
+            if (!d->relationship && layer.value(*d).kind == Value::Numbers)
+                n.lines.push_back(std::string("uniform bool doubleSided = ") +
+                                  (layer.value(*d).num() != 0 ? "true" : "false"));
+        notes.push_back(r.path + " -> " + pl.proxy + (n.binding.empty() ? std::string() : " (" + n.binding + ")"));
+    }
+
+    const std::string sub = sublayer_path(layer, output);
+    const std::string temp = output + ".tmp";
+    struct TempGuard {
+        const std::string &path;
+        bool armed = true;
+        ~TempGuard() { if (armed) std::remove(path.c_str()); }
+    } guard { temp };
+    {
+        std::ofstream os(temp, std::ios::binary | std::ios::trunc);
+        if (!os)
+            throw std::runtime_error("Unable to create \"" + temp + "\"!");
+        write_header(os, layer, sub, "Instant Meshes: proxies over " + sub);
+        std::function<void(const ProxyNode &, const std::string &)> write;
+        write = [&](const ProxyNode &n, const std::string &ind) {
+            for (const std::string &name : n.order) {
+                const ProxyNode &c = n.children.at(name);
+                os << ind << (c.type.empty() ? "over" : "def " + c.type) << " " << quote(name);
+                if (!c.binding.empty())
+                    os << " (\n" << ind << "    prepend apiSchemas = [\"MaterialBindingAPI\"]\n" << ind << ")";
+                os << "\n" << ind << "{\n";
+                const std::string in = ind + "    ";
+                if (c.mesh) {
+                    const MeshOut m = mesh_out(*c.mesh, c.toLocal);
+                    write_geometry(os, m, in, uv_types(*c.source, m));
+                }
+                for (const std::string &line : c.lines)
+                    os << in << line << "\n";
+                if (!c.binding.empty())
+                    os << in << "rel material:binding = <" << c.binding << ">\n";
+                write(c, in);
+                os << ind << "}\n";
+            }
+        };
+        write(root, "");
         os.flush();
         if (!os)
             throw std::runtime_error("Error while writing \"" + temp + "\" (disk full?)!");

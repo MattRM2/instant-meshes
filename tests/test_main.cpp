@@ -8,6 +8,7 @@
 #include "test_common.h"
 
 int g_failed = 0, g_passed = 0;
+int nprocs = -1;   /* thread count of the remeshing (defined by main.cpp in the application) */
 
 int main(int argc, char **argv) {
     const bool long_run = argc > 1 && std::string(argv[1]) == "--long";

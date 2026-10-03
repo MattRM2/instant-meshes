@@ -174,6 +174,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/serializer.h src/serializer.cpp
   src/batch.h src/batch.cpp
   src/scene.h src/scene.cpp
+  src/uvtransfer.h src/uvtransfer.cpp
   src/border.h src/border.cpp
   src/smoothcurve.h src/smoothcurve.cpp
   src/cleanup.h src/cleanup.cpp
@@ -217,6 +218,14 @@ if (INSTANT_MESHES_TESTS)
     tests/test_meshio.cpp tests/test_ogawa.cpp tests/test_abc.cpp tests/test_objscene.cpp
     tests/test_border.cpp tests/test_uv.cpp
     src/border.h src/border.cpp
+    src/uvtransfer.h src/uvtransfer.cpp
+    src/batch.h src/batch.cpp src/scene.h src/scene.cpp
+    src/adjacency.h src/adjacency.cpp src/meshstats.h src/meshstats.cpp
+    src/hierarchy.h src/hierarchy.cpp src/extract.h src/extract.cpp
+    src/field.h src/field.cpp src/bvh.h src/bvh.cpp
+    src/subdivide.h src/subdivide.cpp src/reorder.h src/reorder.cpp
+    src/serializer.h src/serializer.cpp src/smoothcurve.h src/smoothcurve.cpp
+    src/cleanup.h src/cleanup.cpp src/dedge.h src/dedge.cpp
     src/meshio.h src/meshio.cpp
     src/normal.h src/normal.cpp
     src/ogawa.h src/ogawa.cpp

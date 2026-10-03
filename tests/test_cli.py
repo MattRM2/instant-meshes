@@ -432,6 +432,53 @@ def test_keep_border(exe, tmp):
     check(code != 0 and "applies to the batch mode" in log, "--keep-border needs -o")
 
 
+def test_uv_transfer(exe, tmp):
+    print("--uv transfer carries the UVs over to the remeshed meshes")
+    dump = os.path.join(os.path.dirname(exe), "abc_dump.exe" if os.name == "nt" else "abc_dump")
+    scene = os.path.join(DATA, "uv_sets.abc")
+
+    # Per object, Alembic: both maps of the cylinder, the grid's map; NoUV has none
+    out = os.path.join(tmp, "uv_out.abc")
+    code, log = run(exe, scene, "-o", out, "-d", "--others", "80%", "--uv", "transfer")
+    check(code == 0 and "UV transfer: 2 sets (UVMap, Planar)" in log and "UV transfer: 1 set (UVMap)" in log
+          and "/NoUV/NoUV has no UVs" in log, "per-object .abc transfer reported")
+    check("UVs                    = transferred from the input" in log, "--uv in the settings")
+    if os.path.exists(dump):
+        code, log = run(dump, "--verify", out)
+        check(code == 0 and "all hashes match" in log, "transferred .abc: hashes")
+        code, log = run(dump, out)
+        check(log.count("uv {compound}") == 2 and "Planar {compound}" in log, "transferred .abc: uv and Planar written")
+
+    # Per object, OBJ: "vt" for the remeshed objects
+    out = os.path.join(tmp, "uv_out.obj")
+    code, log = run(exe, os.path.join(DATA, "uv_sets.obj"), "-o", out, "-d", "-m", "Cylinder=80%", "--uv", "transfer")
+    with open(out) as f:
+        text = f.read()
+    cyl = text[text.index("o Cylinder"):text.index("o ", text.index("o Cylinder") + 1)]
+    faces = [l for l in cyl.splitlines() if l.startswith("f ")]
+    check(code == 0 and faces and all("/" in l for l in faces) and "\nvt " in cyl, "per-object .obj: v/vt faces")
+
+    # Whole file: scene_ab (both meshes have UVMap) -> OBJ with UVs
+    out = os.path.join(tmp, "uv_whole.obj")
+    code, log = run(exe, os.path.join(DATA, "scene_ab.abc"), "-o", out, "-d", "-f", "30%", "--uv", "transfer")
+    with open(out) as f:
+        text = f.read()
+    check(code == 0 and "UV transfer: 1 set (UVMap)" in log and text.count("\nvt ") > 100, "whole-file transfer")
+
+    # Without --uv: no UVs, as before
+    out = os.path.join(tmp, "uv_none.obj")
+    code, log = run(exe, os.path.join(DATA, "scene_ab.abc"), "-o", out, "-d", "-f", "30%")
+    with open(out) as f:
+        check(code == 0 and "\nvt " not in f.read() and "UV transfer" not in log, "no UVs without --uv")
+
+    # Refused before any computation
+    for args, expect in ((["-o", os.path.join(tmp, "x.obj"), "--uv", "bogus"], "Invalid --uv mode"),
+                         (["-o", os.path.join(tmp, "x.ply"), "--uv", "transfer"], "PLY has no per-corner UVs"),
+                         (["--uv", "transfer"], "--uv applies to the batch mode")):
+        code, log = run(exe, scene, *args)
+        check(code != 0 and expect in log and "Optimizing" not in log, "%s -> '%s'" % (" ".join(args), expect))
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -468,6 +515,7 @@ def main():
         test_obj_rules(exe, tmp)
         test_skip_failed(exe, tmp)
         test_keep_border(exe, tmp)
+        test_uv_transfer(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

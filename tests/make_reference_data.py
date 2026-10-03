@@ -224,18 +224,22 @@ def case_uv_sets():
     main = me.uv_layers.new(name="UVMap")
     planar = me.uv_layers.new(name="Planar")
     for poly in me.polygons:
-        # one u per polygon, unwrapped around the seam at angle 0
-        angles = [math.atan2(me.vertices[me.loops[li].vertex_index].co.y,
-                             me.vertices[me.loops[li].vertex_index].co.x) for li in poly.loop_indices]
+        # angles in [0, 2pi); the seam is at angle 0: a polygon reaching past
+        # pi closes the strip at u = 1 (angle 2pi), the others start it at 0.5
+        angles = []
+        for li in poly.loop_indices:
+            co = me.vertices[me.loops[li].vertex_index].co
+            a = math.atan2(co.y, co.x)
+            if a < -1e-6:
+                a += 2 * math.pi
+            angles.append(max(a, 0.0))
         cap = abs(poly.normal.z) > 0.5
         for li, a in zip(poly.loop_indices, angles):
             co = me.vertices[me.loops[li].vertex_index].co
             if cap:
                 uv = (0.25 + 0.2 * co.x, (0.25 if co.z < 0 else 0.75) + 0.2 * co.y)
             else:
-                if a < 0:
-                    a += 2 * math.pi
-                if a < 1e-6 and max(angles) > math.pi:   # seam: close the strip at u = 1
+                if a < 1e-6 and max(angles) > math.pi:
                     a = 2 * math.pi
                 uv = (0.5 + 0.5 * a / (2 * math.pi), 0.25 + 0.25 * co.z)
             main.data[li].uv = uv

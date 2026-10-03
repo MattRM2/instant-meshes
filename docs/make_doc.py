@@ -19,7 +19,7 @@ from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer,
                                 Table, TableStyle, KeepTogether, PageBreak, NextPageTemplate,
-                                Flowable)
+                                Flowable, Image)
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER
 
@@ -325,7 +325,7 @@ class TocEntry(Flowable):
 
     def wrap(self, aw, ah):
         self.width = aw
-        self.height = 10 * mm + len(self.subs) * 5.2 * mm + 3 * mm
+        self.height = 10 * mm + len(self.subs) * 4.7 * mm + 3 * mm
         return aw, self.height
 
     def draw(self):
@@ -341,7 +341,7 @@ class TocEntry(Flowable):
         c.setFont("Roboto", 8.5)
         c.setFillColor(MUTED)
         for i, s in enumerate(self.subs):
-            c.drawString(6 * mm, top - 15 * mm - i * 5.2 * mm, s)
+            c.drawString(6 * mm, top - 15 * mm - i * 4.7 * mm, s)
 
 
 # --------------------------------------------------------------------------
@@ -358,7 +358,8 @@ SECTIONS = [
                                                  "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
                                                  "5.5 Touching objects: --keep-border",
                                                  "5.6 Following a long run: --progress"]),
-    (6, "Reference", ["6.1 Accuracy of the targets", "6.2 Limitations", "6.3 Credits and licenses"]),
+    (6, "UVs", ["6.1 Transfer: --uv transfer"]),
+    (7, "Reference", ["7.1 Accuracy of the targets", "7.2 Limitations", "7.3 Credits and licenses"]),
 ]
 
 
@@ -372,7 +373,7 @@ def build(cover_image=None):
     story.append(Spacer(1, 6 * mm))
     for n, t, subs in SECTIONS:
         story.append(TocEntry(n, t, subs))
-        story.append(Spacer(1, 2.5 * mm))
+        story.append(Spacer(1, 1.5 * mm))
     story.append(PageBreak())
 
     # ---------------- 1 overview
@@ -391,8 +392,8 @@ def build(cover_image=None):
         "scene untouched, write one file (-m / --others), for <b>Alembic and OBJ</b> scenes.",
         "<b>Percentage targets</b>: 75% means 75% of the original face count, in the interface and on the "
         "command line.",
-        "<b>Typed targets</b>: the tiny density slider is replaced by a text box (faces or %), presets and a "
-        "full-width slider.",
+        "<b>UV transfer</b>: the original's UVs carried over to the new mesh (--uv transfer).",
+        "<b>Typed targets</b>: faces or %, presets and a full-width slider.",
         "<b>Meaningful colors</b>: flow lines by direction (U / V), your strokes in orange, singularities with "
         "consistent colors.",
         "<b>OBJ reader fixed</b>: n-gons (faces with more than 4 corners used to be cut silently) and negative "
@@ -542,8 +543,8 @@ def build(cover_image=None):
                      ["-c, --crease <deg>", "Keep creases sharper than this angle"],
                      ["-b, --boundaries / --keep-border", "Align to open borders / also put them back exactly on the input's (5.5)"],
                      ["-S, --smooth <n>", "Smoothing iterations (default 2)"],
-                     ["-d, --deterministic", "Same result on every run (slower)"],
-                     ["-t, --threads <n>", "Number of threads"],
+                     ["-d / -t <n>", "Same result on every run (slower) / number of threads"],
+                     ["--uv <mode>", "UVs of the output: none (default) or transfer (section 6)"],
                      ["-m, --mesh <name>=<target>", "Per-mesh remeshing of an .abc or .obj (section 5)"],
                      ["--others <target>", "Target for every other mesh of the scene"],
                      ["--list / --dry-run", "List the meshes (--sort asc|desc, --top <n>) / print the plan"],
@@ -602,7 +603,7 @@ def build(cover_image=None):
               table([["Kept", "Dropped"],
                      ["Name, place in the hierarchy, parent transforms (the mesh is remeshed in world space and "
                       "written back in its own space)",
-                      "UVs, normals and per-vertex / per-face attributes: they do not match the new topology"],
+                      "Normals, per-vertex / per-face attributes and UVs (unless --uv transfer): they do not match the new topology"],
                      ["Object and user properties", "Several face sets (per-face materials): they cannot follow "
                                                     "the new faces"],
                      ["A single face set (one material), rebuilt over all new faces", ""]],
@@ -622,7 +623,7 @@ def build(cover_image=None):
         "Untouched objects keep their lines as they are: positions, UVs, normals, materials, groups and "
         "comments. Only their face indices are renumbered, since the replaced objects change the vertex count.",
         "A replaced object keeps its <b>most used material</b>: OBJ faces inherit the last usemtl, so an object "
-        "cannot be left without one. Its UVs, normals and smoothing groups are dropped.",
+        "cannot be left without one. Its normals and smoothing groups are dropped, its UVs too unless --uv transfer.",
         "Vertices shared with an untouched object are kept; the .mtl file is not touched.",
         "The output must be an .obj; it may be the input file (atomic replacement).",
     ])
@@ -657,19 +658,47 @@ def build(cover_image=None):
     ]))]
     story += [PageBreak()]
 
-    # ---------------- 6 reference
-    story += [SectionHeader(6, "Reference"), Spacer(1, 5 * mm),
-              SubHeader("6.1", "Accuracy of the targets"), Spacer(1, 3 * mm),
+    # ---------------- 6 UVs
+    image = Image(os.path.join(HERE, "uv_transfer.png"))
+    image.drawWidth = W - 2 * MARGIN
+    image.drawHeight = image.drawWidth * 550 / 1480
+    story += [SectionHeader(6, "UVs", "Texture coordinates on the new mesh"), Spacer(1, 5 * mm),
+              p("A remeshed mesh has a new topology: by default its UVs are dropped. With <b>--uv transfer</b>, "
+                "every UV set of the input is carried over to the new mesh, in both modes (whole file and "
+                "-m / --others), for .obj and .abc outputs."),
+              Spacer(1, 4 * mm), SubHeader("6.1", "Transfer: --uv transfer"), Spacer(1, 3 * mm),
+              codeblock(["InstantMeshes.exe asset.abc -o asset_retopo.abc --others 25% --uv transfer",
+                         "InstantMeshes.exe scan.obj -o scan_retopo.obj -f 10% --uv transfer"]),
+              Spacer(1, 3 * mm), image,
+              Paragraph("Left: the original (126k faces, Blender UVs). Right: remeshed at 5% with --uv transfer.",
+                        ParagraphStyle("cap", parent=body, fontSize=8, textColor=MUTED, alignment=TA_CENTER)),
+              Spacer(1, 3 * mm)]
+    story += bullets([
+        "<b>Island by island</b>: each new face takes the UV island under its centre, and its corners are "
+        "projected onto that island only. Past a UV seam the UVs are extended rather than wrapped, so that no "
+        "face stretches across the texture; the new mesh gets its own seams (per-corner UVs).",
+        "<b>Every UV set</b> is kept with its name (UVMap, Planar...): Alembic writes the first one as .geom/uv "
+        "and the others in .arbGeomParams, as Blender does; an OBJ holds one set (vt).",
+        "Faces keep to the side they face: on a thin wall or a sharp edge, a face never takes the UVs of the "
+        "opposite side.",
+        "The log tells how many corners were extended past a seam. A mesh without UVs is reported and written "
+        "without. PLY outputs are refused (no per-corner UVs). Cost: 0.14 s for a 126k-face original.",
+    ])
+    story += [PageBreak()]
+
+    # ---------------- 7 reference
+    story += [SectionHeader(7, "Reference"), Spacer(1, 5 * mm),
+              SubHeader("7.1", "Accuracy of the targets"), Spacer(1, 3 * mm),
               table([["Input", "Faces", "Deviation measured (25 to 150%, quad and -D modes)"],
                      ["Two-object scene", "8,448", "-1.8% to +1.6%"],
                      ["Open mesh", "1,968", "-2.6% to +2.0%"],
                      ["Tiny meshes", "86", "up to \u00b133%"]],
                     [45 * mm, 25 * mm, W - 2 * MARGIN - 70 * mm]),
-              Spacer(1, 4 * mm), SubHeader("6.2", "Limitations"), Spacer(1, 3 * mm)]
+              Spacer(1, 4 * mm), SubHeader("7.2", "Limitations"), Spacer(1, 3 * mm)]
     story += bullets([
         "Alembic: polygon meshes only; subdivision surfaces, curves and points are not remeshed; animation is "
         "read at the first frame.",
-        "Remeshed meshes lose their UVs and normals (new topology).",
+        "Remeshed meshes lose their normals (new topology), and their UVs unless --uv transfer is given.",
         "Point clouds (.aln) accept face counts, not percentages.",
         "The per-mesh mode (-m / --others, Alembic and OBJ) is available on the command line; the interface "
         "remeshes the whole loaded file.",
@@ -680,7 +709,7 @@ def build(cover_image=None):
         "A mesh whose longest edges are much longer than the target edge length is subdivided before "
         "remeshing (heavier): the log warns about it and lists those meshes at the end.",
     ])
-    story += [Spacer(1, 4 * mm), SubHeader("6.3", "Credits and licenses"), Spacer(1, 3 * mm),
+    story += [Spacer(1, 4 * mm), SubHeader("7.3", "Credits and licenses"), Spacer(1, 3 * mm),
               p("Instant Meshes: Wenzel Jakob, Marco Tarini, Daniele Panozzo, Olga Sorkine-Hornung, "
                 "<i>Instant Field-Aligned Meshes</i>, ACM Transactions on Graphics (SIGGRAPH Asia 2015). "
                 "BSD license, see LICENSE.txt."),

@@ -25,6 +25,7 @@
 #include "bvh.h"
 #include "border.h"
 #include "scene.h"
+#include "uvtransfer.h"
 #include <iomanip>
 #include <fstream>
 #include <functional>
@@ -84,6 +85,37 @@ bool rule_matches(const std::string &pattern, const std::string &path) {
     return true;
 }
 
+RemeshParams::UVMode parse_uv_mode(const std::string &text) {
+    const std::string mode = str_tolower(text);
+    if (mode == "none")
+        return RemeshParams::UVNone;
+    if (mode == "transfer")
+        return RemeshParams::UVTransfer;
+    throw std::runtime_error("Invalid --uv mode \"" + text + "\" (none or transfer)");
+}
+
+/* --uv transfer: the UV sets of the original, carried over to the new mesh */
+static std::vector<CornerUVs> transfer_uvs(const MatrixXu &F0, const MatrixXf &V0, const std::vector<UVSet> &uvs,
+                                           const MatrixXu &F, const MatrixXf &O, const std::string &what) {
+    if (uvs.empty()) {
+        cout << "UV transfer: " << what << " has no UVs, nothing to transfer." << endl;
+        return std::vector<CornerUVs>();
+    }
+    Timer<> timer;
+    UVTransfer transfer(F0, V0, uvs);
+    UVTransfer::Stats stats;
+    std::vector<CornerUVs> result = transfer.transfer(F, O, &stats);
+    std::string names;
+    for (const UVSet &s : uvs)
+        names += (names.empty() ? "" : ", ") + s.name;
+    cout << "UV transfer: " << uvs.size() << " set" << (uvs.size() > 1 ? "s" : "") << " (" << names << ") onto "
+         << stats.corners << " corners, " << stats.extended << " extended past a UV seam";
+    if (stats.flipped > 0)
+        cout << ", " << stats.flipped << " faces without a source facing the same way";
+    cout << ". (took " << timeString(timer.value()) << ")" << endl;
+    return result;
+}
+
 static void print_settings(const RemeshParams &p) {
     cout << "   Rotation symmetry type = " << p.rosy << endl;
     cout << "   Position symmetry type = " << (p.posy==3?6:p.posy) << endl;
@@ -96,6 +128,8 @@ static void print_settings(const RemeshParams &p) {
     cout << "   Align to boundaries    = " << (p.align_to_boundaries || p.keep_border ? "yes" : "no") << endl;
     if (p.keep_border)
         cout << "   Keep border            = yes (snapped onto the input border)" << endl;
+    if (p.uv == RemeshParams::UVTransfer)
+        cout << "   UVs                    = transferred from the input" << endl;
     cout << "   kNN points             = " << p.knn_points << " (only applies to point clouds)"<< endl;
     cout << "   Fully deterministic    = " << (p.deterministic ? "yes" : "no") << endl;
     if (p.posy == 4)
@@ -357,11 +391,24 @@ void batch_process(const std::string &input, const std::string &output,
 
     /* Load the input mesh */
     uint64_t polygons = 0;
-    load_mesh_or_pointcloud(input, F, V, N, ProgressCallback(), &polygons);
+    const bool transfer = params.uv == RemeshParams::UVTransfer;
+    std::vector<UVSet> uvs;
+    load_mesh_or_pointcloud(input, F, V, N, ProgressCallback(), &polygons, transfer ? &uvs : nullptr);
 
+    /* remesh() consumes the input: the UV transfer works on a copy */
+    MatrixXu F0;
+    MatrixXf V0;
+    if (transfer) {
+        F0 = F;
+        V0 = V;
+    }
     remesh(F, V, N, polygons, params, F_extr, O_extr, Nf_extr);
 
-    write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr);
+    std::vector<CornerUVs> outUVs;
+    if (transfer)
+        outUVs = transfer_uvs(F0, V0, uvs, F_extr, O_extr, "\"" + input + "\"");
+
+    write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr, MatrixXf(), MatrixXf(), ProgressCallback(), outUVs);
 }
 
 /* Polygon meshes of a scene file (Alembic meshes, OBJ objects) */
@@ -617,7 +664,15 @@ void batch_process_objects(const std::string &input, const std::string &output,
             MatrixXu F;
             MatrixXf V, N;
             uint64_t polygons = 0;
-            scene->load(i.mesh->path, F, V, &polygons);
+            const bool transfer = params.uv == RemeshParams::UVTransfer;
+            std::vector<UVSet> uvs;
+            scene->load(i.mesh->path, F, V, &polygons, transfer ? &uvs : nullptr);
+            MatrixXu F0;
+            MatrixXf V0;
+            if (transfer) {
+                F0 = F;
+                V0 = V;
+            }
 
             RemeshParams p = params;
             p.scale = -1;
@@ -636,7 +691,13 @@ void batch_process_objects(const std::string &input, const std::string &output,
                                      std::to_string(report.subdivided) + " triangles");
             abc::Replacement r;
             r.path = i.mesh->path;
-            r.fetch = spool.put(Fr, Vr, std::vector<CornerUVs>());
+            std::vector<CornerUVs> outUVs;
+            if (transfer) {
+                outUVs = transfer_uvs(F0, V0, uvs, Fr, Vr, i.mesh->path);
+                F0.resize(0, 0);
+                V0.resize(0, 0);
+            }
+            r.fetch = spool.put(Fr, Vr, outUVs);
             replacements.push_back(std::move(r));
         } catch (const std::exception &e) {
             /* --skip-failed: keep this object as it is and go on */

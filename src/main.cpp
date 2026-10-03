@@ -35,6 +35,7 @@ int main(int argc, char **argv) {
     FaceTarget others;
     bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false, progress = false;
     int listSort = 0, listTop = 0;
+    RemeshParams::UVMode uvMode = RemeshParams::UVNone;
     #if defined(__APPLE__)
         bool launched_from_finder = false;
     #endif
@@ -163,6 +164,12 @@ int main(int argc, char **argv) {
                 dryRun = true;
             } else if (strcmp("--skip-failed", argv[i]) == 0) {
                 skipFailed = true;
+            } else if (strcmp("--uv", argv[i]) == 0) {
+                if (++i >= argc) {
+                    cerr << "Missing --uv mode (none or transfer)!" << endl;
+                    return -1;
+                }
+                uvMode = parse_uv_mode(argv[i]);
             } else if (strcmp("--progress", argv[i]) == 0) {
                 progress = true;
             } else if (strcmp("--keep-border", argv[i]) == 0) {
@@ -233,6 +240,14 @@ int main(int argc, char **argv) {
         cerr << "Error: --keep-border applies to the batch mode (-o <output>)!" << endl;
         help = true;
     }
+    if (uvMode != RemeshParams::UVNone && batchOutput.empty() && !dryRun) {
+        cerr << "Error: --uv applies to the batch mode (-o <output>)!" << endl;
+        help = true;
+    }
+    if (uvMode != RemeshParams::UVNone && extension_of(batchOutput) == ".ply") {
+        cerr << "Error: --uv needs an .obj or .abc output (PLY has no per-corner UVs)!" << endl;
+        help = true;
+    }
     if (keepBorder && extension_of(batchOutput) == ".ply") {
         cerr << "Error: --keep-border needs an .obj or .abc output (its border faces are polygons)!" << endl;
         help = true;
@@ -270,6 +285,8 @@ int main(int argc, char **argv) {
         cout << "   -b, --boundaries          Align to boundaries (only applies when the mesh is not closed)" << endl;
         cout << "       --keep-border         Snap the open border back onto the input border (implies -b):" << endl;
         cout << "                             objects touching along their borders stay closed (.obj/.abc)" << endl;
+        cout << "       --uv <mode>           UVs of the output: none (default), transfer (from the" << endl;
+        cout << "                             input, island by island; .obj/.abc output)" << endl;
         cout << "   -r, --rosy <number>     Specifies the orientation symmetry type (2, 4, or 6)" << endl;
         cout << "   -p, --posy <number>       Specifies the position symmetry type (4 or 6)" << endl;
         cout << "   -s, --scale <scale>       Desired world space length of edges in the output" << endl;
@@ -322,6 +339,7 @@ int main(int argc, char **argv) {
     params.pure_quad = !dominant;
     params.deterministic = deterministic;
     params.keep_border = keepBorder;
+    params.uv = uvMode;
 
     if (listMeshes || objectMode || (!batchOutput.empty() && args.size() == 1)) {
         try {

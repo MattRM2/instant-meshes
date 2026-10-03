@@ -27,7 +27,11 @@ struct RemeshParams {
     int smooth_iter = 2, knn_points = 10;
     bool pure_quad = true, deterministic = false;
     bool keep_border = false;  ///< snap the open border back onto the input's (implies align_to_boundaries)
+    enum UVMode { UVNone, UVTransfer } uv = UVNone;   ///< --uv
 };
+
+/// Parses the value of --uv ("none", "transfer"); throws on anything else
+extern RemeshParams::UVMode parse_uv_mode(const std::string &text);
 
 /// Face target of one mesh: a percentage of its polygons or a face count
 struct FaceTarget {

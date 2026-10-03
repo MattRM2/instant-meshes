@@ -7,6 +7,8 @@
 #include "meshio.h"
 #include "abc.h"
 #include "objscene.h"
+#include "uvtransfer.h"
+#include "batch.h"
 #include <array>
 #include <algorithm>
 
@@ -231,7 +233,150 @@ static void test_write() {
     }
 }
 
+/* Distance from p to a triangle mesh (brute force, independent of the
+   transfer code) */
+static Float distance_to(const MatrixXu &F, const MatrixXf &V, const Vector3f &p) {
+    auto segment = [](const Vector3f &p, const Vector3f &a, const Vector3f &b) {
+        const Vector3f ab = b - a;
+        const Float t = std::min((Float) 1, std::max((Float) 0, (p - a).dot(ab) / std::max(ab.squaredNorm(), (Float) 1e-30)));
+        return (a + ab * t - p).norm();
+    };
+    Float best = std::numeric_limits<Float>::infinity();
+    for (uint32_t f = 0; f < F.cols(); ++f) {
+        const Vector3f a = V.col(F(0, f)), b = V.col(F(1, f)), c = V.col(F(2, f));
+        const Vector3f n = (b - a).cross(c - a);
+        Float dist = std::min(segment(p, a, b), std::min(segment(p, b, c), segment(p, c, a)));
+        if (n.squaredNorm() > 0) {
+            const Vector3f q = p - n * (n.dot(p - a) / n.squaredNorm());
+            if (n.dot((b - a).cross(q - a)) >= 0 && n.dot((c - b).cross(q - b)) >= 0 &&
+                n.dot((a - c).cross(q - c)) >= 0)
+                dist = (q - p).norm();
+        }
+        best = std::min(best, dist);
+    }
+    return best;
+}
+
+/* The cylinder of uv_sets, remeshed (quads, then triangles) */
+static void remeshed_cylinder(MatrixXu &F, MatrixXf &V, std::vector<UVSet> &uvs, MatrixXu &Fr, MatrixXf &Or,
+                              int posy) {
+    abc::load_abc_mesh(data_path("uv_sets.abc"), "/Cylinder/Cylinder", F, V, nullptr, &uvs);
+    MatrixXu Fc = F;
+    MatrixXf Vc = V, N, Nf;
+    RemeshParams p;
+    p.deterministic = true;
+    p.face_count = 400;
+    p.posy = posy;
+    p.rosy = posy == 4 ? 4 : 6;
+    remesh(Fc, Vc, N, 0, p, Fr, Or, Nf);
+}
+
+static void test_transfer() {
+    std::cout << "uv: transfer (identity, planar map, cylindrical map with a seam)" << std::endl;
+    MatrixXu F;
+    MatrixXf V;
+    std::vector<UVSet> uvs;
+    abc::load_abc_mesh(data_path("uv_sets.abc"), "/Cylinder/Cylinder", F, V, nullptr, &uvs);
+    if (uvs.size() != 2)
+        return;
+
+    /* Onto the original itself: the very same UVs, seams included */
+    {
+        UVTransfer t(F, V, uvs);
+        UVTransfer::Stats stats;
+        std::vector<CornerUVs> out = t.transfer(F, V, &stats);
+        CHECK(out.size() == 2 && out[0].name == "UVMap" && out[1].name == "Planar");
+        float diff = 0;
+        for (size_t s = 0; s < out.size() && s < 2; ++s)
+            for (size_t c = 0; c < uvs[s].corners.size(); ++c)
+                diff = std::max(diff, (out[s].corners.col(c) - corner_uv(uvs[s], c)).cwiseAbs().maxCoeff());
+        CHECK(diff < 1e-5f && stats.corners == 3 * (size_t) F.cols() && stats.flipped == 0);
+    }
+
+    for (int posy : { 4, 3 }) {
+        MatrixXu Fr;
+        MatrixXf Or;
+        remeshed_cylinder(F, V, uvs, Fr, Or, posy);
+        UVTransfer t(F, V, uvs);
+        UVTransfer::Stats stats;
+        std::vector<CornerUVs> out = t.transfer(Fr, Or, &stats);
+        CHECK(out.size() == 2 && Fr.cols() > 100);
+        if (out.size() != 2)
+            continue;
+        std::vector<uint32_t> sizes, indices, faceIds, cornerIds;
+        extracted_polygons(Fr, sizes, indices, faceIds, &cornerIds);
+
+        /* Planar map: linear in the position (slope 0.4), one island -> the
+           formula at the nearest surface point, which is at most 'dist' away
+           from the new vertex (rounded edges of the remesh) */
+        float planar = 0;
+        std::vector<Float> dist(Or.cols());
+        for (uint32_t v = 0; v < Or.cols(); ++v)
+            dist[v] = distance_to(F, V, Or.col(v));
+        for (size_t c = 0; c < indices.size(); ++c) {
+            const Vector3f p = Or.col(indices[c]);
+            const Vector2f want(0.5f + 0.4f * (p.x() + 2), 0.5f + 0.4f * p.y());
+            if (std::abs(p.y()) > 0.9f)
+                continue;   /* the rim: a side face keeps to the side triangles (facing first) */
+            const float err = (out[1].corners.col(cornerIds[c]) - want).cwiseAbs().maxCoeff();
+            planar = std::max(planar, err - 0.4f * dist[indices[c]]);
+        }
+        CHECK(planar < 1e-3f);
+
+        /* Cylindrical map: u = 0.5 + 0.5 a / 2pi around the axis, the seam
+           at a = 0. Side faces: u follows the angle unwrapped around the
+           face centre (past the seam: extended, not wrapped), v = 0.25 +
+           0.25 Y; no face spans the texture */
+        float side = 0, spread = 0;
+        size_t sideFaces = 0, offset = 0;
+        for (size_t k = 0; k < sizes.size(); offset += sizes[k], ++k) {
+            Vector3f centre = Vector3f::Zero(), normal = Vector3f::Zero();
+            for (uint32_t i = 0; i < sizes[k]; ++i)
+                centre += Or.col(indices[offset + i]);
+            centre /= (Float) sizes[k];
+            for (uint32_t i = 0; i < sizes[k]; ++i)
+                normal += Vector3f(Or.col(indices[offset + i])).cross(Vector3f(Or.col(indices[offset + (i + 1) % sizes[k]])));
+            if (std::abs(normal.normalized().y()) > 0.3f || std::abs(centre.y()) > 0.85f)
+                continue;   /* caps, and the rim where caps and side meet */
+            ++sideFaces;
+            /* angle in Blender object space: (x, y) = (X + 2, -Z) */
+            auto angle = [](const Vector3f &p) { return std::atan2(-p.z(), p.x() + 2); };
+            Float ac = angle(centre);
+            if (ac < 0)
+                ac += 2 * (Float) M_PI;
+            /* Near the seam a face may be on either end of the strip: u, or
+               u +- 0.5, but the same shift for all its corners */
+            float umin = 10, umax = -10, faceErr = 10;
+            for (int shift = -1; shift <= 1; ++shift) {
+                float err = 0;
+                for (uint32_t i = 0; i < sizes[k]; ++i) {
+                    const Vector3f p = Or.col(indices[offset + i]);
+                    Float a = angle(p);
+                    while (a < ac - (Float) M_PI)
+                        a += 2 * (Float) M_PI;
+                    while (a > ac + (Float) M_PI)
+                        a -= 2 * (Float) M_PI;
+                    const Vector2f uv = out[0].corners.col(cornerIds[offset + i]);
+                    const Vector2f want(0.5f + 0.5f * a / (2 * (Float) M_PI) + 0.5f * shift, 0.25f + 0.25f * p.y());
+                    /* slopes: 0.5 / 2pi per unit of arc, 0.25 per unit of height */
+                    err = std::max(err, (uv - want).cwiseAbs().maxCoeff() - 0.25f * dist[indices[offset + i]]);
+                    if (shift == 0) {
+                        umin = std::min(umin, uv.x());
+                        umax = std::max(umax, uv.x());
+                    }
+                }
+                faceErr = std::min(faceErr, err);
+            }
+            side = std::max(side, faceErr);
+            spread = std::max(spread, umax - umin);
+        }
+        CHECK(sideFaces > 20 && side < 0.01f && spread < 0.25f);
+        CHECK(stats.extended > 0);   /* the faces across the seam */
+    }
+}
+
 void test_uv() {
     test_read();
     test_write();
+    test_transfer();
 }

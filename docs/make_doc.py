@@ -353,7 +353,7 @@ SECTIONS = [
     (2, "The Matt Dark Interface", ["2.1 Panel reference", "2.2 Target: faces or percentage",
                                     "2.3 Flow line colors", "2.4 Typical workflow"]),
     (3, "Alembic and USD Support", ["3.1 What is read", "3.2 What is written", "3.3 Robustness",
-                                    "3.4 USD: what is read", "3.5 USD: the .usda layer written",
+                                    "3.4 USD: what is read", "3.5 USD: the layer written",
                                     "3.6 USD: proxies (--proxy)"]),
     (4, "Command Line", ["4.1 Batch mode", "4.2 Options", "4.3 Examples"]),
     (5, "Per-Mesh Remeshing (Alembic, OBJ, USD)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
@@ -390,8 +390,9 @@ def build(cover_image=None):
     story += bullets([
         "<b>Alembic (.abc)</b> read and written natively: no Alembic library, no dependency, polygon meshes, "
         "transforms and instances.",
-        "<b>USD (.usd, .usda, .usdc, .usdz)</b> read natively, without the USD library; per-mesh results "
-        "written as a <b>.usda layer</b> over the original file, which stays untouched.",
+        "<b>USD (.usd, .usda, .usdc, .usdz)</b> read and written natively, without the USD library, "
+        "composition included (sublayers, references, payloads, variants); per-mesh results written as a "
+        "<b>layer</b> over the original file, which stays untouched.",
         "<b>Per-mesh remeshing</b>: remesh MeshA at 75% and MeshB at 85% of their faces, keep the rest of the "
         "scene untouched, write one file (-m / --others), for <b>Alembic, OBJ and USD</b> scenes.",
         "<b>Percentage targets</b>: 75% means 75% of the original face count, in the interface and on the "
@@ -492,7 +493,7 @@ def build(cover_image=None):
                      "field or move singularities where needed, then stop the solver.",
                      "Click <b>Solve</b> under Position field, then open <b>Export mesh</b>.",
                      "<b>Extract mesh</b>, check it with <b>Show output</b>, then <b>Save</b> as .obj, .ply, "
-                     ".abc or .usda."]),
+                     ".abc, .usda, .usdc or .usdz."]),
               PageBreak()]
 
     # ---------------- 3 alembic
@@ -530,9 +531,11 @@ def build(cover_image=None):
     story += [Spacer(1, 4 * mm), SubHeader("3.4", "USD: what is read"), Spacer(1, 3 * mm),
               p("USD layers are read by code written for this fork too, in their three encodings: text "
                 "(<b>.usda</b>), binary Crate (<b>.usdc</b>, every version from 0.2 to the current 0.13, compressed "
-                "or not) and package (<b>.usdz</b>); a <b>.usd</b> file is recognized by its content. The reader "
-                "is checked against Pixar's USD library: the same scene in the three encodings reads value for "
-                "value as USD reads it."),
+                "or not) and package (<b>.usdz</b>); a <b>.usd</b> file is recognized by its content. The file is "
+                "<b>composed</b> into a stage, as USD does: its sublayers, and for every prim its references, "
+                "payloads, inherits, specializes and selected variants, strongest opinion first. Everything is "
+                "checked against Pixar's USD library: the same scenes, in the three encodings, read and compose "
+                "value for value as USD does."),
               Spacer(1, 3 * mm)]
     story += bullets([
         "Every <b>Mesh</b> prim defined in the file (def), placed in world space through xformOpOrder: "
@@ -542,11 +545,13 @@ def build(cover_image=None):
         "<b>UV primvars</b> (texCoord2f, or float2 named st / uv), indexed or not, faceVarying, vertex or "
         "uniform.",
         "Classes, overs and inactive prims are skipped; meshes below an instanceable prim or a PointInstancer "
-        "are marked as instanced. References, payloads and sublayers are not followed yet: only the meshes "
-        "of the file itself are seen.",
+        "are marked as instanced (listed, not remeshed). Transforms count on Xformable prims only, as in USD.",
+        "A mesh that comes from a reference or a payload can be remeshed or get a proxy like any other: the "
+        "layer written puts its opinions over it, the referenced files stay untouched.",
     ])
-    story += [Spacer(1, 4 * mm), SubHeader("3.5", "USD: the .usda layer written"), Spacer(1, 3 * mm),
-              p("In per-mesh mode, the result is not a copy of the scene but a light <b>.usda layer</b> that "
+    story += [Spacer(1, 4 * mm), SubHeader("3.5", "USD: the layer written"), Spacer(1, 3 * mm),
+              p("In per-mesh mode, the result is not a copy of the scene but a light <b>layer</b> (.usda text or "
+                ".usdc binary) that "
                 "loads the original as a sublayer and overrides only the remeshed meshes. Open the layer in "
                 "Blender, Houdini, Maya or usdview to see the scene with the new meshes; the original file is "
                 "never modified."),
@@ -568,9 +573,14 @@ def build(cover_image=None):
         "no longer match the topology. UVs are written again when --uv is given.",
         "<b>GeomSubsets</b> (per-face materials) are deactivated; the mesh is bound to the most used of their "
         "materials.",
-        "The stage metadata (upAxis, metersPerUnit, defaultPrim, frame range) is copied. The layer must be an "
-        ".usda with another name than the input; the sublayer path is relative when both sit in the same folder.",
-        "Whole-file mode reads USD like any mesh and can write a standalone <b>.usda</b> stage: in meters "
+        "The stage metadata (upAxis, metersPerUnit, defaultPrim, frame range) is copied. The layer is a .usda "
+        "or a .usdc with another name than the input (a .usdz package would have to hold the scene too); the "
+        "sublayer path is relative when both sit in the same folder.",
+        "<b>.usdc</b> is written as Crate 0.8.0 (read by every USD version since 2018), <b>.usdz</b> as a "
+        "standard package; Pixar's compliance checker reports no error on them. Binary files are about 2.5x "
+        "smaller than text.",
+        "Whole-file mode reads USD like any mesh and can write a standalone <b>.usda</b>, <b>.usdc</b> or "
+        "<b>.usdz</b> stage: in meters "
         "(metersPerUnit = 1) from an OBJ, PLY or Alembic file, as Blender reads them; with the units and up "
         "axis of the input from a USD file.",
     ])
@@ -620,7 +630,7 @@ def build(cover_image=None):
                          "InstantMeshes.exe input.obj -o output.obj -f 5000 -D"]),
               Spacer(1, 4 * mm), SubHeader("4.2", "Options"), Spacer(1, 3 * mm),
               table([["Option", "Meaning"],
-                     ["-o, --output <file>", "Output .obj, .ply, .abc or .usda (batch mode)"],
+                     ["-o, --output <file>", "Output .obj, .ply, .abc, .usda, .usdc or .usdz (batch mode)"],
                      ["-f, --faces <n> | <n>%", "Face count, or percentage of the input polygons (75%)"],
                      ["-v <n> / -s <length>", "Vertex count / edge length in world units"],
                      ["-D, --dominant", "Quad-dominant output (no pure quad subdivision)"],
@@ -644,7 +654,7 @@ def build(cover_image=None):
                          "InstantMeshes.exe part.abc -o part_tri.abc -r 6 -p 6 -f 20000 -c 30",
                          "# Replace the input file in place",
                          "InstantMeshes.exe scene.abc -o scene.abc -f 60%",
-                         "# A USD asset: a .usda layer over it, the original untouched",
+                         "# A USD asset: a layer over it, the original untouched",
                          'InstantMeshes.exe asset.usdz -o asset_retopo.usda -m "Hero=40%" --uv transfer',
                          "# Viewport proxies at 5% for every mesh of a USD asset",
                          "InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%"])]),
@@ -655,7 +665,7 @@ def build(cover_image=None):
               Spacer(1, 5 * mm),
               p("With <b>-m</b> and <b>--others</b>, each chosen mesh of an Alembic, OBJ or USD scene is remeshed on "
                 "its own, with its own target, and written back into a copy of the scene, in the same format "
-                "(USD: into a .usda layer over the scene, see 3.5). "
+                "(USD: into a .usda or .usdc layer over the scene, see 3.5). "
                 "Everything else, other objects, cameras, curves, animation and metadata, is copied untouched."),
               Spacer(1, 3 * mm),
               codeblock(['InstantMeshes.exe scene.abc -o scene_retopo.abc -m "MeshA=75%" -m "MeshB=85%" --others 25%']),
@@ -812,8 +822,9 @@ def build(cover_image=None):
         "read at the first frame.",
         "Remeshed meshes lose their normals (new topology), and their UVs unless --uv transfer is given.",
         "Point clouds (.aln) accept face counts, not percentages.",
-        "USD: references, payloads, sublayers and variants are not composed yet; the meshes of the file "
-        "itself are read. Per-mesh output is a .usda layer only.",
+        "USD: layer offsets (time), relocates, value clips and variant fallbacks are not composed; files "
+        "inside a .usdz package other than its root layer are not opened. A mesh inside an instance cannot be "
+        "remeshed (edit its prototype asset). Per-mesh output is a .usda or .usdc layer.",
         "The per-mesh mode (-m / --others, Alembic, OBJ and USD) is available on the command line; the interface "
         "remeshes the whole loaded file.",
         "<b>Memory</b>, per-mesh mode: the remeshing itself takes about 800 bytes per input vertex, for one mesh "

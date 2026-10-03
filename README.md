@@ -122,6 +122,16 @@ InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%
 - Blender importe les maillages de rendu par défaut : cocher **Proxy** dans les
   options d'import USD pour voir les proxies.
 
+D'un OBJ à un asset USD avec son proxy, en deux commandes : conversion au
+même nombre de polygones (100 % : remaillé, autant de faces environ) avec de
+nouvelles UV, puis un proxy à 10 % qui reprend ces UV. La première commande
+fusionne tous les objets de l'OBJ en un seul maillage.
+
+```
+InstantMeshes.exe model.obj -o model.usda -f 100% --uv unwrap
+InstantMeshes.exe model.usda -o model_proxy.usda --proxy --others 10%
+```
+
 Mémoire, en mode par objet : un seul maillage est remaillé à la fois (environ
 800 octets par sommet d'entrée), le pic est donc celui du plus gros objet
 remaillé, pas de la scène. Un Alembic est lu à la demande ; un OBJ est lu une

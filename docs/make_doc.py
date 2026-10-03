@@ -595,6 +595,16 @@ def build(cover_image=None):
         "Blender imports the render meshes by default: tick <b>Proxy</b> in the USD import options to see the "
         "proxies.",
     ])
+    story += [Spacer(1, 3 * mm),
+              KeepTogether([p("<b>From an OBJ to a USD asset with its proxy</b>, in two commands: the first converts "
+                              "the OBJ to USD at its own polygon count (100%: remeshed, about as many faces) with new "
+                              "UVs; the second adds a 10% proxy, which takes over those UVs."),
+                            Spacer(1, 2 * mm),
+                            codeblock(["InstantMeshes.exe model.obj -o model.usda -f 100% --uv unwrap",
+                                       "InstantMeshes.exe model.usda -o model_proxy.usda --proxy --others 10%"])]),
+              Spacer(1, 2 * mm),
+              p("Open <b>model_proxy.usda</b>: it loads model.usda and adds /model/model_proxy. The first command "
+                "merges every object of the OBJ into one mesh (whole-file mode).")]
     story += [PageBreak()]
 
     # ---------------- 4 command line

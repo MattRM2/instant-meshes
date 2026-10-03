@@ -511,6 +511,50 @@ def test_usd_reader(exe, tmp):
         check(code == 0 and got == want, "%s: %d lines, %d different" % (
             name, len(got), sum(1 for a, b in zip(got, want) if a != b) + abs(len(got) - len(want))))
 
+
+def test_usd_scenes(exe, tmp):
+    print("USD scenes: --list, per-object .usda layer, whole-file mode")
+    import re
+    import shutil
+    want = {"/World/geo/MeshA": 10, "/World/geo/Group/MeshB": 5, "/World/geo/MeshC": 1200,
+            "/World/geo/MeshD": 1, "/World/geo/Spin/MeshE": 1}
+    for ext in ("usda", "usdc", "usdz"):
+        src = os.path.join(tmp, "scene." + ext)
+        shutil.copy(os.path.join(DATA, "usd_scene." + ext), src)
+        code, meshes = list_meshes(exe, src)
+        check(code == 0 and meshes == want, "--list usd_scene.%s: %s" % (ext, meshes))
+
+        out = os.path.join(tmp, "retopo_%s.usda" % ext)
+        code, log = run(exe, src, "-o", out, "-d", "-m", "MeshC=50%", "-m", "MeshA=300%", "--uv", "transfer")
+        text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+        counts = re.findall(r"int\[\] faceVertexCounts = \[([^\]]*)\]", text)
+        check(code == 0 and "subLayers" in text and "@./scene.%s@" % ext in text and
+              len(counts) == 2 and abs(len(counts[1].split(",")) - 600) <= 120 and
+              'over "MeshB"' not in text and "normals = None" in text and "texCoord2f[] primvars:st" in text,
+              "%s -m -> .usda layer (%d meshes overridden)" % (ext, len(counts)))
+
+        code, log = run(exe, src, "-o", src, "-m", "MeshA=50%")
+        check(code != 0 and ("cannot replace its input" if ext == "usda" else "write a .usda layer") in log,
+              "%s: layer over itself refused" % ext)
+        code, log = run(exe, src, "-o", os.path.join(tmp, "x.obj"), "-m", "MeshA=50%")
+        check(code != 0 and "write a .usda layer" in log, "%s: per-object .obj output refused" % ext)
+
+    # whole file: every mesh merged, to OBJ, Alembic and USD
+    src = os.path.join(DATA, "usd_scene.usdc")
+    for ext in ("obj", "abc", "usda"):
+        out = os.path.join(tmp, "whole_usd." + ext)
+        code, log = run(exe, src, "-o", out, "-d", "-f", "100%")
+        code2, meshes = list_meshes(exe, out) if ext != "obj" else (0, {"/": face_count(out)})
+        check(code == 0 and code2 == 0 and sum(meshes.values()) > 300, "whole USD -> .%s: %s" % (ext, meshes))
+
+    # an .usda written from an OBJ is a stage of its own, read back
+    out = os.path.join(tmp, "cube.usda")
+    code, log = run(exe, os.path.join(DATA, "cube_quads.obj"), "-o", out, "-d", "-f", "100%")
+    code2, meshes = list_meshes(exe, out)
+    check(code == 0 and code2 == 0 and len(meshes) == 1 and list(meshes.values())[0] > 0,
+          "OBJ -> .usda read back: %s" % meshes)
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -549,6 +593,7 @@ def main():
         test_keep_border(exe, tmp)
         test_uv_transfer(exe, tmp)
         test_usd_reader(exe, tmp)
+        test_usd_scenes(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

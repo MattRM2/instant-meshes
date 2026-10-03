@@ -556,7 +556,9 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
         b->setFontSize(14);
         b->setFixedSize(Vector2i(flowWidths[i], 24));
         b->setTooltip(flowTips[i]);
-        b->setCallback([&, i] { setFlowColorMode(i); });
+        /* On press, not on release: draw() syncs the pushed state every
+           frame, which would unpush the button before the release */
+        b->setChangeCallback([&, i](bool pushed) { if (pushed) setFlowColorMode(i); });
         mFlowModeBtn[i] = b;
         flowGroup.push_back(b);
     }

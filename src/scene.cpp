@@ -4,6 +4,7 @@
 
 #include "scene.h"
 #include "objscene.h"
+#include "usdscene.h"
 
 namespace {
 
@@ -72,11 +73,32 @@ private:
     objscene::Scene mScene;
 };
 
+/* USD: the layer is read once (attribute values on demand); the output is a
+   .usda layer over the input */
+class UsdScene : public SceneFile {
+public:
+    explicit UsdScene(const std::string &filename) : SceneFile(filename), mLayer(filename) { }
+
+    std::vector<SceneMesh> meshes() override { return usd::list_meshes(mLayer); }
+
+    void load(const std::string &path, MatrixXu &F, MatrixXf &V, uint64_t *polygons,
+              std::vector<UVSet> *uvs) override {
+        usd::load_mesh(mLayer, path, F, V, polygons, uvs);
+    }
+
+    void write(const std::string &output, const std::vector<SceneReplacement> &replacements) override {
+        usd::write_overlay(mLayer, output, replacements);
+    }
+
+private:
+    usd::Layer mLayer;
+};
+
 } // namespace
 
 bool SceneFile::supported(const std::string &filename) {
     const std::string ext = extension_of(filename);
-    return ext == ".abc" || ext == ".obj";
+    return ext == ".abc" || ext == ".obj" || usd::is_usd_file(filename);
 }
 
 std::unique_ptr<SceneFile> SceneFile::open(const std::string &filename) {
@@ -85,5 +107,7 @@ std::unique_ptr<SceneFile> SceneFile::open(const std::string &filename) {
         return std::unique_ptr<SceneFile>(new AbcScene(filename));
     if (ext == ".obj")
         return std::unique_ptr<SceneFile>(new ObjScene(filename));
-    throw std::runtime_error("\"" + filename + "\": not a supported scene format (.abc, .obj)!");
+    if (usd::is_usd_file(filename))
+        return std::unique_ptr<SceneFile>(new UsdScene(filename));
+    throw std::runtime_error("\"" + filename + "\": not a supported scene format (.abc, .obj, .usd)!");
 }

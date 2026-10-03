@@ -13,6 +13,7 @@
 
 #include "meshio.h"
 #include "abc.h"
+#include "usdscene.h"
 #include "normal.h"
 #include <unordered_map>
 #include <fstream>
@@ -34,7 +35,14 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
     if (filename.size() > 4)
         extension = str_tolower(filename.substr(filename.size()-4));
 
-    if (extension == ".ply") {
+    if (usd::is_usd_file(filename)) {
+        cout << "Loading \"" << filename << "\" .. ";
+        cout.flush();
+        Timer<> timer;
+        usd::Layer layer(filename);
+        usd::load_all(layer, F, V, polygons, uvs);
+        cout << "done. (V=" << V.cols() << ", F=" << F.cols() << ", took " << timeString(timer.value()) << ")" << endl;
+    } else if (extension == ".ply") {
         load_ply(filename, F, V, N, false, progress);
         if (polygons)
             *polygons = F.cols();   /* the PLY reader only accepts triangles */
@@ -45,7 +53,7 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
     else if (extension == ".aln")
         load_pointcloud(filename, V, N, progress);
     else
-        throw std::runtime_error("load_mesh_or_pointcloud: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc/.aln are supported)");
+        throw std::runtime_error("load_mesh_or_pointcloud: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc/.usd/.aln are supported)");
 }
 
 void write_mesh(const std::string &filename, const MatrixXu &F,
@@ -62,8 +70,10 @@ void write_mesh(const std::string &filename, const MatrixXu &F,
         write_obj(filename, F, V, N, Nf, UV, C, progress, uvs);
     else if (extension == ".abc")
         abc::write_abc(filename, F, V, progress, uvs);
+    else if (filename.size() > 5 && str_tolower(filename.substr(filename.size() - 5)) == ".usda")
+        usd::write_usda(filename, F, V, uvs);
     else
-        throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc are supported)");
+        throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc/.usda are supported)");
 }
 
 void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V,

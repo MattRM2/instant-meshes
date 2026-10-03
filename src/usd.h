@@ -108,6 +108,8 @@ public:
     Value value(const Property &property) const;
     /// Time samples of an attribute (Value::TimeSamples, Empty if none)
     Value samples(const Property &property) const;
+    /// Element count of the default value (without decoding it in .usdc)
+    size_t count(const Property &property) const;
 
     struct Impl;
 

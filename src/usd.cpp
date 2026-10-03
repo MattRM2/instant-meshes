@@ -280,6 +280,12 @@ Value Layer::value(const Property &property) const {
     return property.value;
 }
 
+size_t Layer::count(const Property &property) const {
+    if (d->crate && property.crateDefault != 0)
+        return (size_t) d->crate->count(property.crateDefault);
+    return property.value.size();
+}
+
 Value Layer::samples(const Property &property) const {
     if (!property.hasTimeSamples)
         return Value();

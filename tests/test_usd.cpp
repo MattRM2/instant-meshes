@@ -7,6 +7,8 @@
 #include "test_common.h"
 #include "usd.h"
 #include "usdc.h"
+#include "usdscene.h"
+#include "meshio.h"
 #include <pcg32.h>
 #include <chrono>
 #include <functional>
@@ -126,7 +128,40 @@ static void test_fuzz(int scale) {
     CHECK(unexpected == 0);
 }
 
+/* The meshes in world space, against the twin that Pixar's USD wrote
+   (tests/usd_reference.py: composed stage, first frame, left-handed meshes
+   reversed): every transform op, the quaternion, the matrix, the animated
+   parent, the orientation */
+static void test_world() {
+    std::cout << "usd: meshes in world space, as Pixar's USD places them" << std::endl;
+    MatrixXu Ft;
+    MatrixXf Vt;
+    load_obj(data_path("usd_scene_world.obj"), Ft, Vt);
+    for (const char *name : { "usd_scene.usda", "usd_scene.usdc", "usd_scene.usdz" }) {
+        MatrixXu F;
+        MatrixXf V, N;
+        CHECK(error_of([&] { load_mesh_or_pointcloud(data_path(name), F, V, N); }) == "");
+        CHECK(F == Ft && V.cols() == Vt.cols());
+        if (V.cols() == Vt.cols())
+            CHECK((V - Vt).cwiseAbs().maxCoeff() < 1e-5f);
+    }
+    /* one mesh, per-object loading: the same triangles */
+    Layer layer(data_path("usd_scene.usdc"));
+    std::vector<abc::MeshSummary> meshes = list_meshes(layer);
+    CHECK(meshes.size() == 5 && meshes[0].path == "/World/geo/MeshA" && meshes[0].faces == 10 &&
+          meshes[0].vertices == 16 && meshes[2].faces == 1200 && meshes[3].animated && !meshes[1].animated);
+    MatrixXu F;
+    MatrixXf V;
+    std::vector<UVSet> uvs;
+    load_mesh(layer, "/World/geo/Group/MeshB", F, V, nullptr, &uvs);
+    CHECK(F.cols() == 6 && uvs.size() == 1 && uvs[0].name == "uv" && uvs[0].corners.size() == 18);
+    load_mesh(layer, "/World/geo/MeshA", F, V, nullptr, &uvs);
+    CHECK(uvs.size() == 1 && uvs[0].name == "st" && uvs[0].corners.size() == 3 * (size_t) F.cols());
+    CHECK(contains(error_of([&] { load_mesh(layer, "/Proto/Box", F, V); }), "no polygon mesh"));
+}
+
 void test_usd(int fuzz_scale) {
     test_read();
+    test_world();
     test_fuzz(fuzz_scale);
 }

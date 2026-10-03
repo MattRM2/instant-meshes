@@ -209,23 +209,33 @@ int main(int argc, char **argv) {
     }
 
 
+    /* The extension after the last dot, lower case (".usda") */
+    auto extension_of = [](const std::string &f) {
+        const size_t dot = f.rfind('.'), slash = f.find_last_of("/\\");
+        return dot == std::string::npos || (slash != std::string::npos && dot < slash) ? std::string()
+                                                                                       : str_tolower(f.substr(dot));
+    };
+    auto is_usd = [](const std::string &ext) {
+        return ext == ".usd" || ext == ".usda" || ext == ".usdc" || ext == ".usdz";
+    };
+
     /* Check the output format before spending time on the computation */
     if (!batchOutput.empty()) {
-        std::string extension = batchOutput.size() > 4 ? str_tolower(batchOutput.substr(batchOutput.size() - 4)) : "";
-        if (extension != ".obj" && extension != ".ply" && extension != ".abc") {
-            cerr << "Error: unsupported output format \"" << batchOutput << "\" (.obj/.ply/.abc are supported)!" << endl;
+        const std::string extension = extension_of(batchOutput);
+        if (extension != ".obj" && extension != ".ply" && extension != ".abc" && extension != ".usda") {
+            cerr << "Error: unsupported output format \"" << batchOutput
+                 << "\" (.obj/.ply/.abc/.usda are supported)!" << endl;
             help = true;
         }
     }
 
-    /* Alembic per-mesh modes */
+    /* Per-mesh modes: Alembic, OBJ and USD scenes */
     const bool objectMode = !meshRules.empty() || others.valid();
-    auto extension_of = [](const std::string &f) {
-        return f.size() > 4 ? str_tolower(f.substr(f.size() - 4)) : std::string();
-    };
     const std::string sceneExt = args.size() == 1 ? extension_of(args[0]) : std::string();
-    if ((listMeshes || objectMode || dryRun) && (sceneExt != ".abc" && sceneExt != ".obj")) {
-        cerr << "Error: --list, -m, --others and --dry-run need one Alembic (.abc) or OBJ (.obj) input file!" << endl;
+    const bool usdScene = is_usd(sceneExt);
+    if ((listMeshes || objectMode || dryRun) && sceneExt != ".abc" && sceneExt != ".obj" && !usdScene) {
+        cerr << "Error: --list, -m, --others and --dry-run need one Alembic (.abc), OBJ (.obj) or USD "
+                "(.usd/.usda/.usdc/.usdz) input file!" << endl;
         help = true;
     }
     if ((listSort != 0 || listTop > 0) && !listMeshes) {
@@ -245,11 +255,11 @@ int main(int argc, char **argv) {
         help = true;
     }
     if (uvMode != RemeshParams::UVNone && extension_of(batchOutput) == ".ply") {
-        cerr << "Error: --uv needs an .obj or .abc output (PLY has no per-corner UVs)!" << endl;
+        cerr << "Error: --uv needs an .obj, .abc or .usda output (PLY has no per-corner UVs)!" << endl;
         help = true;
     }
     if (keepBorder && extension_of(batchOutput) == ".ply") {
-        cerr << "Error: --keep-border needs an .obj or .abc output (its border faces are polygons)!" << endl;
+        cerr << "Error: --keep-border needs an .obj, .abc or .usda output (its border faces are polygons)!" << endl;
         help = true;
     }
     if (progress && !objectMode) {
@@ -270,12 +280,22 @@ int main(int argc, char **argv) {
              << sceneExt << ")!" << endl;
         help = true;
     }
+    if (objectMode && !dryRun && usdScene) {
+        /* a layer over the input: it cannot be the input itself */
+        if (extension_of(batchOutput) != ".usda") {
+            cerr << "Error: -m / --others on a USD scene write a .usda layer over it (-o scene_retopo.usda)!" << endl;
+            help = true;
+        } else if (str_tolower(batchOutput) == str_tolower(args[0])) {
+            cerr << "Error: the .usda layer cannot replace its input (it sublayers it): choose another name!" << endl;
+            help = true;
+        }
+    }
 
     if (args.size() > 1 || help || (!batchOutput.empty() && args.size() == 0)) {
         cout << INSTANT_MESHES_TITLE << " (MattRM2 fork)" << endl;
         cout << "Syntax: " << argv[0] << " [options] <input mesh / point cloud / application state snapshot>" << endl;
         cout << "Options:" << endl;
-        cout << "   -o, --output <output>     Writes to the specified PLY/OBJ/ABC output file in batch mode" << endl;
+        cout << "   -o, --output <output>     Writes to the specified PLY/OBJ/ABC/USDA output file in batch mode" << endl;
         cout << "   -t, --threads <count>     Number of threads used for parallel computations" << endl;
         cout << "   -d, --deterministic       Prefer (slower) deterministic algorithms" << endl;
         cout << "   -c, --crease <degrees>    Dihedral angle threshold for creases" << endl;
@@ -296,7 +316,8 @@ int main(int argc, char **argv) {
         cout << "                             (mesh inputs; 100% = polygons of the file;" << endl;
         cout << "                             about +/-3%, less accurate below a few hundred polygons)" << endl;
         cout << "   -v, --vertices <count>    Desired vertex count of the output mesh" << endl;
-        cout << "Per-mesh mode for Alembic (.abc) and OBJ (.obj) scenes (output in the same format):" << endl;
+        cout << "Per-mesh mode for Alembic (.abc) and OBJ (.obj) scenes (output in the same format)," << endl;
+        cout << "and USD scenes (.usd/.usda/.usdc/.usdz: output a .usda layer over the input):" << endl;
         cout << "   -m, --mesh <name>=<target>  Remesh the polygon meshes matching <name> on their own:" << endl;
         cout << "                             <target> = percentage (75%) or face count (5000);" << endl;
         cout << "                             <name> = object name or path (Props/MeshA), wildcards" << endl;
@@ -309,7 +330,7 @@ int main(int argc, char **argv) {
         cout << "                             target) is copied unchanged instead of stopping" << endl;
         cout << "       --progress            Print the progress after each remeshed mesh (in %" << endl;
         cout << "                             of the input faces, elapsed and remaining time)" << endl;
-        cout << "       --list                List the polygon meshes of an .abc file / objects of an .obj" << endl;
+        cout << "       --list                List the polygon meshes of an .abc / .usd file, objects of an .obj" << endl;
         cout << "       --sort asc|desc       With --list: by ascending / descending face count" << endl;
         cout << "       --top <n>             With --list: only the first <n> (e.g. --sort desc --top 10)" << endl;
         cout << "   -C, --compat              Compatibility mode to load snapshots from old software versions" << endl;

@@ -144,6 +144,35 @@ def make_scene(path):
     stage.GetRootLayer().Save()
 
 
+def world_obj(path, obj):
+    """The meshes of the composed stage at their first frame, in world space,
+    counter-clockwise (left-handed meshes reversed), in traversal order,
+    without the instances: what Instant Meshes must load from the layer"""
+    stage = Usd.Stage.Open(path)
+    time = Usd.TimeCode.EarliestTime()
+    cache = UsdGeom.XformCache(time)
+    base = 1
+    with open(obj, "w", newline="\n") as f:
+        for prim in stage.Traverse():
+            if prim.GetTypeName() != "Mesh" or prim.IsInstanceProxy() or str(prim.GetPath()).startswith("/World/geo/Var"):
+                continue
+            mesh = UsdGeom.Mesh(prim)
+            m = cache.GetLocalToWorldTransform(prim)
+            pts = [m.Transform(Gf.Vec3d(p)) for p in mesh.GetPointsAttr().Get(time)]
+            left = mesh.GetOrientationAttr().Get() == UsdGeom.Tokens.leftHanded
+            f.write("o %s\n" % prim.GetPath())
+            for p in pts:
+                f.write("v %.9g %.9g %.9g\n" % (p[0], p[1], p[2]))
+            idx, offset = mesh.GetFaceVertexIndicesAttr().Get(time), 0
+            for n in mesh.GetFaceVertexCountsAttr().Get(time):
+                face = list(idx[offset:offset + n])
+                if left:
+                    face.reverse()
+                f.write("f %s\n" % " ".join(str(base + i) for i in face))
+                offset += n
+            base += len(pts)
+
+
 # ---------------------------------------------------------------------------
 # Canonical dump (same format as tests/usd_dump.cpp)
 # ---------------------------------------------------------------------------
@@ -237,6 +266,7 @@ if args[0] == "make":
     layer.Export(usdc)
     if not suffix:
         UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(usdc), os.path.join(out, "usd_scene.usdz"))
+        world_obj(usda, os.path.join(out, "usd_scene_world.obj"))
     print("[OK] usd reference data in", out)
 elif args[0] == "dump":
     dump(args[1])

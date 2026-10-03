@@ -238,7 +238,7 @@ def test_mesh_rules(exe, tmp):
               "%s -> expected '%s'" % (" ".join(args), expect))
     check(not os.path.exists(os.path.join(tmp, "e.abc")), "no output after errors")
     code, log = run(exe, os.path.join(DATA, "cube_quads.ply"), "--list")
-    check(code != 0 and "need one Alembic (.abc) or OBJ (.obj) input" in log, "--list on a PLY refused")
+    check(code != 0 and "need one Alembic (.abc), OBJ (.obj) or USD" in log, "--list on a PLY refused")
     code, log = run(exe, os.path.join(DATA, "instances.abc"), "-o", os.path.join(tmp, "e.abc"),
                     "-m", "Pillar*=50%")
     check(code != 0 and "cannot be remeshed" in log, "instanced target refused")
@@ -427,7 +427,7 @@ def test_keep_border(exe, tmp):
         check(code == 0 and "all hashes match" in log, "--keep-border .abc hashes")
     # Refused before any computation
     code, log = run(exe, scene, "-o", os.path.join(tmp, "x.ply"), "--keep-border")
-    check(code != 0 and "needs an .obj or .abc output" in log and "Loading" not in log, "--keep-border refuses .ply")
+    check(code != 0 and "needs an .obj, .abc or .usda output" in log and "Loading" not in log, "--keep-border refuses .ply")
     code, log = run(exe, scene, "--keep-border")
     check(code != 0 and "applies to the batch mode" in log, "--keep-border needs -o")
 
@@ -521,7 +521,7 @@ def test_errors(exe, tmp):
         (["-o", out, "-f", "abc%"], "Could not parse"),
         (["-o", out, "-f", "75%", "-s", "0.1"], "Only one of"),
         (["-o", os.path.join(tmp, "x.xyz")], "unsupported output format"),
-        (["-o", os.path.join(tmp, "x.fbx")], "(.obj/.ply/.abc are supported)"),
+        (["-o", os.path.join(tmp, "x.fbx")], "(.obj/.ply/.abc/.usda are supported)"),
     ]
     for args, expect in cases:
         code, log = run(exe, src, *args)

@@ -15,6 +15,7 @@
 #include "viewer.h"
 #include "dedge.h"
 #include "meshio.h"
+#include "usdscene.h"
 #include "normal.h"
 #include "extract.h"
 #include "subdivide.h"
@@ -3312,11 +3313,16 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
             {"obj", "Wavefront OBJ"},
             {"ply", "Stanford PLY"},
             {"abc", "Alembic"},
+            {"usd", "USD"},
+            {"usda", "USD (text)"},
+            {"usdc", "USD (binary)"},
+            {"usdz", "USD (package)"},
             {"aln", "Aligned point cloud"}
         }, false);
         if (filename == "")
             return;
-    } else if (extension != ".ply" && extension != ".obj" && extension != ".abc" && extension != ".aln")
+    } else if (extension != ".ply" && extension != ".obj" && extension != ".abc" && extension != ".aln" &&
+               !usd::is_usd_file(filename))
         filename = filename + ".ply";
 
     if (!std::isfinite(creaseAngle)) {

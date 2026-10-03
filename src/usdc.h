@@ -31,6 +31,8 @@ public:
 
     /// Decodes a value rep (reads the file for non-inlined values)
     Value value(uint64_t rep);
+    /// Element count of an array rep without decoding it (1 for a scalar)
+    uint64_t count(uint64_t rep);
 
     const std::string &token(uint64_t index) const;
     const std::string &string(uint64_t index) const;

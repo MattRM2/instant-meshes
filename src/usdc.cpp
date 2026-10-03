@@ -545,6 +545,17 @@ void quat_to_text_order(std::vector<double> &v, size_t first) {
 
 } // namespace
 
+uint64_t CrateFile::count(uint64_t rep) {
+    const bool isArray = (rep >> 63) & 1, inlined = (rep >> 62) & 1;
+    const uint64_t payload = rep & ((1ull << 48) - 1);
+    if (!isArray)
+        return 1;
+    if (inlined || payload == 0)
+        return 0;
+    uint64_t pos = payload;
+    return array_size(pos);
+}
+
 Value CrateFile::value(uint64_t rep) {
     Value v;
     const bool isArray = (rep >> 63) & 1, inlined = (rep >> 62) & 1, compressedRep = (rep >> 61) & 1;

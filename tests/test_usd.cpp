@@ -9,6 +9,7 @@
 #include "usdc.h"
 #include "usdscene.h"
 #include "usdstage.h"
+#include "usdcwrite.h"
 #include "meshio.h"
 #include <pcg32.h>
 #include <chrono>
@@ -207,10 +208,86 @@ static void test_compose() {
     CHECK(plain->sources.empty() && plain->prim("/Asset/geo/render/Body"));
 }
 
+/* The .usdc writer: its LZ4 blocks and integer coding read back by the
+   reader; a layer written as .usdc / .usdz reads as its text */
+static void test_write() {
+    std::cout << "usd: .usdc / .usdz writing" << std::endl;
+    pcg32 rng;
+    for (size_t size : { 0, 1, 14, 15, 16, 269, 270, 271, 5000 }) {
+        std::vector<uint8_t> data(size);
+        for (uint8_t &b : data)
+            b = (uint8_t) rng.nextUInt(256);
+        std::vector<uint8_t> c { 0 };
+        const std::vector<uint8_t> block = lz4_literals(data.data(), data.size());
+        c.insert(c.end(), block.begin(), block.end());
+        CHECK(fast_decompress(c.data(), c.size(), size + 16) == data);
+    }
+    const std::string text =
+        "#usda 1.0\n(\n    defaultPrim = \"W\"\n    metersPerUnit = 0.01\n    upAxis = \"Z\"\n)\n"
+        "def Xform \"W\" (\n    kind = \"component\"\n)\n{\n"
+        "    uniform token[] xformOpOrder = [\"xformOp:translate\", \"xformOp:orient\", \"xformOp:rotateY\"]\n"
+        "    double3 xformOp:translate = (1.5, -2, 1e10)\n"
+        "    quatf xformOp:orient = (0.5, 0.5, -0.5, 0.5)\n"
+        "    float xformOp:rotateY.timeSamples = { 1: 0, 24: 90, }\n"
+        "    def Mesh \"M\" (\n        prepend apiSchemas = [\"MaterialBindingAPI\"]\n    )\n    {\n"
+        "        int[] faceVertexCounts = [3, 4]\n"
+        "        int[] faceVertexIndices = [0, 1, 2, 0, 2, 3, 100000]\n"
+        "        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]\n"
+        "        texCoord2h[] primvars:st = [(0, 0.5), (1, 0.25)] (\n            interpolation = \"vertex\"\n        )\n"
+        "        normal3f[] normals = None\n"
+        "        uniform token subdivisionScheme = \"none\"\n"
+        "        matrix4d m = ((1, 0, 0, 0), (0, 2, 0, 0), (0, 0, 3, 0), (4, 5, 6, 1))\n"
+        "        rel material:binding = </W/mtl.outputs:surface>\n"
+        "    }\n}\n";
+    std::map<std::string, Value> meta;
+    Prim root;
+    root.path = "/";
+    parse_usda(text, "test", meta, root);
+    write_file(temp_path("write_source.usda"), text);
+    Layer original(temp_path("write_source.usda"));
+    for (const char *ext : { "usdc", "usdz" }) {
+        const std::string out = temp_path(std::string("write_test.") + ext);
+        CHECK(error_of([&] { write_layer_file(out, text, out); }) == "");
+        std::unique_ptr<Layer> back;
+        CHECK(error_of([&] { back.reset(new Layer(out)); }) == "");
+        if (!back)
+            continue;
+        CHECK(back->format() == ext && back->meta["upAxis"].str() == "Z" &&
+              std::abs(back->meta["metersPerUnit"].num() - 0.01) < 1e-12);
+        std::function<void(const Prim &, const Prim &)> same = [&](const Prim &a, const Prim &b) {
+            CHECK(a.path == b.path && a.type == b.type && a.specifier == b.specifier &&
+                  a.properties.size() == b.properties.size() && a.children.size() == b.children.size());
+            for (const Property &p : a.properties) {
+                const Property *q = b.property(p.name);
+                CHECK(q && q->type == p.type && q->uniform == p.uniform && q->targets == p.targets &&
+                      q->hasTimeSamples == p.hasTimeSamples);
+                if (!q)
+                    continue;
+                const Value va = original.value(p), vb = back->value(*q);
+                CHECK(va.kind == vb.kind && va.strings == vb.strings && va.numbers.size() == vb.numbers.size());
+                for (size_t k = 0; k < va.numbers.size() && k < vb.numbers.size(); ++k)
+                    CHECK(std::abs(va.numbers[k] - vb.numbers[k]) <= 1e-3 * std::max(1.0, std::abs(va.numbers[k])));
+                if (p.hasTimeSamples)
+                    CHECK(original.samples(p).samples.size() == back->samples(*q).samples.size() &&
+                          back->samples(*q).samples[1].second.num() == 90);
+            }
+            for (size_t k = 0; k < a.children.size() && k < b.children.size(); ++k)
+                same(*a.children[k], *b.children[k]);
+        };
+        same(original.root, back->root);
+        const Prim *m = back->prim("/W/M");
+        const Value *api = m ? m->metadata("apiSchemas") : nullptr;
+        CHECK(api && api->list_items() == std::vector<std::string> { "MaterialBindingAPI" });
+        const Property *st = m ? m->property("primvars:st") : nullptr;
+        CHECK(st && st->meta.count("interpolation") && st->meta.at("interpolation").str() == "vertex");
+    }
+}
+
 void test_usd(int fuzz_scale) {
     test_read();
     test_world();
     test_compose();
+    test_write();
     test_proxy_paths();
     test_fuzz(fuzz_scale);
 }

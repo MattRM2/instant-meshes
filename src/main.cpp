@@ -226,9 +226,10 @@ int main(int argc, char **argv) {
     /* Check the output format before spending time on the computation */
     if (!batchOutput.empty()) {
         const std::string extension = extension_of(batchOutput);
-        if (extension != ".obj" && extension != ".ply" && extension != ".abc" && extension != ".usda") {
+        if (extension != ".obj" && extension != ".ply" && extension != ".abc" && extension != ".usda" &&
+            extension != ".usdc" && extension != ".usdz") {
             cerr << "Error: unsupported output format \"" << batchOutput
-                 << "\" (.obj/.ply/.abc/.usda are supported)!" << endl;
+                 << "\" (.obj/.ply/.abc/.usda/.usdc/.usdz are supported)!" << endl;
             help = true;
         }
     }
@@ -259,11 +260,11 @@ int main(int argc, char **argv) {
         help = true;
     }
     if (uvMode != RemeshParams::UVNone && extension_of(batchOutput) == ".ply") {
-        cerr << "Error: --uv needs an .obj, .abc or .usda output (PLY has no per-corner UVs)!" << endl;
+        cerr << "Error: --uv needs an .obj, .abc or USD output (PLY has no per-corner UVs)!" << endl;
         help = true;
     }
     if (keepBorder && extension_of(batchOutput) == ".ply") {
-        cerr << "Error: --keep-border needs an .obj, .abc or .usda output (its border faces are polygons)!" << endl;
+        cerr << "Error: --keep-border needs an .obj, .abc or USD output (its border faces are polygons)!" << endl;
         help = true;
     }
     if (progress && !objectMode) {
@@ -290,12 +291,19 @@ int main(int argc, char **argv) {
         help = true;
     }
     if (objectMode && !dryRun && usdScene) {
-        /* a layer over the input: it cannot be the input itself */
-        if (extension_of(batchOutput) != ".usda") {
-            cerr << "Error: -m / --others on a USD scene write a .usda layer over it (-o scene_retopo.usda)!" << endl;
+        /* a layer over the input: it cannot be the input itself, nor a
+           package (which would have to hold the input too) */
+        const std::string ext = extension_of(batchOutput);
+        if (ext == ".usdz") {
+            cerr << "Error: a .usdz package holds every file it uses: write the layer over the scene as .usda or "
+                    ".usdc!" << endl;
+            help = true;
+        } else if (ext != ".usda" && ext != ".usdc") {
+            cerr << "Error: -m / --others on a USD scene write a .usda or .usdc layer over it "
+                    "(-o scene_retopo.usda)!" << endl;
             help = true;
         } else if (str_tolower(batchOutput) == str_tolower(args[0])) {
-            cerr << "Error: the .usda layer cannot replace its input (it sublayers it): choose another name!" << endl;
+            cerr << "Error: the layer cannot replace its input (it sublayers it): choose another name!" << endl;
             help = true;
         }
     }
@@ -304,7 +312,8 @@ int main(int argc, char **argv) {
         cout << INSTANT_MESHES_TITLE << " (MattRM2 fork)" << endl;
         cout << "Syntax: " << argv[0] << " [options] <input mesh / point cloud / application state snapshot>" << endl;
         cout << "Options:" << endl;
-        cout << "   -o, --output <output>     Writes to the specified PLY/OBJ/ABC/USDA output file in batch mode" << endl;
+        cout << "   -o, --output <output>     Writes to the specified PLY/OBJ/ABC/USD (.usda/.usdc/.usdz)" << endl;
+        cout << "                             output file in batch mode" << endl;
         cout << "   -t, --threads <count>     Number of threads used for parallel computations" << endl;
         cout << "   -d, --deterministic       Prefer (slower) deterministic algorithms" << endl;
         cout << "   -c, --crease <degrees>    Dihedral angle threshold for creases" << endl;
@@ -313,8 +322,8 @@ int main(int argc, char **argv) {
         cout << "   -i, --intrinsic           Intrinsic mode (extrinsic is the default)" << endl;
         cout << "   -b, --boundaries          Align to boundaries (only applies when the mesh is not closed)" << endl;
         cout << "       --keep-border         Snap the open border back onto the input border (implies -b):" << endl;
-        cout << "                             objects touching along their borders stay closed (.obj/.abc/.usda)" << endl;
-        cout << "       --uv <mode>           UVs of the output (.obj/.abc/.usda): none (default), transfer" << endl;
+        cout << "                             objects touching along their borders stay closed (.obj/.abc/.usd)" << endl;
+        cout << "       --uv <mode>           UVs of the output (.obj/.abc/.usd): none (default), transfer" << endl;
         cout << "                             (from the input, island by island) or unwrap (new" << endl;
         cout << "                             UVs, xatlas)" << endl;
         cout << "   -r, --rosy <number>     Specifies the orientation symmetry type (2, 4, or 6)" << endl;
@@ -326,7 +335,7 @@ int main(int argc, char **argv) {
         cout << "                             about +/-3%, less accurate below a few hundred polygons)" << endl;
         cout << "   -v, --vertices <count>    Desired vertex count of the output mesh" << endl;
         cout << "Per-mesh mode for Alembic (.abc) and OBJ (.obj) scenes (output in the same format)," << endl;
-        cout << "and USD scenes (.usd/.usda/.usdc/.usdz: output a .usda layer over the input):" << endl;
+        cout << "and USD scenes (.usd/.usda/.usdc/.usdz: output a .usda or .usdc layer over the input):" << endl;
         cout << "   -m, --mesh <name>=<target>  Remesh the polygon meshes matching <name> on their own:" << endl;
         cout << "                             <target> = percentage (75%) or face count (5000);" << endl;
         cout << "                             <name> = object name or path (Props/MeshA), wildcards" << endl;

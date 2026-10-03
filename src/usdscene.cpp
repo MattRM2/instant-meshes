@@ -13,6 +13,8 @@
 #endif
 
 #include "usdscene.h"
+#include "usdcwrite.h"
+#include <sstream>
 #include <Eigen/Geometry>
 #include <fstream>
 #include <functional>
@@ -740,9 +742,7 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
     } guard { temp };
     std::vector<std::string> notes;
     {
-        std::ofstream os(temp, std::ios::binary | std::ios::trunc);
-        if (!os)
-            throw std::runtime_error("Unable to create \"" + temp + "\"!");
+        std::ostringstream os;
         write_header(os, layer, sub, "Instant Meshes: remeshed meshes over " + sub);
 
         std::function<void(const Node &, const std::string &, const std::string &)> write;
@@ -818,9 +818,7 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
             }
         };
         write(root, "", "");
-        os.flush();
-        if (!os)
-            throw std::runtime_error("Error while writing \"" + temp + "\" (disk full?)!");
+        write_layer_file(temp, os.str(), output);
     }
     replace_file(temp, output);
     guard.armed = false;
@@ -1139,9 +1137,7 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         ~TempGuard() { if (armed) std::remove(path.c_str()); }
     } guard { temp };
     {
-        std::ofstream os(temp, std::ios::binary | std::ios::trunc);
-        if (!os)
-            throw std::runtime_error("Unable to create \"" + temp + "\"!");
+        std::ostringstream os;
         write_header(os, layer, sub, "Instant Meshes: proxies over " + sub);
         std::function<void(const ProxyNode &, const std::string &)> write;
         write = [&](const ProxyNode &n, const std::string &ind) {
@@ -1165,9 +1161,7 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
             }
         };
         write(root, "");
-        os.flush();
-        if (!os)
-            throw std::runtime_error("Error while writing \"" + temp + "\" (disk full?)!");
+        write_layer_file(temp, os.str(), output);
     }
     replace_file(temp, output);
     guard.armed = false;
@@ -1188,6 +1182,7 @@ SceneUnits stage_units(const Layer &layer) {
 
 void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &V, const std::vector<CornerUVs> &uvs,
                 const SceneUnits &units) {
+    const std::string &output = filename;
     Timer<> timer;
     cout << "Writing \"" << filename << "\" (V=" << V.cols() << ", F=" << F.cols() << ") .. ";
     cout.flush();
@@ -1213,9 +1208,7 @@ void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &
         ~TempGuard() { if (armed) std::remove(path.c_str()); }
     } guard { temp };
     {
-        std::ofstream os(temp, std::ios::binary | std::ios::trunc);
-        if (!os)
-            throw std::runtime_error("Unable to create \"" + temp + "\"!");
+        std::ostringstream os;
         /* without metersPerUnit, USD readers take centimeters */
         os << "#usda 1.0\n(\n    defaultPrim = " << quote(name) << "\n    doc = \"Instant Meshes\"\n"
            << "    metersPerUnit = " << num17(units.metersPerUnit) << "\n"
@@ -1225,9 +1218,7 @@ void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &
         write_geometry(os, m, "        ", std::map<std::string, std::string>());
         os << "        uniform token subdivisionScheme = \"none\"\n";
         os << "    }\n}\n";
-        os.flush();
-        if (!os)
-            throw std::runtime_error("Error while writing \"" + temp + "\" (disk full?)!");
+        write_layer_file(temp, os.str(), output);
     }
     replace_file(temp, filename);
     guard.armed = false;

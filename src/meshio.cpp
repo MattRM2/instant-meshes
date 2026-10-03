@@ -77,10 +77,10 @@ void write_mesh(const std::string &filename, const MatrixXu &F,
         write_obj(filename, F, V, N, Nf, UV, C, progress, uvs);
     else if (extension == ".abc")
         abc::write_abc(filename, F, V, progress, uvs);
-    else if (filename.size() > 5 && str_tolower(filename.substr(filename.size() - 5)) == ".usda")
-        usd::write_usda(filename, F, V, uvs, units);
+    else if (usd::is_usd_file(filename) && str_tolower(filename.substr(filename.size() - 4)) != ".usd")
+        usd::write_usda(filename, F, V, uvs, units);   /* .usda, .usdc or .usdz */
     else
-        throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc/.usda are supported)");
+        throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc/.usda/.usdc/.usdz are supported)");
 }
 
 void load_ply(const std::string &filename, MatrixXu &F, MatrixXf &V,

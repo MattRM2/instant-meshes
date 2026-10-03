@@ -69,8 +69,8 @@ void write_proxies(const Layer &layer, const std::string &output,
 /// authored: 0.01, centimeters, and Y)
 SceneUnits stage_units(const Layer &layer);
 
-/// A new .usda stage holding one extracted mesh (whole-file output), with
-/// the given units (metersPerUnit, upAxis)
+/// A new stage holding one extracted mesh (whole-file output), with the
+/// given units (metersPerUnit, upAxis): .usda, .usdc or .usdz by extension
 void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &V,
                 const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>(),
                 const SceneUnits &units = SceneUnits());

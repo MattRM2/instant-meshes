@@ -724,7 +724,10 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
             std::string filename = nanogui::file_dialog({
                 {"obj", "Wavefront OBJ"},
                 {"ply", "Stanford PLY"},
-                {"abc", "Alembic"}
+                {"abc", "Alembic"},
+                {"usda", "USD (text)"},
+                {"usdc", "USD (binary)"},
+                {"usdz", "USD (package)"}
             }, true);
 
             if (filename == "")

@@ -427,7 +427,7 @@ def test_keep_border(exe, tmp):
         check(code == 0 and "all hashes match" in log, "--keep-border .abc hashes")
     # Refused before any computation
     code, log = run(exe, scene, "-o", os.path.join(tmp, "x.ply"), "--keep-border")
-    check(code != 0 and "needs an .obj, .abc or .usda output" in log and "Loading" not in log, "--keep-border refuses .ply")
+    check(code != 0 and "needs an .obj, .abc or USD output" in log and "Loading" not in log, "--keep-border refuses .ply")
     code, log = run(exe, scene, "--keep-border")
     check(code != 0 and "applies to the batch mode" in log, "--keep-border needs -o")
 
@@ -534,10 +534,10 @@ def test_usd_scenes(exe, tmp):
               "%s -m -> .usda layer (%d meshes overridden)" % (ext, len(counts)))
 
         code, log = run(exe, src, "-o", src, "-m", "MeshA=50%")
-        check(code != 0 and ("cannot replace its input" if ext == "usda" else "write a .usda layer") in log,
+        check(code != 0 and ("holds every file it uses" if ext == "usdz" else "cannot replace its input") in log,
               "%s: layer over itself refused" % ext)
         code, log = run(exe, src, "-o", os.path.join(tmp, "x.obj"), "-m", "MeshA=50%")
-        check(code != 0 and "write a .usda layer" in log, "%s: per-object .obj output refused" % ext)
+        check(code != 0 and "write a .usda or .usdc layer" in log, "%s: per-object .obj output refused" % ext)
 
     # whole file: every mesh merged, to OBJ, Alembic and USD
     src = os.path.join(DATA, "usd_scene.usdc")
@@ -646,6 +646,40 @@ def test_usd_composition(exe, tmp):
           "rel proxyPrim = </World/propC/geo/proxy/Box>" in text, "--proxy on referenced meshes")
 
 
+def test_usd_binary(exe, tmp):
+    print("USD outputs as .usdc / .usdz: read back as their .usda")
+    import shutil
+    dump = os.path.join(os.path.dirname(exe), "usd_dump.exe" if os.name == "nt" else "usd_dump")
+    work = os.path.join(tmp, "binary")
+    os.makedirs(work)
+    for name in ("usd_asset.usdc", "scene_ab.obj"):
+        shutil.copy(os.path.join(DATA, name), work)
+
+    def same(base, exts):
+        code, ref = run(dump, base + ".usda")
+        ref = [l for l in ref.splitlines() if not l.startswith("FORMAT")]
+        for ext in exts:
+            code2, got = run(dump, base + ext)
+            got = [l for l in got.splitlines() if not l.startswith("FORMAT")]
+            check(code == 0 and code2 == 0 and len(ref) > 3 and got == ref,
+                  "%s%s reads as its .usda (%d lines)" % (os.path.basename(base), ext, len(got)))
+
+    base = os.path.join(work, "whole")
+    for ext in (".usda", ".usdc", ".usdz"):
+        run(exe, os.path.join(work, "scene_ab.obj"), "-o", base + ext, "-d", "-f", "100%", "--uv", "unwrap")
+    same(base, (".usdc", ".usdz"))
+    with open(base + ".usdz", "rb") as f:
+        head = f.read(64)
+    check(head[:4] == b"PK\x03\x04" and (30 + head[26] + head[28]) % 64 == 0, ".usdz data 64-byte aligned")
+
+    base = os.path.join(work, "proxy")
+    for ext in (".usda", ".usdc"):
+        run(exe, os.path.join(work, "usd_asset.usdc"), "-o", base + ext, "-d", "--proxy", "--others", "40%")
+    same(base, (".usdc",))
+    code, log = run(exe, os.path.join(work, "usd_asset.usdc"), "-o", base + ".usdz", "--proxy", "--others", "40%")
+    check(code != 0 and "holds every file it uses" in log, "a layer over the scene cannot be a .usdz")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -656,7 +690,7 @@ def test_errors(exe, tmp):
         (["-o", out, "-f", "abc%"], "Could not parse"),
         (["-o", out, "-f", "75%", "-s", "0.1"], "Only one of"),
         (["-o", os.path.join(tmp, "x.xyz")], "unsupported output format"),
-        (["-o", os.path.join(tmp, "x.fbx")], "(.obj/.ply/.abc/.usda are supported)"),
+        (["-o", os.path.join(tmp, "x.fbx")], "(.obj/.ply/.abc/.usda/.usdc/.usdz are supported)"),
     ]
     for args, expect in cases:
         code, log = run(exe, src, *args)
@@ -687,6 +721,7 @@ def main():
         test_usd_scenes(exe, tmp)
         test_usd_proxies(exe, tmp)
         test_usd_composition(exe, tmp)
+        test_usd_binary(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

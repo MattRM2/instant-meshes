@@ -25,7 +25,7 @@ from reportlab.lib.enums import TA_CENTER
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "InstantMeshes_Documentation.pdf")
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 PRODUCT = "Instant Meshes"
 REPO = "github.com/MattRM2/instant-meshes"
 
@@ -358,7 +358,7 @@ SECTIONS = [
                                                  "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
                                                  "5.5 Touching objects: --keep-border",
                                                  "5.6 Following a long run: --progress"]),
-    (6, "UVs", ["6.1 Transfer: --uv transfer"]),
+    (6, "UVs", ["6.1 Transfer: --uv transfer", "6.2 Unwrap: --uv unwrap"]),
     (7, "Reference", ["7.1 Accuracy of the targets", "7.2 Limitations", "7.3 Credits and licenses"]),
 ]
 
@@ -392,7 +392,7 @@ def build(cover_image=None):
         "scene untouched, write one file (-m / --others), for <b>Alembic and OBJ</b> scenes.",
         "<b>Percentage targets</b>: 75% means 75% of the original face count, in the interface and on the "
         "command line.",
-        "<b>UV transfer</b>: the original's UVs carried over to the new mesh (--uv transfer).",
+        "<b>UVs</b>: the original's carried over (--uv transfer), or new ones unwrapped (--uv unwrap).",
         "<b>Typed targets</b>: faces or %, presets and a full-width slider.",
         "<b>Meaningful colors</b>: flow lines by direction (U / V), your strokes in orange, singularities with "
         "consistent colors.",
@@ -544,7 +544,7 @@ def build(cover_image=None):
                      ["-b, --boundaries / --keep-border", "Align to open borders / also put them back exactly on the input's (5.5)"],
                      ["-S, --smooth <n>", "Smoothing iterations (default 2)"],
                      ["-d / -t <n>", "Same result on every run (slower) / number of threads"],
-                     ["--uv <mode>", "UVs of the output: none (default) or transfer (section 6)"],
+                     ["--uv <mode>", "UVs of the output: none (default), transfer or unwrap (section 6)"],
                      ["-m, --mesh <name>=<target>", "Per-mesh remeshing of an .abc or .obj (section 5)"],
                      ["--others <target>", "Target for every other mesh of the scene"],
                      ["--list / --dry-run", "List the meshes (--sort asc|desc, --top <n>) / print the plan"],
@@ -664,8 +664,9 @@ def build(cover_image=None):
     image.drawHeight = image.drawWidth * 550 / 1480
     story += [SectionHeader(6, "UVs", "Texture coordinates on the new mesh"), Spacer(1, 5 * mm),
               p("A remeshed mesh has a new topology: by default its UVs are dropped. With <b>--uv transfer</b>, "
-                "every UV set of the input is carried over to the new mesh, in both modes (whole file and "
-                "-m / --others), for .obj and .abc outputs."),
+                "every UV set of the input is carried over to the new mesh; with <b>--uv unwrap</b> the new mesh "
+                "gets new UVs of its own. Both work in both modes (whole file and -m / --others), for .obj and "
+                ".abc outputs."),
               Spacer(1, 4 * mm), SubHeader("6.1", "Transfer: --uv transfer"), Spacer(1, 3 * mm),
               codeblock(["InstantMeshes.exe asset.abc -o asset_retopo.abc --others 25% --uv transfer",
                          "InstantMeshes.exe scan.obj -o scan_retopo.obj -f 10% --uv transfer"]),
@@ -684,6 +685,26 @@ def build(cover_image=None):
         "The log tells how many corners were extended past a seam. A mesh without UVs is reported and written "
         "without. PLY outputs are refused (no per-corner UVs). Cost: 0.14 s for a 126k-face original.",
     ])
+    unwrapImage = Image(os.path.join(HERE, "uv_unwrap.png"))
+    unwrapImage.drawWidth = W - 2 * MARGIN
+    unwrapImage.drawHeight = unwrapImage.drawWidth * 550 / 1340
+    story += [Spacer(1, 4 * mm), KeepTogether([SubHeader("6.2", "Unwrap: --uv unwrap"), Spacer(1, 3 * mm),
+              p("New UVs for the new mesh, whether the input had UVs or not: the surface is cut into charts, "
+                "each flattened with little distortion, then packed into the [0, 1] square. One UV set, "
+                "named UVMap."),
+              Spacer(1, 3 * mm),
+              codeblock(["InstantMeshes.exe scan.obj -o scan_retopo.obj -f 5% --uv unwrap"]),
+              Spacer(1, 3 * mm), unwrapImage,
+              Paragraph("Remeshed at 5% (6k quads) and unwrapped: the checker keeps one size all over, the quads "
+                        "stay quads in the UV layout (right).",
+                        ParagraphStyle("cap2", parent=body, fontSize=8, textColor=MUTED, alignment=TA_CENTER)),
+              Spacer(1, 3 * mm)] + bullets([
+        "Computed by <b>xatlas</b> (MIT, built in). Every polygon stays whole in one chart (xatlas works on "
+        "triangles: a quad cut by a chart border is put back together and the charts are packed again).",
+        "No mirrored chart, no overlap, 2 texels of padding at about 1024: ready for baking and painting.",
+        "Cost grows with the face count: about 0.5 s for 6k faces, 4 s for 30k, 11 s for 60k. Unwrap the "
+        "light meshes (proxies, game assets); transfer the UVs of the heavy ones.",
+    ]))]
     story += [PageBreak()]
 
     # ---------------- 7 reference
@@ -718,7 +739,8 @@ def build(cover_image=None):
                 "Matthieu Barbi\u00e9, 2026, same license. Source: https://%s" % REPO),
               Spacer(1, 2 * mm),
               p("Poppins typeface (interface): The Poppins Project Authors, SIL Open Font License 1.1, see OFL.txt. "
-                "Hash algorithms: MurmurHash3 (Austin Appleby) and SpookyHash (Bob Jenkins), public domain."),
+                "Hash algorithms: MurmurHash3 (Austin Appleby) and SpookyHash (Bob Jenkins), public domain. "
+                "UV unwrapping: xatlas (Jonathan Young), MIT license, see LICENSE_xatlas.txt."),
               ]
     return story
 

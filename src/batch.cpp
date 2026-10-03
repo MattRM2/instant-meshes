@@ -26,6 +26,7 @@
 #include "border.h"
 #include "scene.h"
 #include "uvtransfer.h"
+#include "uvunwrap.h"
 #include <iomanip>
 #include <fstream>
 #include <functional>
@@ -91,7 +92,22 @@ RemeshParams::UVMode parse_uv_mode(const std::string &text) {
         return RemeshParams::UVNone;
     if (mode == "transfer")
         return RemeshParams::UVTransfer;
-    throw std::runtime_error("Invalid --uv mode \"" + text + "\" (none or transfer)");
+    if (mode == "unwrap")
+        return RemeshParams::UVUnwrap;
+    throw std::runtime_error("Invalid --uv mode \"" + text + "\" (none, transfer or unwrap)");
+}
+
+/* --uv unwrap: new UVs for the new mesh (xatlas) */
+static std::vector<CornerUVs> unwrap(const MatrixXu &F, const MatrixXf &O) {
+    Timer<> timer;
+    UnwrapStats stats;
+    std::vector<CornerUVs> result { unwrap_uvs(F, O, "UVMap", &stats) };
+    cout << "UV unwrap: " << stats.charts << " charts, " << (int) std::round(stats.utilization * 100)
+         << "% of the UV square used";
+    if (stats.split > 0)
+        cout << ", " << stats.split << " polygons kept whole across chart borders (re-packed)";
+    cout << ". (took " << timeString(timer.value()) << ")" << endl;
+    return result;
 }
 
 /* --uv transfer: the UV sets of the original, carried over to the new mesh */
@@ -130,6 +146,8 @@ static void print_settings(const RemeshParams &p) {
         cout << "   Keep border            = yes (snapped onto the input border)" << endl;
     if (p.uv == RemeshParams::UVTransfer)
         cout << "   UVs                    = transferred from the input" << endl;
+    if (p.uv == RemeshParams::UVUnwrap)
+        cout << "   UVs                    = unwrapped (xatlas)" << endl;
     cout << "   kNN points             = " << p.knn_points << " (only applies to point clouds)"<< endl;
     cout << "   Fully deterministic    = " << (p.deterministic ? "yes" : "no") << endl;
     if (p.posy == 4)
@@ -407,6 +425,8 @@ void batch_process(const std::string &input, const std::string &output,
     std::vector<CornerUVs> outUVs;
     if (transfer)
         outUVs = transfer_uvs(F0, V0, uvs, F_extr, O_extr, "\"" + input + "\"");
+    else if (params.uv == RemeshParams::UVUnwrap)
+        outUVs = unwrap(F_extr, O_extr);
 
     write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr, MatrixXf(), MatrixXf(), ProgressCallback(), outUVs);
 }
@@ -696,6 +716,8 @@ void batch_process_objects(const std::string &input, const std::string &output,
                 outUVs = transfer_uvs(F0, V0, uvs, Fr, Vr, i.mesh->path);
                 F0.resize(0, 0);
                 V0.resize(0, 0);
+            } else if (params.uv == RemeshParams::UVUnwrap) {
+                outUVs = unwrap(Fr, Vr);
             }
             r.fetch = spool.put(Fr, Vr, outUVs);
             replacements.push_back(std::move(r));

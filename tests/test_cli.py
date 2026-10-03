@@ -471,8 +471,27 @@ def test_uv_transfer(exe, tmp):
     with open(out) as f:
         check(code == 0 and "\nvt " not in f.read() and "UV transfer" not in log, "no UVs without --uv")
 
+    # --uv unwrap: new UVs for every remeshed mesh, NoUV included
+    out = os.path.join(tmp, "uv_unwrap.abc")
+    code, log = run(exe, scene, "-o", out, "-d", "--others", "80%", "--uv", "unwrap")
+    check(code == 0 and log.count("UV unwrap: ") == 3 and "UVs                    = unwrapped (xatlas)" in log,
+          "per-object unwrap reported")
+    if os.path.exists(dump):
+        code, log = run(dump, "--verify", out)
+        check(code == 0 and "all hashes match" in log, "unwrapped .abc: hashes")
+        code, log = run(dump, out)
+        check(log.count("uv {compound}") == 3 and "sourceName=UVMap" in log, "unwrapped .abc: one UVMap per mesh")
+    out = os.path.join(tmp, "uv_unwrap.obj")
+    code, log = run(exe, os.path.join(DATA, "suzanne_open.obj"), "-o", out, "-d", "-f", "40%", "--uv", "unwrap")
+    with open(out) as f:
+        text = f.read()
+    faces = [l for l in text.splitlines() if l.startswith("f ")]
+    check(code == 0 and "UV unwrap: " in log and faces and all("/" in l for l in faces), "whole-file unwrap (.obj)")
+    uvs = [tuple(float(x) for x in l.split()[1:3]) for l in text.splitlines() if l.startswith("vt ")]
+    check(uvs and all(-1e-4 <= u <= 1 + 1e-4 and -1e-4 <= v <= 1 + 1e-4 for u, v in uvs), "unwrapped UVs in [0, 1]")
+
     # Refused before any computation
-    for args, expect in ((["-o", os.path.join(tmp, "x.obj"), "--uv", "bogus"], "Invalid --uv mode"),
+    for args, expect in ((["-o", os.path.join(tmp, "x.obj"), "--uv", "bogus"], "(none, transfer or unwrap)"),
                          (["-o", os.path.join(tmp, "x.ply"), "--uv", "transfer"], "PLY has no per-corner UVs"),
                          (["--uv", "transfer"], "--uv applies to the batch mode")):
         code, log = run(exe, scene, *args)

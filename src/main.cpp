@@ -166,7 +166,7 @@ int main(int argc, char **argv) {
                 skipFailed = true;
             } else if (strcmp("--uv", argv[i]) == 0) {
                 if (++i >= argc) {
-                    cerr << "Missing --uv mode (none or transfer)!" << endl;
+                    cerr << "Missing --uv mode (none, transfer or unwrap)!" << endl;
                     return -1;
                 }
                 uvMode = parse_uv_mode(argv[i]);
@@ -285,8 +285,9 @@ int main(int argc, char **argv) {
         cout << "   -b, --boundaries          Align to boundaries (only applies when the mesh is not closed)" << endl;
         cout << "       --keep-border         Snap the open border back onto the input border (implies -b):" << endl;
         cout << "                             objects touching along their borders stay closed (.obj/.abc)" << endl;
-        cout << "       --uv <mode>           UVs of the output: none (default), transfer (from the" << endl;
-        cout << "                             input, island by island; .obj/.abc output)" << endl;
+        cout << "       --uv <mode>           UVs of the output (.obj/.abc): none (default), transfer" << endl;
+        cout << "                             (from the input, island by island) or unwrap (new" << endl;
+        cout << "                             UVs, xatlas)" << endl;
         cout << "   -r, --rosy <number>     Specifies the orientation symmetry type (2, 4, or 6)" << endl;
         cout << "   -p, --posy <number>       Specifies the position symmetry type (4 or 6)" << endl;
         cout << "   -s, --scale <scale>       Desired world space length of edges in the output" << endl;

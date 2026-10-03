@@ -8,6 +8,7 @@
 #include "abc.h"
 #include "objscene.h"
 #include "uvtransfer.h"
+#include "uvunwrap.h"
 #include "batch.h"
 #include <array>
 #include <algorithm>
@@ -375,8 +376,92 @@ static void test_transfer() {
     }
 }
 
+/* Checks an unwrapped UV set: inside [0, 1], every face wound the same way
+   in UV (the mesh is consistently oriented: no mirrored chart), no two
+   faces covering the same texels */
+static void check_unwrap(const MatrixXu &F, const CornerUVs &set, const std::string &label) {
+    std::vector<uint32_t> sizes, indices, faceIds, cornerIds;
+    extracted_polygons(F, sizes, indices, faceIds, &cornerIds);
+    const int R = 512;
+    std::vector<int> owner(R * R, -1);
+    size_t overlaps = 0, covered = 0, positive = 0, negative = 0, outside = 0, offset = 0;
+    for (size_t k = 0; k < sizes.size(); offset += sizes[k], ++k) {
+        std::vector<Vector2f> uv(sizes[k]);
+        for (uint32_t i = 0; i < sizes[k]; ++i) {
+            uv[i] = set.corners.col(cornerIds[offset + i]);
+            outside += !(uv[i].x() >= -1e-4f && uv[i].x() <= 1 + 1e-4f && uv[i].y() >= -1e-4f && uv[i].y() <= 1 + 1e-4f);
+        }
+        double area = 0;
+        for (uint32_t i = 0; i < sizes[k]; ++i)
+            area += (double) uv[i].x() * uv[(i + 1) % sizes[k]].y() - (double) uv[(i + 1) % sizes[k]].x() * uv[i].y();
+        positive += area > 0;
+        negative += area < 0;
+        /* rasterize the fan at texel centres */
+        for (uint32_t i = 1; i + 1 < sizes[k]; ++i) {
+            const Vector2f a = uv[0] * R, b = uv[i] * R, c = uv[i + 1] * R;
+            auto edge = [](const Vector2f &p, const Vector2f &q, const Vector2f &r) {
+                return (q.x() - p.x()) * (r.y() - p.y()) - (q.y() - p.y()) * (r.x() - p.x());
+            };
+            const float w = edge(a, b, c);
+            if (w == 0)
+                continue;
+            const int x0 = std::max(0, (int) std::floor(std::min(a.x(), std::min(b.x(), c.x()))));
+            const int x1 = std::min(R - 1, (int) std::ceil(std::max(a.x(), std::max(b.x(), c.x()))));
+            const int y0 = std::max(0, (int) std::floor(std::min(a.y(), std::min(b.y(), c.y()))));
+            const int y1 = std::min(R - 1, (int) std::ceil(std::max(a.y(), std::max(b.y(), c.y()))));
+            for (int y = y0; y <= y1; ++y)
+                for (int x = x0; x <= x1; ++x) {
+                    const Vector2f p(x + 0.5f, y + 0.5f);
+                    if (edge(b, c, p) / w < 0 || edge(c, a, p) / w < 0 || edge(a, b, p) / w < 0)
+                        continue;
+                    int &o = owner[y * R + x];
+                    if (o == -1) {
+                        o = (int) k;
+                        ++covered;
+                    } else if (o != (int) k) {
+                        ++overlaps;
+                    }
+                }
+        }
+    }
+    std::cout << "  " << label << ": " << sizes.size() << " faces, " << covered * 100 / (R * R) << "% covered, "
+              << overlaps << " overlapping texels, winding +" << positive << " -" << negative << ", "
+              << outside << " outside" << std::endl;
+    CHECK(outside == 0 && covered > (size_t) (R * R / 5));
+    CHECK(std::min(positive, negative) == 0);
+    CHECK(overlaps <= covered / 1000);   /* texel-centre ties on shared edges only */
+}
+
+static void test_unwrap() {
+    std::cout << "uv: unwrap (xatlas, polygons kept whole, no mirrored chart)" << std::endl;
+    for (int posy : { 4, 3 }) {
+        MatrixXu F, Fr;
+        MatrixXf V, Or;
+        std::vector<UVSet> uvs;
+        remeshed_cylinder(F, V, uvs, Fr, Or, posy);
+        UnwrapStats stats;
+        const CornerUVs set = unwrap_uvs(Fr, Or, "UVMap", &stats);
+        CHECK(set.name == "UVMap" && set.corners.cols() == Fr.rows() * Fr.cols() && stats.charts > 0);
+        check_unwrap(Fr, set, posy == 4 ? "quads" : "triangles");
+        /* the same result every time */
+        CHECK(unwrap_uvs(Fr, Or).corners == set.corners);
+    }
+    /* Quad-dominant output: irregular polygons */
+    MatrixXu F, Fr;
+    MatrixXf V, Or, N, Nf;
+    std::vector<UVSet> uvs;
+    abc::load_abc_mesh(data_path("uv_sets.abc"), "/Cylinder/Cylinder", F, V, nullptr, &uvs);
+    RemeshParams p;
+    p.deterministic = true;
+    p.face_count = 300;
+    p.pure_quad = false;
+    remesh(F, V, N, 0, p, Fr, Or, Nf);
+    check_unwrap(Fr, unwrap_uvs(Fr, Or), "quad-dominant");
+}
+
 void test_uv() {
     test_read();
     test_write();
     test_transfer();
+    test_unwrap();
 }

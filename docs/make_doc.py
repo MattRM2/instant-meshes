@@ -570,7 +570,9 @@ def build(cover_image=None):
         "materials.",
         "The stage metadata (upAxis, metersPerUnit, defaultPrim, frame range) is copied. The layer must be an "
         ".usda with another name than the input; the sublayer path is relative when both sit in the same folder.",
-        "Whole-file mode reads USD like any mesh and can write a standalone <b>.usda</b> stage.",
+        "Whole-file mode reads USD like any mesh and can write a standalone <b>.usda</b> stage: in meters "
+        "(metersPerUnit = 1) from an OBJ, PLY or Alembic file, as Blender reads them; with the units and up "
+        "axis of the input from a USD file.",
     ])
     story += [Spacer(1, 4 * mm), SubHeader("3.6", "USD: proxies (--proxy)"), Spacer(1, 3 * mm),
               p("With <b>--proxy</b>, -m and --others keep the meshes of the scene and add their remeshed copy as "

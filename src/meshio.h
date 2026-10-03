@@ -41,17 +41,27 @@ struct CornerUVs {
 /// A UV set of a loaded triangle mesh as CornerUVs (writing it back as is)
 extern CornerUVs corner_uvs(const UVSet &set, const MatrixXu &F);
 
-/// Loads a mesh (.obj/.ply/.abc) or point cloud (.aln). If 'polygons' is
+/// Units and up axis of a scene: the stage metadata of a USD file; the
+/// other formats carry none, 1 unit = 1 meter and Y up (as Blender reads
+/// and writes OBJ and Alembic files)
+struct SceneUnits {
+    double metersPerUnit = 1.0;
+    std::string upAxis = "Y";
+};
+
+/// Loads a mesh (.obj/.ply/.abc/.usd) or point cloud (.aln). If 'polygons' is
 /// given, it receives the number of polygons of the file before
 /// triangulation (as shown in a DCC), 0 for a point cloud. If 'uvs' is
 /// given, it receives the UV sets of the mesh, per triangle corner (OBJ and
-/// Alembic; a set is kept only if every loaded mesh has it).
+/// Alembic; a set is kept only if every loaded mesh has it). 'units'
+/// receives the units of the file (see SceneUnits).
 extern void
 load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F,
                         MatrixXf &V, MatrixXf &N,
                         const ProgressCallback &progress = ProgressCallback(),
                         uint64_t *polygons = nullptr,
-                        std::vector<UVSet> *uvs = nullptr);
+                        std::vector<UVSet> *uvs = nullptr,
+                        SceneUnits *units = nullptr);
 
 /**
  * Split a polygon with n >= 3 corners (positions given in corner order) into
@@ -91,7 +101,8 @@ load_pointcloud(const std::string &filename, MatrixXf &V, MatrixXf &N,
                 const ProgressCallback &progress = ProgressCallback());
 
 /// 'uvs': UV sets of the extracted mesh (OBJ: the first one; Alembic: the
-/// first one as .geom/uv, the others in .arbGeomParams; PLY: none)
+/// first one as .geom/uv, the others in .arbGeomParams; PLY: none);
+/// 'units': written as the stage metadata of a .usda
 extern void write_mesh(const std::string &filename, const MatrixXu &F,
                       const MatrixXf &V,
                       const MatrixXf &N = MatrixXf(),
@@ -99,7 +110,8 @@ extern void write_mesh(const std::string &filename, const MatrixXu &F,
                       const MatrixXf &UV = MatrixXf(),
                       const MatrixXf &C = MatrixXf(),
                       const ProgressCallback &progress = ProgressCallback(),
-                      const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>());
+                      const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>(),
+                      const SceneUnits &units = SceneUnits());
 
 /**
  * Polygons of an extracted mesh (F with 3 or 4 rows; a quad with F(2) ==

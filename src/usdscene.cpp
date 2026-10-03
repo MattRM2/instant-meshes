@@ -1169,7 +1169,18 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         cout << "   " << n << endl;
 }
 
-void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &V, const std::vector<CornerUVs> &uvs) {
+SceneUnits stage_units(const Layer &layer) {
+    SceneUnits units;
+    auto mpu = layer.meta.find("metersPerUnit");
+    units.metersPerUnit = mpu != layer.meta.end() && mpu->second.kind == Value::Numbers && !mpu->second.numbers.empty()
+                        ? mpu->second.num() : 0.01;
+    auto up = layer.meta.find("upAxis");
+    units.upAxis = up != layer.meta.end() && up->second.kind == Value::Strings && up->second.str() == "Z" ? "Z" : "Y";
+    return units;
+}
+
+void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &V, const std::vector<CornerUVs> &uvs,
+                const SceneUnits &units) {
     Timer<> timer;
     cout << "Writing \"" << filename << "\" (V=" << V.cols() << ", F=" << F.cols() << ") .. ";
     cout.flush();
@@ -1198,8 +1209,10 @@ void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &
         std::ofstream os(temp, std::ios::binary | std::ios::trunc);
         if (!os)
             throw std::runtime_error("Unable to create \"" + temp + "\"!");
+        /* without metersPerUnit, USD readers take centimeters */
         os << "#usda 1.0\n(\n    defaultPrim = " << quote(name) << "\n    doc = \"Instant Meshes\"\n"
-           << "    upAxis = \"Y\"\n)\n\n";
+           << "    metersPerUnit = " << num17(units.metersPerUnit) << "\n"
+           << "    upAxis = " << quote(units.upAxis) << "\n)\n\n";
         os << "def Xform " << quote(name) << " (\n    kind = \"component\"\n)\n{\n";
         os << "    def Mesh " << quote(name) << "\n    {\n";
         write_geometry(os, m, "        ", std::map<std::string, std::string>());

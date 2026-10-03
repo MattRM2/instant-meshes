@@ -411,7 +411,8 @@ void batch_process(const std::string &input, const std::string &output,
     uint64_t polygons = 0;
     const bool transfer = params.uv == RemeshParams::UVTransfer;
     std::vector<UVSet> uvs;
-    load_mesh_or_pointcloud(input, F, V, N, ProgressCallback(), &polygons, transfer ? &uvs : nullptr);
+    SceneUnits units;
+    load_mesh_or_pointcloud(input, F, V, N, ProgressCallback(), &polygons, transfer ? &uvs : nullptr, &units);
 
     /* remesh() consumes the input: the UV transfer works on a copy */
     MatrixXu F0;
@@ -428,7 +429,7 @@ void batch_process(const std::string &input, const std::string &output,
     else if (params.uv == RemeshParams::UVUnwrap)
         outUVs = unwrap(F_extr, O_extr);
 
-    write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr, MatrixXf(), MatrixXf(), ProgressCallback(), outUVs);
+    write_mesh(output, F_extr, O_extr, MatrixXf(), Nf_extr, MatrixXf(), MatrixXf(), ProgressCallback(), outUVs, units);
 }
 
 /* Polygon meshes of a scene file (Alembic meshes, OBJ objects) */

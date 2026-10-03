@@ -553,6 +553,13 @@ def test_usd_scenes(exe, tmp):
     code2, meshes = list_meshes(exe, out)
     check(code == 0 and code2 == 0 and len(meshes) == 1 and list(meshes.values())[0] > 0,
           "OBJ -> .usda read back: %s" % meshes)
+    # units: an OBJ is in meters (USD readers take centimeters when none is
+    # written); a USD input keeps its own
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check("metersPerUnit = 1\n" in text and 'upAxis = "Y"' in text, "OBJ -> .usda in meters")
+    whole = os.path.join(tmp, "whole_usd.usda")
+    text = open(whole, encoding="utf-8").read() if os.path.exists(whole) else ""
+    check("metersPerUnit = 0.01\n" in text, "USD -> .usda keeps the units of the input")
 
 
 

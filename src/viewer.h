@@ -19,6 +19,7 @@
 #include "field.h"
 #include "bvh.h"
 #include "meshstats.h"
+#include "meshio.h"
 #include <set>
 
 using nanogui::Alignment;
@@ -246,6 +247,7 @@ protected:
     Float mTargetFaces = 0;            /* output faces, pure quad subdivision included */
     Float mUnsafeVertexCount = std::numeric_limits<Float>::infinity();
     uint64_t mInputPolygons = 0;
+    SceneUnits mUnits;                 /* of the loaded file, written to a .usda */
 
     /* Progress display */
     std::function<void(const std::string &, Float)> mProgress;

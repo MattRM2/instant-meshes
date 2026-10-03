@@ -26,9 +26,12 @@ extern "C" {
 }
 
 void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf &V, MatrixXf &N,
-              const ProgressCallback &progress, uint64_t *polygons, std::vector<UVSet> *uvs) {
+              const ProgressCallback &progress, uint64_t *polygons, std::vector<UVSet> *uvs,
+              SceneUnits *units) {
     if (polygons)
         *polygons = 0;
+    if (units)
+        *units = SceneUnits();
     if (uvs)
         uvs->clear();
     std::string extension;
@@ -41,6 +44,8 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
         Timer<> timer;
         usd::Layer layer(filename);
         usd::load_all(layer, F, V, polygons, uvs);
+        if (units)
+            *units = usd::stage_units(layer);
         cout << "done. (V=" << V.cols() << ", F=" << F.cols() << ", took " << timeString(timer.value()) << ")" << endl;
     } else if (extension == ".ply") {
         load_ply(filename, F, V, N, false, progress);
@@ -59,7 +64,8 @@ void load_mesh_or_pointcloud(const std::string &filename, MatrixXu &F, MatrixXf 
 void write_mesh(const std::string &filename, const MatrixXu &F,
                 const MatrixXf &V, const MatrixXf &N, const MatrixXf &Nf,
                 const MatrixXf &UV, const MatrixXf &C,
-                const ProgressCallback &progress, const std::vector<CornerUVs> &uvs) {
+                const ProgressCallback &progress, const std::vector<CornerUVs> &uvs,
+                const SceneUnits &units) {
     std::string extension;
     if (filename.size() > 4)
         extension = str_tolower(filename.substr(filename.size()-4));
@@ -71,7 +77,7 @@ void write_mesh(const std::string &filename, const MatrixXu &F,
     else if (extension == ".abc")
         abc::write_abc(filename, F, V, progress, uvs);
     else if (filename.size() > 5 && str_tolower(filename.substr(filename.size() - 5)) == ".usda")
-        usd::write_usda(filename, F, V, uvs);
+        usd::write_usda(filename, F, V, uvs, units);
     else
         throw std::runtime_error("write_mesh: Unknown file extension \"" + extension + "\" (.ply/.obj/.abc/.usda are supported)");
 }

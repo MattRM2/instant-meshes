@@ -65,9 +65,15 @@ std::vector<std::string> proxy_paths(const Layer &layer, const std::vector<std::
 void write_proxies(const Layer &layer, const std::string &output,
                    const std::vector<abc::Replacement> &proxies);
 
-/// A new .usda stage holding one extracted mesh (whole-file output)
+/// The metersPerUnit and upAxis of a layer (USD's fallbacks when not
+/// authored: 0.01, centimeters, and Y)
+SceneUnits stage_units(const Layer &layer);
+
+/// A new .usda stage holding one extracted mesh (whole-file output), with
+/// the given units (metersPerUnit, upAxis)
 void write_usda(const std::string &filename, const MatrixXu &F, const MatrixXf &V,
-                const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>());
+                const std::vector<CornerUVs> &uvs = std::vector<CornerUVs>(),
+                const SceneUnits &units = SceneUnits());
 
 /// Whether a file name has a USD extension (.usd, .usda, .usdc, .usdz)
 bool is_usd_file(const std::string &filename);

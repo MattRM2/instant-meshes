@@ -729,7 +729,8 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
 
             if (filename == "")
                 return;
-            write_mesh(filename, mF_extracted, mV_extracted, MatrixXf(), mNf_extracted);
+            write_mesh(filename, mF_extracted, mV_extracted, MatrixXf(), mNf_extracted, MatrixXf(), MatrixXf(),
+                       ProgressCallback(), std::vector<CornerUVs>(), mUnits);
         } catch (const std::exception &e) {
             new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
         }
@@ -3345,7 +3346,7 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
     glfwMakeContextCurrent(nullptr);
 
     try {
-        load_mesh_or_pointcloud(filename, F, V, N, mProgress, &mInputPolygons);
+        load_mesh_or_pointcloud(filename, F, V, N, mProgress, &mInputPolygons, nullptr, &mUnits);
     } catch (const std::exception &e) {
         new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
         glfwMakeContextCurrent(mGLFWWindow);

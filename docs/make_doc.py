@@ -85,7 +85,7 @@ def inner_page(c, doc):
     c.setFont("Roboto", 7.5)
     c.setFillColor(MUTED)
     c.drawString(MARGIN, 10 * mm, "%s  \u2014  Release %s" % (PRODUCT, VERSION))
-    c.drawRightString(W - MARGIN, 10 * mm, "Native Alembic  |  Matt Dark UI")
+    c.drawRightString(W - MARGIN, 10 * mm, "Native Alembic and USD  |  Matt Dark UI")
 
 
 def cover_page(c, doc):
@@ -144,7 +144,7 @@ def cover_page(c, doc):
     c.drawCentredString(cx, y - 37 * mm, "Documentation  \u2014  MattRM2 fork of Instant Meshes 1.0")
     c.setFillColor(TEXT)
     c.setFont("Roboto", 9.5)
-    c.drawCentredString(cx, y - 49 * mm, "Field-aligned automatic retopology with native Alembic (.abc) support, per-mesh")
+    c.drawCentredString(cx, y - 49 * mm, "Field-aligned automatic retopology with native Alembic and USD support, per-mesh")
     c.drawCentredString(cx, y - 54 * mm, "remeshing, percentage targets and the Matt Dark interface.")
 
     c.setFillColor(MUTED)
@@ -352,9 +352,10 @@ SECTIONS = [
     (1, "Overview", ["1.1 What this fork adds", "1.2 Installation", "1.3 Files in the release"]),
     (2, "The Matt Dark Interface", ["2.1 Panel reference", "2.2 Target: faces or percentage",
                                     "2.3 Flow line colors", "2.4 Typical workflow"]),
-    (3, "Alembic Support", ["3.1 What is read", "3.2 What is written", "3.3 Robustness"]),
+    (3, "Alembic and USD Support", ["3.1 What is read", "3.2 What is written", "3.3 Robustness",
+                                    "3.4 USD: what is read", "3.5 USD: the .usda layer written"]),
     (4, "Command Line", ["4.1 Batch mode", "4.2 Options", "4.3 Examples"]),
-    (5, "Per-Mesh Remeshing (Alembic and OBJ)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
+    (5, "Per-Mesh Remeshing (Alembic, OBJ, USD)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
                                                  "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
                                                  "5.5 Touching objects: --keep-border",
                                                  "5.6 Following a long run: --progress"]),
@@ -382,14 +383,16 @@ def build(cover_image=None):
               p("<b>Instant Meshes</b> turns dense or messy geometry (scans, sculpts, boolean results) into a clean "
                 "quad or triangle mesh whose edges follow the shape of the model. This release is a fork of "
                 "Instant Meshes 1.0 that keeps the original algorithm and its robustness, and adds what a VFX "
-                "pipeline needs: <b>native Alembic</b> input and output, <b>per-mesh remeshing</b> inside an Alembic "
+                "pipeline needs: <b>native Alembic and USD</b> input and output, <b>per-mesh remeshing</b> inside an Alembic "
                 "scene, <b>percentage targets</b>, and a restyled <b>Matt Dark</b> interface."),
               Spacer(1, 4 * mm), SubHeader("1.1", "What this fork adds"), Spacer(1, 3 * mm)]
     story += bullets([
         "<b>Alembic (.abc)</b> read and written natively: no Alembic library, no dependency, polygon meshes, "
         "transforms and instances.",
+        "<b>USD (.usd, .usda, .usdc, .usdz)</b> read natively, without the USD library; per-mesh results "
+        "written as a <b>.usda layer</b> over the original file, which stays untouched.",
         "<b>Per-mesh remeshing</b>: remesh MeshA at 75% and MeshB at 85% of their faces, keep the rest of the "
-        "scene untouched, write one file (-m / --others), for <b>Alembic and OBJ</b> scenes.",
+        "scene untouched, write one file (-m / --others), for <b>Alembic, OBJ and USD</b> scenes.",
         "<b>Percentage targets</b>: 75% means 75% of the original face count, in the interface and on the "
         "command line.",
         "<b>UVs</b>: the original's carried over (--uv transfer), or new ones unwrapped (--uv unwrap).",
@@ -487,12 +490,12 @@ def build(cover_image=None):
                      "Click <b>Solve</b> under Orientation field. Check the flow in Direction mode; comb the "
                      "field or move singularities where needed, then stop the solver.",
                      "Click <b>Solve</b> under Position field, then open <b>Export mesh</b>.",
-                     "<b>Extract mesh</b>, check it with <b>Show output</b>, then <b>Save</b> as .obj, .ply "
-                     "or .abc."]),
+                     "<b>Extract mesh</b>, check it with <b>Show output</b>, then <b>Save</b> as .obj, .ply, "
+                     ".abc or .usda."]),
               PageBreak()]
 
     # ---------------- 3 alembic
-    story += [SectionHeader(3, "Alembic Support", "Native reader and writer, no Alembic library"),
+    story += [SectionHeader(3, "Alembic and USD Support", "Native readers and writers, no Alembic or USD library"),
               Spacer(1, 5 * mm),
               p("Alembic files are read and written by code written for this fork, on top of the Ogawa container "
                 "used by every current DCC. The files it writes open in Blender (and any Alembic reader) exactly "
@@ -522,7 +525,53 @@ def build(cover_image=None):
               callout("Tested", "More than 31,000 deliberately corrupted files are read in the test suite without "
                                 "a single crash. Legacy HDF5-based Alembic files are refused with a clear message "
                                 "(re-export them with the Ogawa backend)."),
-              PageBreak()]
+              ]
+    story += [Spacer(1, 4 * mm), SubHeader("3.4", "USD: what is read"), Spacer(1, 3 * mm),
+              p("USD layers are read by code written for this fork too, in their three encodings: text "
+                "(<b>.usda</b>), binary Crate (<b>.usdc</b>, every version from 0.2 to the current 0.13, compressed "
+                "or not) and package (<b>.usdz</b>); a <b>.usd</b> file is recognized by its content. The reader "
+                "is checked against Pixar's USD library: the same scene in the three encodings reads value for "
+                "value as USD reads it."),
+              Spacer(1, 3 * mm)]
+    story += bullets([
+        "Every <b>Mesh</b> prim defined in the file (def), placed in world space through xformOpOrder: "
+        "translate, rotate (every axis order), orient, scale, transform, !invert! and !resetXformStack!.",
+        "Animated transforms and points are read at their <b>first time sample</b>; left-handed meshes are "
+        "turned right-handed.",
+        "<b>UV primvars</b> (texCoord2f, or float2 named st / uv), indexed or not, faceVarying, vertex or "
+        "uniform.",
+        "Classes, overs and inactive prims are skipped; meshes below an instanceable prim or a PointInstancer "
+        "are marked as instanced. References, payloads and sublayers are not followed yet: only the meshes "
+        "of the file itself are seen.",
+    ])
+    story += [Spacer(1, 4 * mm), SubHeader("3.5", "USD: the .usda layer written"), Spacer(1, 3 * mm),
+              p("In per-mesh mode, the result is not a copy of the scene but a light <b>.usda layer</b> that "
+                "loads the original as a sublayer and overrides only the remeshed meshes. Open the layer in "
+                "Blender, Houdini, Maya or usdview to see the scene with the new meshes; the original file is "
+                "never modified."),
+              Spacer(1, 3 * mm),
+              codeblock(['InstantMeshes.exe asset.usdc -o asset_retopo.usda -m "Hero*=50%" --uv transfer',
+                         "",
+                         "#usda 1.0  (asset_retopo.usda, simplified)",
+                         '(  subLayers = [@./asset.usdc@]  upAxis = "Y"  metersPerUnit = 0.01 )',
+                         'over "World" { over "geo" { over "Hero" {',
+                         "    int[] faceVertexCounts = [4, 4, 4, ...]",
+                         "    point3f[] points = [...]",
+                         "    normal3f[] normals = None",
+                         '    texCoord2f[] primvars:st = [...] (interpolation = "faceVarying")',
+                         "} } }"])]
+    story += bullets([
+        "Points are written in the mesh's own space: its transforms, material, purpose and other properties "
+        "come from the original.",
+        "Normals, non-constant primvars (colors...), creases, corners and holes are <b>blocked</b> (= None): they "
+        "no longer match the topology. UVs are written again when --uv is given.",
+        "<b>GeomSubsets</b> (per-face materials) are deactivated; the mesh is bound to the most used of their "
+        "materials.",
+        "The stage metadata (upAxis, metersPerUnit, defaultPrim, frame range) is copied. The layer must be an "
+        ".usda with another name than the input; the sublayer path is relative when both sit in the same folder.",
+        "Whole-file mode reads USD like any mesh and can write a standalone <b>.usda</b> stage.",
+    ])
+    story += [PageBreak()]
 
     # ---------------- 4 command line
     story += [SectionHeader(4, "Command Line", "Batch remeshing from scripts, farms and DCC tools"),
@@ -535,7 +584,7 @@ def build(cover_image=None):
                          "InstantMeshes.exe input.obj -o output.obj -f 5000 -D"]),
               Spacer(1, 4 * mm), SubHeader("4.2", "Options"), Spacer(1, 3 * mm),
               table([["Option", "Meaning"],
-                     ["-o, --output <file>", "Output .obj, .ply or .abc (batch mode)"],
+                     ["-o, --output <file>", "Output .obj, .ply, .abc or .usda (batch mode)"],
                      ["-f, --faces <n> | <n>%", "Face count, or percentage of the input polygons (75%)"],
                      ["-v <n> / -s <length>", "Vertex count / edge length in world units"],
                      ["-D, --dominant", "Quad-dominant output (no pure quad subdivision)"],
@@ -545,7 +594,7 @@ def build(cover_image=None):
                      ["-S, --smooth <n>", "Smoothing iterations (default 2)"],
                      ["-d / -t <n>", "Same result on every run (slower) / number of threads"],
                      ["--uv <mode>", "UVs of the output: none (default), transfer or unwrap (section 6)"],
-                     ["-m, --mesh <name>=<target>", "Per-mesh remeshing of an .abc or .obj (section 5)"],
+                     ["-m, --mesh <name>=<target>", "Per-mesh remeshing of an .abc, .obj or USD scene (section 5)"],
                      ["--others <target>", "Target for every other mesh of the scene"],
                      ["--list / --dry-run", "List the meshes (--sort asc|desc, --top <n>) / print the plan"],
                      ["--skip-failed / --progress", "Copy failed meshes unchanged and go on / print the progress"],
@@ -557,14 +606,17 @@ def build(cover_image=None):
                          "# Triangles, exact count, sharp edges kept",
                          "InstantMeshes.exe part.abc -o part_tri.abc -r 6 -p 6 -f 20000 -c 30",
                          "# Replace the input file in place",
-                         "InstantMeshes.exe scene.abc -o scene.abc -f 60%"])]),
+                         "InstantMeshes.exe scene.abc -o scene.abc -f 60%",
+                         "# A USD asset: a .usda layer over it, the original untouched",
+                         'InstantMeshes.exe asset.usdz -o asset_retopo.usda -m "Hero=40%" --uv transfer'])]),
               PageBreak()]
 
     # ---------------- 5 per-mesh
-    story += [SectionHeader(5, "Per-Mesh Remeshing (Alembic and OBJ)", "Remesh some objects, keep the rest of the scene"),
+    story += [SectionHeader(5, "Per-Mesh Remeshing (Alembic, OBJ, USD)", "Remesh some objects, keep the rest of the scene"),
               Spacer(1, 5 * mm),
-              p("With <b>-m</b> and <b>--others</b>, each chosen mesh of an Alembic or OBJ scene is remeshed on its "
-                "own, with its own target, and written back into a copy of the scene, in the same format. "
+              p("With <b>-m</b> and <b>--others</b>, each chosen mesh of an Alembic, OBJ or USD scene is remeshed on "
+                "its own, with its own target, and written back into a copy of the scene, in the same format "
+                "(USD: into a .usda layer over the scene, see 3.5). "
                 "Everything else, other objects, cameras, curves, animation and metadata, is copied untouched."),
               Spacer(1, 3 * mm),
               codeblock(['InstantMeshes.exe scene.abc -o scene_retopo.abc -m "MeshA=75%" -m "MeshB=85%" --others 25%']),
@@ -721,7 +773,9 @@ def build(cover_image=None):
         "read at the first frame.",
         "Remeshed meshes lose their normals (new topology), and their UVs unless --uv transfer is given.",
         "Point clouds (.aln) accept face counts, not percentages.",
-        "The per-mesh mode (-m / --others, Alembic and OBJ) is available on the command line; the interface "
+        "USD: references, payloads, sublayers and variants are not composed yet; the meshes of the file "
+        "itself are read. Per-mesh output is a .usda layer only.",
+        "The per-mesh mode (-m / --others, Alembic, OBJ and USD) is available on the command line; the interface "
         "remeshes the whole loaded file.",
         "<b>Memory</b>, per-mesh mode: the remeshing itself takes about 800 bytes per input vertex, for one mesh "
         "at a time (the peak is that of the largest remeshed mesh, not of the scene). An Alembic file is read on "
@@ -735,7 +789,7 @@ def build(cover_image=None):
                 "<i>Instant Field-Aligned Meshes</i>, ACM Transactions on Graphics (SIGGRAPH Asia 2015). "
                 "BSD license, see LICENSE.txt."),
               Spacer(1, 2 * mm),
-              p("This fork (Alembic support, per-mesh remeshing, percentage targets, Matt Dark interface): "
+              p("This fork (Alembic and USD support, per-mesh remeshing, percentage targets, Matt Dark interface): "
                 "Matthieu Barbi\u00e9, 2026, same license. Source: https://%s" % REPO),
               Spacer(1, 2 * mm),
               p("Poppins typeface (interface): The Poppins Project Authors, SIL Open Font License 1.1, see OFL.txt. "

@@ -14,7 +14,7 @@ This repository contains the interactive meshing software developed as part of t
 > [Project page](http://igl.ethz.ch/projects/instant-meshes/)
 
 
-## Ce fork : support natif d'Alembic (.abc)
+## Ce fork : support natif d'Alembic (.abc) et d'USD
 
 Fork de [wjakob/instant-meshes](https://github.com/wjakob/instant-meshes) qui
 ajoute la lecture et l'écriture des fichiers Alembic **sans aucune
@@ -24,6 +24,11 @@ d'empreintes (MurmurHash3 / SpookyHash) sont implémentés dans `src/ogawa.*`,
 `src/abc*.cpp`. Géométrie polygonale uniquement, pas d'animation (un fichier
 animé est lu à sa première image).
 
+USD (`.usd`, `.usda`, `.usdc`, `.usdz`) est lu de la même façon, **sans la
+bibliothèque USD** (`src/usd*.cpp`) : texte, binaire Crate (versions 0.2 à
+0.13, compressé ou non) et paquet usdz, vérifiés valeur par valeur contre la
+bibliothèque de Pixar.
+
 ### Ligne de commande
 
 ```
@@ -32,16 +37,16 @@ InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 
 | Option | Rôle |
 |---|---|
-| `-o fichier.abc` | Sortie Alembic (aussi `.obj` / `.ply`) ; peut être le fichier d'entrée (remplacement atomique) |
+| `-o fichier.abc` | Sortie Alembic (aussi `.obj` / `.ply` / `.usda`) ; peut être le fichier d'entrée (remplacement atomique) |
 | `-f 75%` | Objectif en pourcentage des polygones d'origine (tels qu'affichés dans Blender) ; `-f 5000` = nombre de faces |
-| `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) ou les objets d'un `.obj` |
-| `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier (`.abc` ou `.obj`) |
+| `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) ou les objets d'un `.obj` ou d'un fichier USD |
+| `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier (`.abc` ou `.obj`), ou dans un calque `.usda` posé sur un fichier USD |
 | `--others <cible>` | Remaille aussi tous les autres maillages ; sans cette option ils sont recopiés intacts |
 | `--sort asc\|desc`, `--top <n>` | Avec `--list` : tri par nombre de faces croissant / décroissant, et seulement les n premiers (`--sort desc --top 10` = les 10 objets les plus lourds) |
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
-| `--uv transfer` | Transfère toutes les cartes UV de l'original sur le maillage remaillé, îlot par îlot (aucune face étirée sur une couture), en fichier entier comme en mode par objet ; sortie `.obj` ou `.abc` (`--uv none` par défaut) |
+| `--uv transfer` | Transfère toutes les cartes UV de l'original sur le maillage remaillé, îlot par îlot (aucune face étirée sur une couture), en fichier entier comme en mode par objet ; sortie `.obj`, `.abc` ou `.usda` (`--uv none` par défaut) |
 | `--uv unwrap` | Nouvelles UV pour le maillage remaillé (xatlas, intégré) : îlots aplatis avec peu de déformation et rangés dans le carré [0, 1], polygones jamais coupés, aucun îlot en miroir ni recouvrement ; une carte `UVMap` |
-| `--keep-border` | Replace le bord libre remaillé exactement sur le bord d'origine (coins et courbes compris) : des objets qui se touchent, comme des plaques de sol, restent jointifs après un remaillage séparé. Implique `-b` ; sortie `.obj` ou `.abc` |
+| `--keep-border` | Replace le bord libre remaillé exactement sur le bord d'origine (coins et courbes compris) : des objets qui se touchent, comme des plaques de sol, restent jointifs après un remaillage séparé. Implique `-b` ; sortie `.obj`, `.abc` ou `.usda` |
 | `--progress` | Affiche un bloc de progression bien visible (3 lignes) avant le premier maillage et après chaque maillage traité : pourcentage pondéré par les faces d'entrée, barre, maillages faits / total, temps écoulé et temps restant estimé |
 | `--skip-failed` | Un maillage impossible à remailler (ex. aucune face pour une cible trop petite) est recopié intact au lieu de tout arrêter ; la liste des maillages sautés est affichée à la fin |
 
@@ -77,6 +82,25 @@ objets non visés gardent leurs lignes telles quelles (positions, UV, normales,
 matériaux), seuls leurs indices de faces sont renumérotés ; un objet remaillé
 garde son matériau le plus utilisé (un OBJ ne peut pas laisser un objet sans
 matériau).
+
+Scènes USD : même mode par objet, mais la sortie est un **calque `.usda`**
+léger qui charge l'original en sous-calque (`subLayers`) et ne surcharge
+(`over`) que les maillages remaillés ; le fichier d'origine n'est jamais
+modifié. Ouvrir le calque dans Blender, Houdini, Maya ou usdview.
+
+```
+InstantMeshes.exe asset.usdc -o asset_retopo.usda -m "Hero*=50%" --uv transfer
+```
+
+- Lu : les prims `Mesh` définis (`def`) du fichier, placés par `xformOpOrder`
+  (toutes les opérations, `!invert!`, `!resetXformStack!`), première
+  image si animé, UV en primvars `texCoord2f` (ou `st` / `uv`).
+- Écrit pour un maillage remaillé : points (dans l'espace du maillage),
+  faces, `extent`, UV si `--uv` ; normales, primvars non constants,
+  plis et trous bloqués (`= None`) ; `GeomSubset` désactivés et maillage lié
+  à leur matériau le plus utilisé. Métadonnées de la scène recopiées.
+- Pas encore : références, payloads, sous-calques et variantes ne sont pas
+  composés (seuls les maillages du fichier lui-même sont vus).
 
 Mémoire, en mode par objet : un seul maillage est remaillé à la fois (environ
 800 octets par sommet d'entrée), le pic est donc celui du plus gros objet

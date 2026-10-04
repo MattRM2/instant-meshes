@@ -680,6 +680,54 @@ def test_usd_binary(exe, tmp):
     check(code != 0 and "holds every file it uses" in log, "a layer over the scene cannot be a .usdz")
 
 
+def test_projects(exe, tmp):
+    print("projects (.imd): --save-imd, job.imd -o")
+    import shutil
+    work = os.path.join(tmp, "imd")
+    os.makedirs(work)
+    scene = os.path.join(work, "scene.abc")
+    shutil.copy(os.path.join(DATA, "scene_ab.abc"), scene)
+    job = os.path.join(work, "job.imd")
+
+    code, log = run(exe, scene, "-d", "-m", "MeshA=50%", "--others", "80%", "--save-imd", job, "--dry-run")
+    check(code == 0 and "Project saved" in log and os.path.exists(job) and "Dry run" in log, "--save-imd --dry-run")
+    code, log = run(exe, job, "--dry-run")
+    plan = plan_lines(log)
+    check(code == 0 and "50%" in plan.get("/Props/MeshA/MeshA", "") and "--others 80%" in plan.get("/Props/MeshB/MeshB", ""),
+          "job.imd --dry-run shows the saved plan")
+
+    out = os.path.join(work, "job.abc")
+    code, log = run(exe, job, "-o", out)
+    code2, meshes = list_meshes(exe, out)
+    check(code == 0 and code2 == 0 and abs(meshes.get("/Props/MeshA/MeshA", 0) - 3936) <= 0.1 * 3936,
+          "job.imd -o runs the job: %s" % meshes)
+    direct = os.path.join(work, "direct.abc")
+    run(exe, scene, "-o", direct, "-d", "-m", "MeshA=50%", "--others", "80%")
+    with open(out, "rb") as f, open(direct, "rb") as g:
+        check(f.read() == g.read(), "the job writes what the command line writes")
+
+    out2 = os.path.join(work, "again.abc")
+    code, log = run(exe, job, "-o", out2)
+    check(code == 0 and "=== " not in log and "done]" in log, "a finished job computes nothing again")
+    with open(out, "rb") as f, open(out2, "rb") as g:
+        check(f.read() == g.read(), "the saved results are written as computed")
+
+    for args, expect in ((["-m", "MeshA=10%"], "carries its own targets"),
+                         (["-o", os.path.join(work, "x.obj")], "write a .abc file")):
+        code, log = run(exe, job, *args)
+        check(code != 0 and expect in log, "job.imd %s -> '%s'" % (" ".join(args), expect))
+    code, log = run(exe, scene, "--save-imd", os.path.join(work, "x.imd"), "-f", "50%")
+    check(code != 0 and "saves the plan of -m / --others" in log, "--save-imd needs the per-mesh mode")
+    with open(job, "rb") as f:
+        data = bytearray(f.read())
+    data[len(data) // 3] ^= 0x5A
+    bad = os.path.join(work, "bad.imd")
+    with open(bad, "wb") as f:
+        f.write(data)
+    code, log = run(exe, bad, "-o", os.path.join(work, "bad.abc"))
+    check(code != 0 and ("corrupted" in log or "invalid" in log), "a damaged project is refused")
+
+
 def test_errors(exe, tmp):
     print("argument errors are reported before any computation")
     src = os.path.join(DATA, "cube_quads.obj")
@@ -722,6 +770,7 @@ def main():
         test_usd_proxies(exe, tmp)
         test_usd_composition(exe, tmp)
         test_usd_binary(exe, tmp)
+        test_projects(exe, tmp)
         test_errors(exe, tmp)
     print("\n%d passed, %d failed" % (passed, failed))
     return 0 if failed == 0 else 1

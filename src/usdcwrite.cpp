@@ -9,6 +9,7 @@
 */
 
 #include "usdcwrite.h"
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <fstream>
@@ -569,7 +570,9 @@ private:
     std::set<std::string> mSkipped;
 };
 
-uint32_t crc32(const std::vector<uint8_t> &data) {
+} // namespace
+
+uint32_t crc32(const uint8_t *data, size_t size) {
     static uint32_t table[256];
     static bool ready = false;
     if (!ready) {
@@ -582,12 +585,63 @@ uint32_t crc32(const std::vector<uint8_t> &data) {
         ready = true;
     }
     uint32_t c = 0xffffffffu;
-    for (uint8_t b : data)
-        c = table[(c ^ b) & 0xff] ^ (c >> 8);
+    for (size_t i = 0; i < size; ++i)
+        c = table[(c ^ data[i]) & 0xff] ^ (c >> 8);
     return c ^ 0xffffffffu;
 }
 
-} // namespace
+std::vector<uint8_t> lz4_compress(const uint8_t *src, size_t n) {
+    /* Greedy matching through a hash of the next 4 bytes. LZ4 rules: matches
+       of 4 bytes or more, offsets below 64 KiB, the last 5 bytes are
+       literals and no match starts in the last 12 bytes */
+    std::vector<uint8_t> out;
+    out.reserve(n / 2 + 16);
+    auto length = [&](size_t extra) {
+        while (extra >= 255) {
+            out.push_back(255);
+            extra -= 255;
+        }
+        out.push_back((uint8_t) extra);
+    };
+    auto sequence = [&](size_t anchor, size_t literals, size_t offset, size_t match) {
+        const size_t m = match >= 4 ? match - 4 : 0;
+        out.push_back((uint8_t) ((std::min<size_t>(literals, 15) << 4) | (match ? std::min<size_t>(m, 15) : 0)));
+        if (literals >= 15)
+            length(literals - 15);
+        out.insert(out.end(), src + anchor, src + anchor + literals);
+        if (!match)
+            return;
+        out.push_back((uint8_t) offset);
+        out.push_back((uint8_t) (offset >> 8));
+        if (m >= 15)
+            length(m - 15);
+    };
+    size_t anchor = 0;
+    if (n > 12) {
+        const size_t limit = n - 12, matchLimit = n - 5;
+        std::vector<uint32_t> table(1 << 14, 0xffffffffu);
+        auto read32 = [&](size_t p) { uint32_t v; memcpy(&v, src + p, 4); return v; };
+        size_t ip = 0;
+        while (ip < limit) {
+            const uint32_t seq = read32(ip);
+            const uint32_t h = (seq * 2654435761u) >> 18;
+            const uint32_t ref = table[h];
+            table[h] = (uint32_t) ip;
+            if (ref != 0xffffffffu && ip - ref <= 65535 && read32(ref) == seq) {
+                size_t len = 4;
+                while (ip + len < matchLimit && src[ref + len] == src[ip + len])
+                    ++len;
+                sequence(anchor, ip - anchor, ip - ref, len);
+                ip += len;
+                anchor = ip;
+            } else {
+                ++ip;
+            }
+        }
+    }
+    sequence(anchor, n - anchor, 0, 0);
+    return out;
+}
 
 std::vector<uint8_t> lz4_literals(const uint8_t *data, size_t size) {
     std::vector<uint8_t> out;
@@ -657,7 +711,7 @@ std::vector<uint8_t> encode_usdz(const std::vector<std::pair<std::string, std::v
     for (const auto &f : files) {
         if (f.second.size() >= 0xffffffffu || out.size() >= 0xffffffffu)
             throw std::runtime_error(".usdz writer: package larger than 4 GB");
-        const uint32_t crc = crc32(f.second), offset = (uint32_t) out.size();
+        const uint32_t crc = crc32(f.second.data(), f.second.size()), offset = (uint32_t) out.size();
         /* data on a 64-byte boundary: an extra field pads the header */
         size_t pad = (64 - (out.size() + 30 + f.first.size()) % 64) % 64;
         if (pad > 0 && pad < 4)

@@ -616,8 +616,16 @@ std::string sublayer_path(const Layer &layer, const std::string &output) {
         const size_t s = p.find_last_of("/\\");
         return s == std::string::npos ? std::string() : p.substr(0, s + 1);
     };
+    auto absolute = [](const std::string &p) {
+#if defined(_WIN32)
+        char buf[4096];
+        if (_fullpath(buf, p.c_str(), sizeof buf))
+            return std::string(buf);
+#endif
+        return p;
+    };
     std::string sub = layer.filename();
-    if (str_tolower(dir_of(sub)) == str_tolower(dir_of(output)))
+    if (str_tolower(dir_of(absolute(sub))) == str_tolower(dir_of(absolute(output))))
         sub = "./" + sub.substr(dir_of(sub).size());
     for (char &c : sub)
         if (c == '\\')

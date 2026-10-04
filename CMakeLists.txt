@@ -176,7 +176,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/serializer.h src/serializer.cpp
   src/batch.h src/batch.cpp
   src/scene.h src/scene.cpp
-  src/usd.h src/usd.cpp src/usda.cpp src/usdc.h src/usdc.cpp src/usdscene.h src/usdscene.cpp src/usdstage.h src/usdstage.cpp src/usdcwrite.h src/usdcwrite.cpp
+  src/usd.h src/usd.cpp src/usda.cpp src/usdc.h src/usdc.cpp src/usdscene.h src/usdscene.cpp src/usdstage.h src/usdstage.cpp src/usdcwrite.h src/usdcwrite.cpp src/project.h src/project.cpp src/spool.h
   src/uvtransfer.h src/uvtransfer.cpp
   src/uvunwrap.h src/uvunwrap.cpp ext/xatlas/xatlas.h ext/xatlas/xatlas.cpp
   src/border.h src/border.cpp
@@ -220,12 +220,12 @@ if (INSTANT_MESHES_TESTS)
   add_executable(im_tests
     tests/test_common.h tests/test_main.cpp
     tests/test_meshio.cpp tests/test_ogawa.cpp tests/test_abc.cpp tests/test_objscene.cpp
-    tests/test_border.cpp tests/test_uv.cpp tests/test_usd.cpp
+    tests/test_border.cpp tests/test_uv.cpp tests/test_usd.cpp tests/test_project.cpp
     src/border.h src/border.cpp
     src/uvtransfer.h src/uvtransfer.cpp
     src/uvunwrap.h src/uvunwrap.cpp ext/xatlas/xatlas.h ext/xatlas/xatlas.cpp
     src/batch.h src/batch.cpp src/scene.h src/scene.cpp
-    src/usd.h src/usd.cpp src/usda.cpp src/usdc.h src/usdc.cpp src/usdscene.h src/usdscene.cpp src/usdstage.h src/usdstage.cpp src/usdcwrite.h src/usdcwrite.cpp
+    src/usd.h src/usd.cpp src/usda.cpp src/usdc.h src/usdc.cpp src/usdscene.h src/usdscene.cpp src/usdstage.h src/usdstage.cpp src/usdcwrite.h src/usdcwrite.cpp src/project.h src/project.cpp src/spool.h
     src/adjacency.h src/adjacency.cpp src/meshstats.h src/meshstats.cpp
     src/hierarchy.h src/hierarchy.cpp src/extract.h src/extract.cpp
     src/field.h src/field.cpp src/bvh.h src/bvh.cpp

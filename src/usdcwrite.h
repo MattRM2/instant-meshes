@@ -21,6 +21,12 @@ std::vector<uint8_t> encode_crate(const std::map<std::string, Value> &meta, cons
 /// A .usdz package of the given files (name, content), the root layer first
 std::vector<uint8_t> encode_usdz(const std::vector<std::pair<std::string, std::vector<uint8_t>>> &files);
 
+/// LZ4 block of 'data' (greedy matching; read back by usdc.h lz4_block)
+std::vector<uint8_t> lz4_compress(const uint8_t *data, size_t size);
+
+/// CRC-32 (zip, PNG)
+uint32_t crc32(const uint8_t *data, size_t size);
+
 /// LZ4 block holding 'data' as literals only (a valid block, no matches)
 std::vector<uint8_t> lz4_literals(const uint8_t *data, size_t size);
 

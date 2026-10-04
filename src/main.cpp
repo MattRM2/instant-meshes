@@ -35,6 +35,7 @@ int main(int argc, char **argv) {
     FaceTarget others;
     bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false, progress = false;
     bool proxy = false, uvGiven = false;
+    std::string saveImd;
     int listSort = 0, listTop = 0;
     RemeshParams::UVMode uvMode = RemeshParams::UVNone;
     #if defined(__APPLE__)
@@ -174,6 +175,12 @@ int main(int argc, char **argv) {
                 uvGiven = true;
             } else if (strcmp("--progress", argv[i]) == 0) {
                 progress = true;
+            } else if (strcmp("--save-imd", argv[i]) == 0) {
+                if (++i >= argc) {
+                    cerr << "Missing --save-imd project file (e.g. job.imd)!" << endl;
+                    return -1;
+                }
+                saveImd = argv[i];
             } else if (strcmp("--proxy", argv[i]) == 0) {
                 proxy = true;
             } else if (strcmp("--keep-border", argv[i]) == 0) {
@@ -238,7 +245,18 @@ int main(int argc, char **argv) {
     const bool objectMode = !meshRules.empty() || others.valid();
     const std::string sceneExt = args.size() == 1 ? extension_of(args[0]) : std::string();
     const bool usdScene = is_usd(sceneExt);
-    if ((listMeshes || objectMode || dryRun) && sceneExt != ".abc" && sceneExt != ".obj" && !usdScene) {
+    const bool projectInput = sceneExt == ".imd";
+    if (projectInput && (objectMode || listMeshes || proxy || !saveImd.empty())) {
+        cerr << "Error: a project (.imd) carries its own targets and settings: run it with -o <scene> "
+                "(or --dry-run), edit it in the interface, or make it again with --save-imd!" << endl;
+        help = true;
+    }
+    if (!saveImd.empty() && (!objectMode || extension_of(saveImd) != ".imd")) {
+        cerr << "Error: --save-imd <job.imd> saves the plan of -m / --others (per-mesh mode) as a project!" << endl;
+        help = true;
+    }
+    if ((listMeshes || objectMode || dryRun) && sceneExt != ".abc" && sceneExt != ".obj" && !usdScene &&
+        !projectInput) {
         cerr << "Error: --list, -m, --others and --dry-run need one Alembic (.abc), OBJ (.obj) or USD "
                 "(.usd/.usda/.usdc/.usdz) input file!" << endl;
         help = true;
@@ -247,7 +265,7 @@ int main(int argc, char **argv) {
         cerr << "Error: --sort and --top apply to --list!" << endl;
         help = true;
     }
-    if (dryRun && !objectMode) {
+    if (dryRun && !objectMode && !projectInput) {
         cerr << "Error: --dry-run shows the plan of -m / --others rules!" << endl;
         help = true;
     }
@@ -284,13 +302,14 @@ int main(int argc, char **argv) {
         cerr << "Error: with -m / --others, give the face targets there (-f, -s and -v remesh the whole file)!" << endl;
         help = true;
     }
-    if (objectMode && !dryRun && (sceneExt == ".abc" || sceneExt == ".obj") &&
+    const bool needOutput = !dryRun && (saveImd.empty() || !batchOutput.empty());
+    if (objectMode && needOutput && (sceneExt == ".abc" || sceneExt == ".obj") &&
         extension_of(batchOutput) != sceneExt) {
         cerr << "Error: -m / --others need an output file (-o) of the same format as the input ("
              << sceneExt << ")!" << endl;
         help = true;
     }
-    if (objectMode && !dryRun && usdScene) {
+    if (objectMode && needOutput && usdScene) {
         /* a layer over the input: it cannot be the input itself, nor a
            package (which would have to hold the input too) */
         const std::string ext = extension_of(batchOutput);
@@ -346,6 +365,9 @@ int main(int argc, char **argv) {
         cout << "       --proxy               USD: keep the meshes, add their remeshed copy as a proxy" << endl;
         cout << "                             (purpose proxy, proxyPrim; UVs transferred unless --uv)" << endl;
         cout << "       --dry-run             Print the plan of -m / --others and stop" << endl;
+        cout << "       --save-imd <job.imd>  Save the plan (and the results) as a project: run it later" << endl;
+        cout << "                             with InstantMeshes job.imd -o <scene>, or open it in the" << endl;
+        cout << "                             interface" << endl;
         cout << "       --skip-failed         A mesh that cannot be remeshed (e.g. no faces for its" << endl;
         cout << "                             target) is copied unchanged instead of stopping" << endl;
         cout << "       --progress            Print the progress after each remeshed mesh (in %" << endl;
@@ -386,13 +408,15 @@ int main(int argc, char **argv) {
     if (proxy && !uvGiven)
         params.uv = RemeshParams::UVTransfer;
 
-    if (listMeshes || objectMode || (!batchOutput.empty() && args.size() == 1)) {
+    if (listMeshes || objectMode || (!batchOutput.empty() && args.size() == 1) || (projectInput && dryRun)) {
         try {
             if (listMeshes)
                 batch_list(args[0], listSort, listTop);
+            else if (projectInput)
+                batch_process_project(args[0], batchOutput, dryRun, progress);
             else if (objectMode)
                 batch_process_objects(args[0], batchOutput, params, meshRules, others, dryRun, skipFailed, progress,
-                                      proxy);
+                                      proxy, saveImd);
             else
                 batch_process(args[0], batchOutput, params);
             return 0;

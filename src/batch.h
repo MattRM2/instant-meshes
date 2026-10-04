@@ -14,6 +14,7 @@
 #pragma once
 
 #include "common.h"
+#include "meshio.h"
 
 /// Remeshing settings shared by all batch modes
 struct RemeshParams {
@@ -71,6 +72,25 @@ extern void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
                    const RemeshParams &params, MatrixXu &F_out, MatrixXf &O_out,
                    MatrixXf &Nf_out, RemeshReport *report = nullptr);
 
+class SceneFile;
+
+/// One mesh of a scene, remeshed on its own (per-mesh mode)
+struct ObjectResult {
+    MatrixXu F;
+    MatrixXf V;
+    std::vector<CornerUVs> uvs;   ///< transferred or unwrapped, as params.uv says
+    RemeshReport report;
+};
+
+/**
+ * Loads the mesh at 'path' of a scene (world space), remeshes it to
+ * 'target' with 'params' (its scale, vertex count and face target are
+ * replaced by 'target') and transfers or unwraps its UVs. Throws when it
+ * cannot be remeshed (no faces for the target...).
+ */
+extern ObjectResult remesh_object(SceneFile &scene, const std::string &path, const FaceTarget &target,
+                                  const RemeshParams &params);
+
 /// Single input -> single output (whole file remeshed as one mesh)
 extern void batch_process(const std::string &input, const std::string &output,
                           const RemeshParams &params);
@@ -88,11 +108,20 @@ extern void batch_list(const std::string &input, int sort = 0, int top = 0);
  * remeshed (error, no faces) is copied unchanged instead of stopping.
  * With 'progress', a progress block (weighted by input faces) is printed
  * after each mesh. With 'proxy' (USD), the selected meshes are kept and
- * the remeshed ones are added as their proxies (purpose "proxy").
+ * the remeshed ones are added as their proxies (purpose "proxy"). With
+ * 'saveImd', the project (plan, settings, results) is saved there.
  */
 extern void batch_process_objects(const std::string &input, const std::string &output,
                                   const RemeshParams &params,
                                   const std::vector<MeshRule> &rules,
                                   const FaceTarget &others, bool dryRun,
                                   bool skipFailed = false, bool progress = false,
-                                  bool proxy = false);
+                                  bool proxy = false, const std::string &saveImd = std::string());
+
+/**
+ * Runs a saved project (job.imd): remeshes its meshes that have a target
+ * and are not done yet, writes the scene to 'output' (if given) and saves
+ * the project back with the results. With 'dryRun', prints the plan only.
+ */
+extern void batch_process_project(const std::string &imd, const std::string &output, bool dryRun,
+                                  bool progress = false);

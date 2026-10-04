@@ -25,6 +25,8 @@
 #include "bvh.h"
 #include "border.h"
 #include "scene.h"
+#include "spool.h"
+#include "project.h"
 #include "uvtransfer.h"
 #include "uvunwrap.h"
 #include <iomanip>
@@ -395,6 +397,38 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
 /*  Batch modes                                                              */
 /* ------------------------------------------------------------------------- */
 
+ObjectResult remesh_object(SceneFile &scene, const std::string &path, const FaceTarget &target,
+                           const RemeshParams &params) {
+    MatrixXu F;
+    MatrixXf V, N;
+    uint64_t polygons = 0;
+    const bool transfer = params.uv == RemeshParams::UVTransfer;
+    std::vector<UVSet> uvs;
+    scene.load(path, F, V, &polygons, transfer ? &uvs : nullptr);
+    MatrixXu F0;
+    MatrixXf V0;
+    if (transfer) {
+        F0 = F;
+        V0 = V;
+    }
+
+    RemeshParams p = params;
+    p.scale = -1;
+    p.vertex_count = -1;
+    p.face_percent = target.percent;
+    p.face_count = target.count;
+    ObjectResult r;
+    MatrixXf Nf;
+    remesh(F, V, N, polygons, p, r.F, r.V, Nf, &r.report);
+    if (r.F.cols() == 0)
+        throw std::runtime_error("Remeshing \"" + path + "\" produced no faces (target too small for this mesh?)");
+    if (transfer)
+        r.uvs = transfer_uvs(F0, V0, uvs, r.F, r.V, path);
+    else if (params.uv == RemeshParams::UVUnwrap)
+        r.uvs = unwrap(r.F, r.V);
+    return r;
+}
+
 void batch_process(const std::string &input, const std::string &output,
                    const RemeshParams &params) {
     cout << endl;
@@ -461,91 +495,6 @@ static void print_progress(double fraction, size_t done, size_t total, double el
     cout << endl << rule << endl;
 }
 
-/* Remeshed meshes waiting for the final write, kept in a temporary file
-   (removed at the end, whatever happens) rather than in memory */
-class Spool {
-public:
-    explicit Spool(const std::string &path) : mPath(path) { }
-    ~Spool() {
-        if (mOut.is_open())
-            mOut.close();
-        if (mCreated)
-            std::remove(mPath.c_str());
-    }
-
-    typedef std::function<void(MatrixXu &, MatrixXf &, std::vector<CornerUVs> &)> Fetch;
-
-    /* Stores a mesh and its UV sets, returns the function that reads them back */
-    Fetch put(const MatrixXu &F, const MatrixXf &V, const std::vector<CornerUVs> &uvs) {
-        if (!mOut.is_open()) {
-            mOut.open(mPath, std::ios::binary | std::ios::trunc);
-            if (!mOut)
-                throw std::runtime_error("Unable to create \"" + mPath + "\"!");
-            mCreated = true;
-        }
-        Record r { mSize, (uint32_t) F.rows(), (uint64_t) F.cols(), (uint64_t) V.cols(), {} };
-        write(F.data(), sizeof(MatrixXu::Scalar) * (size_t) F.size());
-        write(V.data(), sizeof(MatrixXf::Scalar) * (size_t) V.size());
-        for (const CornerUVs &set : uvs) {
-            r.uvNames.push_back(set.name);
-            r.uvCorners.push_back((uint64_t) set.corners.cols());
-            write(set.corners.data(), sizeof(MatrixXf::Scalar) * (size_t) set.corners.size());
-        }
-        return [this, r](MatrixXu &Fo, MatrixXf &Vo, std::vector<CornerUVs> &uvo) { get(r, Fo, Vo, uvo); };
-    }
-
-private:
-    struct Record {
-        uint64_t offset;
-        uint32_t rows;
-        uint64_t faces, vertices;
-        std::vector<std::string> uvNames;
-        std::vector<uint64_t> uvCorners;
-    };
-
-    void write(const void *data, size_t size) {
-        mOut.write((const char *) data, (std::streamsize) size);
-        if (!mOut)
-            throw std::runtime_error("Error while writing \"" + mPath + "\" (disk full?)!");
-        mSize += size;
-    }
-
-    void get(const Record &r, MatrixXu &F, MatrixXf &V, std::vector<CornerUVs> &uvs) {
-        mOut.flush();
-        std::ifstream in(mPath, std::ios::binary);
-        in.seekg((std::streamoff) r.offset);
-        F.resize(r.rows, (std::ptrdiff_t) r.faces);
-        V.resize(3, (std::ptrdiff_t) r.vertices);
-        in.read((char *) F.data(), (std::streamsize) (sizeof(MatrixXu::Scalar) * (size_t) F.size()));
-        in.read((char *) V.data(), (std::streamsize) (sizeof(MatrixXf::Scalar) * (size_t) V.size()));
-        uvs.resize(r.uvNames.size());
-        for (size_t i = 0; i < uvs.size(); ++i) {
-            uvs[i].name = r.uvNames[i];
-            uvs[i].corners.resize(2, (std::ptrdiff_t) r.uvCorners[i]);
-            in.read((char *) uvs[i].corners.data(),
-                    (std::streamsize) (sizeof(MatrixXf::Scalar) * (size_t) uvs[i].corners.size()));
-        }
-        if (!in)
-            throw std::runtime_error("Unable to read back \"" + mPath + "\"!");
-    }
-
-    std::string mPath;
-    std::ofstream mOut;
-    bool mCreated = false;
-    uint64_t mSize = 0;
-};
-
-static std::string mesh_flags(const abc::MeshSummary &m) {
-    std::string flags;
-    if (m.animated)
-        flags += " (animated)";
-    if (m.instanced)
-        flags += " (instanced)";
-    if (!m.purpose.empty())
-        flags += " (" + m.purpose + ")";
-    return flags;
-}
-
 void batch_list(const std::string &input, int sort, int top) {
     const std::vector<abc::MeshSummary> all = list_scene(input);
     /* Sorted through pointers: MeshSummary holds an aligned Eigen matrix */
@@ -577,209 +526,162 @@ void batch_list(const std::string &input, int sort, int top) {
              << " vertices" << mesh_flags(*m) << endl;
 }
 
-void batch_process_objects(const std::string &input, const std::string &output,
-                           const RemeshParams &params, const std::vector<MeshRule> &rules,
-                           const FaceTarget &others, bool dryRun, bool skipFailed, bool progress,
-                           bool proxy) {
-    /* Opened once for the plan, the loads and the write (an OBJ file is
-       parsed once) */
-    const std::unique_ptr<SceneFile> scene = SceneFile::open(input);
-    const std::vector<abc::MeshSummary> meshes = scene->meshes();
-
-    /* Plan: the last matching rule wins, then --others, else untouched */
-    struct Item {
-        const abc::MeshSummary *mesh;
-        FaceTarget target;
-        std::string reason;
-        bool remesh;
-    };
-    std::vector<Item> plan;
-    std::vector<size_t> matches(rules.size(), 0);
-    std::vector<std::string> refused;
-    /* --proxy: proxy and guide meshes do not get one */
-    auto unfit = [proxy](const abc::MeshSummary &m) {
-        return m.animated || m.instanced || (proxy && (m.purpose == "proxy" || m.purpose == "guide"));
-    };
-    for (const abc::MeshSummary &m : meshes) {
-        Item item { &m, FaceTarget(), "", false };
-        int rule = -1;
-        for (size_t r = 0; r < rules.size(); ++r) {
-            if (rule_matches(rules[r].pattern, m.path)) {
-                rule = (int) r;
-                matches[r]++;
-            }
-        }
-        if (rule >= 0) {
-            item.target = rules[rule].target;
-            item.reason = "-m " + rules[rule].text;
-            item.remesh = true;
-            if (unfit(m))
-                refused.push_back(m.path + mesh_flags(m) + ", selected by -m " + rules[rule].text);
-        } else if (others.valid()) {
-            if (unfit(m)) {
-                item.reason = "kept unchanged" + mesh_flags(m);
-            } else {
-                item.target = others;
-                item.reason = "--others " + others.text;
-                item.remesh = true;
-            }
-        } else {
-            item.reason = "kept unchanged";
-        }
-        plan.push_back(item);
-    }
-
-    for (size_t r = 0; r < rules.size(); ++r)
-        if (matches[r] == 0)
-            throw std::runtime_error("-m " + rules[r].text + ": no polygon mesh matches \"" +
-                                     rules[r].pattern + "\" (see --list)");
-    if (!refused.empty()) {
-        std::string list;
-        for (const std::string &s : refused)
-            list += "\n   " + s;
-        throw std::runtime_error(proxy ? "Animated, instanced, proxy or guide meshes cannot get a proxy:" + list
-                                       : "Animated or instanced meshes cannot be remeshed:" + list);
-    }
+/* The plan of a project, the remeshing of its meshes that have a target
+   and are not done yet, the scene written to 'output' (if any), the
+   project saved to 'saveImd' (if any) */
+static void run_project(Project &project, const std::string &label, const std::string &output, bool dryRun,
+                        bool progress, const std::string &saveImd) {
+    const bool proxy = project.options.proxy;
+    const RemeshParams &params = project.options.params;
 
     /* --proxy: where each proxy goes, checked before any computation */
     std::map<std::string, std::string> proxyOf;
     if (proxy) {
         std::vector<std::string> targets;
-        for (const Item &i : plan)
-            if (i.remesh)
-                targets.push_back(i.mesh->path);
-        const std::vector<std::string> where = scene->proxy_paths(targets);
+        for (const ProjectObject &o : project.objects)
+            if (project.target_of(o).valid())
+                targets.push_back(o.mesh.path);
+        const std::vector<std::string> where = project.scene().proxy_paths(targets);
         for (size_t k = 0; k < targets.size(); ++k)
             proxyOf[targets[k]] = where[k];
     }
 
-    size_t width = 0, count = 0;
-    for (const Item &i : plan) {
-        width = std::max(width, i.mesh->path.size());
-        count += i.remesh;
-    }
-    cout << endl << "Plan for \"" << input << "\" (" << count << " of " << plan.size()
-         << (proxy ? " polygon meshes get a proxy):" : " polygon meshes remeshed):") << endl;
-    for (const Item &i : plan) {
-        cout << "   " << std::left << std::setw((int) width) << i.mesh->path << std::right
-             << "  " << std::setw(9) << i.mesh->faces << " faces";
-        if (i.remesh) {
-            cout << "  -> " << (proxy ? "proxy " : "") << i.target.text;
-            if (i.target.percent > 0)
-                cout << " (~" << (uint64_t) std::round(i.mesh->faces * i.target.percent / 100.0) << ")";
+    size_t width = 0, count = 0, todo = 0;
+    for (const ProjectObject &o : project.objects) {
+        width = std::max(width, o.mesh.path.size());
+        if (project.target_of(o).valid()) {
+            ++count;
+            todo += o.state != ObjectState::Done;
         }
-        cout << "   [" << i.reason << "]" << endl;
-        if (proxy && i.remesh)
-            cout << "   " << std::string(width, ' ') << "  proxy: " << proxyOf[i.mesh->path] << endl;
+    }
+    cout << endl << "Plan for \"" << label << "\" (" << count << " of " << project.objects.size()
+         << (proxy ? " polygon meshes get a proxy):" : " polygon meshes remeshed):") << endl;
+    for (const ProjectObject &o : project.objects) {
+        const FaceTarget t = project.target_of(o);
+        cout << "   " << std::left << std::setw((int) width) << o.mesh.path << std::right
+             << "  " << std::setw(9) << o.mesh.faces << " faces";
+        if (t.valid()) {
+            cout << "  -> " << (proxy ? "proxy " : "") << t.text;
+            if (t.percent > 0)
+                cout << " (~" << (uint64_t) std::round(o.mesh.faces * t.percent / 100.0) << ")";
+        }
+        cout << "   [" << project.reason_of(o);
+        if (t.valid() && o.state != ObjectState::Pending)
+            cout << ", " << state_name(o.state);
+        cout << "]" << endl;
+        if (proxy && t.valid())
+            cout << "   " << std::string(width, ' ') << "  proxy: " << proxyOf[o.mesh.path] << endl;
     }
     if (count == 0)
         throw std::runtime_error("Nothing to remesh!");
     if (dryRun) {
+        if (!saveImd.empty()) {
+            project.save(saveImd);
+            cout << "Project saved: \"" << saveImd << "\"" << endl;
+        }
         cout << "Dry run: nothing computed, nothing written." << endl;
         return;
     }
 
     cout << endl << "Running in batch mode:" << endl;
-    cout << "   Input file             = " << input << endl;
+    cout << "   Input file             = " << label << endl;
     cout << "   Output file            = " << output << endl;
     print_settings(params);
 
     /* --progress: weighted by input faces, the remeshing time follows them */
     uint64_t totalFaces = 0, doneFaces = 0;
     size_t done = 0;
-    for (const Item &i : plan)
-        if (i.remesh)
-            totalFaces += i.mesh->faces;
+    for (const ProjectObject &o : project.objects)
+        if (project.target_of(o).valid() && o.state != ObjectState::Done)
+            totalFaces += o.mesh.faces;
     Timer<> clock;
     if (progress)
-        print_progress(0, 0, count, 0, "");
+        print_progress(0, 0, todo, 0, "");
 
-    /* The new meshes wait on disk for the final write, not in memory */
-    Spool spool(output + ".spool.tmp");
-    std::vector<abc::Replacement> replacements;
     std::vector<std::string> skipped, subdivided;
-    for (const Item &i : plan) {
-        if (!i.remesh)
+    for (ProjectObject &o : project.objects) {
+        const FaceTarget t = project.target_of(o);
+        if (!t.valid() || o.state == ObjectState::Done)
             continue;
-        cout << endl << "=== " << i.mesh->path << " -> " << (proxy ? "proxy " : "") << i.target.text << endl;
+        cout << endl << "=== " << o.mesh.path << " -> " << (proxy ? "proxy " : "") << t.text << endl;
         const size_t skippedBefore = skipped.size();
         try {
-            MatrixXu F;
-            MatrixXf V, N;
-            uint64_t polygons = 0;
-            const bool transfer = params.uv == RemeshParams::UVTransfer;
-            std::vector<UVSet> uvs;
-            scene->load(i.mesh->path, F, V, &polygons, transfer ? &uvs : nullptr);
-            MatrixXu F0;
-            MatrixXf V0;
-            if (transfer) {
-                F0 = F;
-                V0 = V;
-            }
-
-            RemeshParams p = params;
-            p.scale = -1;
-            p.vertex_count = -1;
-            p.face_percent = i.target.percent;
-            p.face_count = i.target.count;
-            MatrixXu Fr;
-            MatrixXf Vr, Nf;
-            RemeshReport report;
-            remesh(F, V, N, polygons, p, Fr, Vr, Nf, &report);
-            if (Fr.cols() == 0)
-                throw std::runtime_error("Remeshing \"" + i.mesh->path + "\" produced no faces "
-                                         "(target too small for this mesh?)");
+            const RemeshReport report = project.process(o);
             if (report.subdivided > report.triangles)
-                subdivided.push_back(i.mesh->path + ": " + std::to_string(report.triangles) + " -> " +
+                subdivided.push_back(o.mesh.path + ": " + std::to_string(report.triangles) + " -> " +
                                      std::to_string(report.subdivided) + " triangles");
-            abc::Replacement r;
-            r.path = i.mesh->path;
-            std::vector<CornerUVs> outUVs;
-            if (transfer) {
-                outUVs = transfer_uvs(F0, V0, uvs, Fr, Vr, i.mesh->path);
-                F0.resize(0, 0);
-                V0.resize(0, 0);
-            } else if (params.uv == RemeshParams::UVUnwrap) {
-                outUVs = unwrap(Fr, Vr);
-            }
-            r.fetch = spool.put(Fr, Vr, outUVs);
-            replacements.push_back(std::move(r));
         } catch (const std::exception &e) {
             /* --skip-failed: keep this object as it is and go on */
-            if (!skipFailed)
+            if (!project.options.skipFailed)
                 throw;
+            o.state = ObjectState::Skipped;
             cout << "Skipped, kept unchanged: " << e.what() << endl;
-            skipped.push_back(i.mesh->path + ": " + e.what());
+            skipped.push_back(o.mesh.path + ": " + e.what());
         }
         if (progress) {
-            doneFaces += i.mesh->faces;
+            doneFaces += o.mesh.faces;
             ++done;
-            const double fraction = totalFaces > 0 ? (double) doneFaces / totalFaces : (double) done / count;
-            print_progress(fraction, done, count, (double) clock.value(),
-                           i.mesh->path + (skipped.size() > skippedBefore ? " skipped" : " done"));
+            const double fraction = totalFaces > 0 ? (double) doneFaces / totalFaces : (double) done / todo;
+            print_progress(fraction, done, todo, (double) clock.value(),
+                           o.mesh.path + (skipped.size() > skippedBefore ? " skipped" : " done"));
         }
     }
 
     cout << endl;
     if (!subdivided.empty()) {
         cout << "Input subdivided before remeshing (the heaviest to compute), " << subdivided.size()
-             << " of " << count << " meshes:" << endl;
+             << " of " << todo << " meshes:" << endl;
         for (const std::string &s : subdivided)
             cout << "   " << s << endl;
         cout << endl;
     }
     if (!skipped.empty()) {
-        cout << "Skipped " << skipped.size() << " of " << count
+        cout << "Skipped " << skipped.size() << " of " << todo
              << " meshes (--skip-failed, copied unchanged):" << endl;
         for (const std::string &s : skipped)
             cout << "   " << s << endl;
         cout << endl;
     }
-    if (proxy) {
-        if (replacements.empty())
-            throw std::runtime_error("No proxy could be made, nothing written!");
-        scene->write_proxies(output, replacements);
-    } else {
-        scene->write(output, replacements);
+    if (!output.empty())
+        project.write(output);
+    if (!saveImd.empty()) {
+        project.save(saveImd);
+        cout << "Project saved: \"" << saveImd << "\"" << endl;
     }
+}
+
+void batch_process_objects(const std::string &input, const std::string &output,
+                           const RemeshParams &params, const std::vector<MeshRule> &rules,
+                           const FaceTarget &others, bool dryRun, bool skipFailed, bool progress,
+                           bool proxy, const std::string &saveImd) {
+    /* Opened once for the plan, the loads and the write (an OBJ file is
+       parsed once) */
+    std::unique_ptr<Project> project = Project::create(input);
+    project->options.params = params;
+    project->options.others = others;
+    project->options.proxy = proxy;
+    project->options.skipFailed = skipFailed;
+    project->apply_rules(rules);
+    /* The new meshes wait on disk for the final write, not in memory */
+    project->set_spool((output.empty() ? saveImd : output) + ".spool.tmp");
+    run_project(*project, input, output, dryRun, progress, saveImd);
+}
+
+void batch_process_project(const std::string &imd, const std::string &output, bool dryRun, bool progress) {
+    std::unique_ptr<Project> project = Project::load(imd);
+    /* the output of a scene: same format (Alembic, OBJ), a layer (USD) */
+    auto ext = [](const std::string &f) {
+        const size_t dot = f.rfind('.');
+        return dot == std::string::npos ? std::string() : str_tolower(f.substr(dot));
+    };
+    const std::string in = ext(project->source), out = ext(output);
+    if (!output.empty()) {
+        const bool usd = in == ".usd" || in == ".usda" || in == ".usdc" || in == ".usdz";
+        if (usd && out != ".usda" && out != ".usdc")
+            throw std::runtime_error("The scene of this project is USD: write a .usda or .usdc layer over it!");
+        if (!usd && out != in)
+            throw std::runtime_error("The scene of this project is " + in + ": write a " + in + " file!");
+    }
+    project->set_spool((output.empty() ? imd : output) + ".spool.tmp");
+    run_project(*project, imd, output, dryRun, progress, imd);
 }

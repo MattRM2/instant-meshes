@@ -65,3 +65,4 @@ void test_objscene();
 void test_border();
 void test_uv();
 void test_usd(int fuzz_scale);
+void test_project();

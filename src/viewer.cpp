@@ -685,7 +685,16 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     mSmoothSlider->setTooltip(smoothTooltip);
 
     mSmoothSlider->setCallback([&](Float value) {
-        mSmoothBox->setValue(std::to_string((int) (value * 10)));
+        mSmoothBox->setValue(std::to_string((int) std::round(value * 10)));
+    });
+
+    section(exportPopup, "UVs of the saved mesh");
+    mExportUVBox = new DropDown(exportPopup, { "None", "Transfer", "Unwrap" });
+    mExportUVBox->setTooltip("Transfer: the UVs of the input, island by island. Unwrap: new UVs (xatlas). "
+                             "The same setting as UVs in the Outliner.");
+    mExportUVBox->setCallback([&](int i) {
+        mUVBox->setSelectedIndex(i);
+        setDirty();
     });
 
     section(exportPopup, "Actions");
@@ -1763,7 +1772,7 @@ void Viewer::extractMesh() {
 
     Vector3f red = hex_color(0x111111);   /* output wireframe */
 
-    int smooth_iterations = (int) (mSmoothSlider->value() * 10);
+    int smooth_iterations = (int) std::round(mSmoothSlider->value() * 10);
     extract_faces(adj_extracted, mV_extracted, mN_extracted, mNf_extracted,
                   mF_extracted, posy, mRes.scale(), creaseOut, true,
                   mPureQuadBox->checked(), mBVH, smooth_iterations);
@@ -2083,7 +2092,9 @@ void Viewer::resetState() {
     mPositionSingularityBox->setEnabled(!pointcloud && hasData);
     mSaveBtn->setEnabled(false);
     mSwitchBtn->setEnabled(false);
-    mSmoothSlider->setValue(0.0f/10.f);
+    /* the default of the command line (-S 2): the viewport, the Outliner
+       and the copied command line give the same meshes */
+    mSmoothSlider->setValue(2.0f/10.f);
     mSmoothSlider->callback()(mSmoothSlider->value());
 
     mCreaseBox->setChecked(mCreaseAngle >= 0);
@@ -3866,10 +3877,13 @@ void Viewer::buildOutliner() {
         refreshOutliner();
         return true;
     });
-    mUVBox = new ComboBox(others, { "UVs: none", "UVs: transfer", "UVs: unwrap" });
+    mUVBox = new DropDown(others, { "UVs: none", "UVs: transfer", "UVs: unwrap" });
     mUVBox->setFixedSize(Vector2i(inner - 80 - 8 - 8 - 105, 25));
     mUVBox->setTooltip("--uv: the UVs of the new meshes, transferred from the original or unwrapped (xatlas)");
-    mUVBox->setCallback([&](int) { setDirty(); });
+    mUVBox->setCallback([&](int i) {
+        mExportUVBox->setSelectedIndex(i);
+        setDirty();
+    });
 
     Widget *checks1 = new Widget(win), *checks2 = new Widget(win);
     checks1->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
@@ -4255,8 +4269,25 @@ void Viewer::exportMesh() {
         }, true);
         if (filename == "")
             return;
+        /* UVs: unwrapped, or transferred from the input (read again with its UVs) */
+        const RemeshParams::UVMode mode = (RemeshParams::UVMode) mExportUVBox->selectedIndex();
+        MatrixXu F0;
+        MatrixXf V0, N0;
+        std::vector<UVSet> uvs0;
+        if (mode == RemeshParams::UVTransfer) {
+            if (mProject && mOpenObject >= 0)
+                mProject->scene().load(mProject->objects[(size_t) mOpenObject].mesh.path, F0, V0, nullptr, &uvs0);
+            else
+                load_mesh_or_pointcloud(mFilename, F0, V0, N0, ProgressCallback(), nullptr, &uvs0);
+            if (uvs0.empty())
+                new MessageDialog(this, MessageDialog::Type::Warning, "UVs",
+                                  "The input has no UVs to transfer: the mesh is saved without UVs "
+                                  "(choose Unwrap for new ones).");
+        }
+        const std::vector<CornerUVs> uvs = new_mesh_uvs(F0, V0, uvs0, mF_extracted, mV_extracted, mode,
+                                                        base_name(mFilename));
         write_mesh(filename, mF_extracted, mV_extracted, MatrixXf(), mNf_extracted, MatrixXf(), MatrixXf(),
-                   ProgressCallback(), std::vector<CornerUVs>(), mUnits);
+                   ProgressCallback(), uvs, mUnits);
     } catch (const std::exception &e) {
         new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
     }
@@ -4301,11 +4332,7 @@ RemeshParams Viewer::guiParams() const {
     p.crease_angle = mCreaseBox->checked() ? mCreaseAngle : -1;
     p.extrinsic = mExtrinsicBox->checked();
     p.align_to_boundaries = mAlignToBoundariesBox->checked();
-    try {
-        p.smooth_iter = std::stoi(mSmoothBox->value());
-    } catch (...) {
-        p.smooth_iter = 2;
-    }
+    p.smooth_iter = (int) std::round(mSmoothSlider->value() * 10);   /* as extractMesh() reads it */
     p.pure_quad = mPureQuadBox->checked();
     p.deterministic = mDeterministicBox->checked();
     p.keep_border = mKeepBorderBox->checked();
@@ -4336,6 +4363,7 @@ void Viewer::optionsToGui() {
     mDeterministicBox->setChecked(o.params.deterministic);
     mKeepBorderBox->setChecked(o.params.keep_border);
     mUVBox->setSelectedIndex((int) o.params.uv);
+    mExportUVBox->setSelectedIndex((int) o.params.uv);
     mProxyBox->setChecked(o.proxy);
     mSkipFailedBox->setChecked(o.skipFailed);
     mOthersBox->setValue(o.others.valid() ? o.others.text : "");

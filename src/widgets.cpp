@@ -143,3 +143,46 @@ void ProgressButton::draw(NVGcontext *ctx) {
     nvgFillColor(ctx, textColor);
     nvgText(ctx, textPos.x(), textPos.y() + 1, mCaption.c_str(), nullptr);
 }
+
+/* The popup of a drop-down: below the button, without the side arrow */
+class DropPopup : public nanogui::Popup {
+public:
+    DropPopup(nanogui::Widget *parent, nanogui::Window *parentWindow) : Popup(parent, parentWindow) { }
+
+    void draw(NVGcontext *ctx) override {
+        refreshRelativePlacement();
+        if (!mVisible)
+            return;
+        const int ds = mTheme->mWindowDropShadowSize, cr = mTheme->mWindowCornerRadius;
+        NVGpaint shadow = nvgBoxGradient(ctx, mPos.x(), mPos.y(), mSize.x(), mSize.y(), cr * 2, ds * 2,
+                                         mTheme->mDropShadow, mTheme->mTransparent);
+        nvgBeginPath(ctx);
+        nvgRect(ctx, mPos.x() - ds, mPos.y() - ds, mSize.x() + 2 * ds, mSize.y() + 2 * ds);
+        nvgRoundedRect(ctx, mPos.x(), mPos.y(), mSize.x(), mSize.y(), cr);
+        nvgPathWinding(ctx, NVG_HOLE);
+        nvgFillPaint(ctx, shadow);
+        nvgFill(ctx);
+        nvgBeginPath(ctx);
+        nvgRoundedRect(ctx, mPos.x(), mPos.y(), mSize.x(), mSize.y(), cr);
+        nvgFillColor(ctx, mTheme->mWindowPopup);
+        nvgFill(ctx);
+        Widget::draw(ctx);
+    }
+};
+
+DropDown::DropDown(nanogui::Widget *parent, const std::vector<std::string> &items) : ComboBox(parent) {
+    nanogui::Window *win = window();
+    mPopup->parent()->removeChild(mPopup);
+    mPopup = new DropPopup(win->parent(), win);
+    mPopup->setVisible(false);
+    setItems(items);
+}
+
+void DropDown::performLayout(NVGcontext *ctx) {
+    Widget::performLayout(ctx);
+    const nanogui::Window *win = window();
+    mPopup->setFixedWidth(mSize.x());
+    mPopup->setAnchorHeight(0);
+    mPopup->setAnchorPos(Eigen::Vector2i(absolutePosition().x() - win->position().x(),
+                                         absolutePosition().y() - win->position().y() + mSize.y() + 2));
+}

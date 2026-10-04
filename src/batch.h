@@ -91,6 +91,12 @@ struct ObjectResult {
 extern ObjectResult remesh_object(SceneFile &scene, const std::string &path, const FaceTarget &target,
                                   const RemeshParams &params);
 
+/// The UVs of a new mesh (F, V) of an original (F0, V0, its UV sets uvs0):
+/// those of the original transferred, new ones unwrapped, or none (mode)
+extern std::vector<CornerUVs> new_mesh_uvs(const MatrixXu &F0, const MatrixXf &V0, const std::vector<UVSet> &uvs0,
+                                           const MatrixXu &F, const MatrixXf &V, RemeshParams::UVMode mode,
+                                           const std::string &what);
+
 /// The UVs of a new mesh of a scene mesh: those of the original
 /// transferred, or new ones unwrapped, or none (mode)
 extern std::vector<CornerUVs> object_uvs(SceneFile &scene, const std::string &path, const MatrixXu &F,

@@ -308,7 +308,7 @@ protected:
     OutlinerView *mOutliner = nullptr;
     Label *mOutlinerInfo = nullptr, *mBatchLabel = nullptr;
     TextBox *mFilterBox = nullptr, *mObjectTargetBox = nullptr, *mOthersBox = nullptr;
-    ComboBox *mUVBox = nullptr;
+    ComboBox *mUVBox = nullptr, *mExportUVBox = nullptr;
     CheckBox *mKeepBorderBox = nullptr, *mProxyBox = nullptr, *mSkipFailedBox = nullptr, *mDeterministicBox = nullptr;
     Button *mProcessBtn = nullptr, *mCancelBtn = nullptr, *mUseResultBtn = nullptr, *mWriteSceneBtn = nullptr;
     Button *mOpenObjectBtn = nullptr, *mWholeSceneBtn = nullptr;

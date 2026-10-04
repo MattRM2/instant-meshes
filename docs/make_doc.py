@@ -25,7 +25,7 @@ from reportlab.lib.enums import TA_CENTER
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "InstantMeshes_Documentation.pdf")
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 PRODUCT = "Instant Meshes"
 REPO = "github.com/MattRM2/instant-meshes"
 

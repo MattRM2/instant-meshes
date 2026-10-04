@@ -566,45 +566,95 @@ def test_usd_scenes(exe, tmp):
 def test_usd_proxies(exe, tmp):
     print("USD proxies: --proxy")
     import shutil
+    dump = os.path.join(os.path.dirname(exe), "usd_dump.exe" if os.name == "nt" else "usd_dump")
+    original = os.path.join(DATA, "usd_asset.usdc")
     src = os.path.join(tmp, "asset.usdc")
-    shutil.copy(os.path.join(DATA, "usd_asset.usdc"), src)
-    out = os.path.join(tmp, "asset_proxy.usda")
+    shutil.copy(original, src)
+    copy = os.path.join(tmp, "asset_px.usdc")
+    layer = os.path.join(tmp, "asset_px_proxy.usdc")
+    with open(original, "rb") as f:
+        before = f.read()
 
-    code, log = run(exe, src, "-o", out, "--proxy", "--others", "40%", "--dry-run")
+    def read(path):
+        if not os.path.exists(path):
+            return b""
+        with open(path, "rb") as f:
+            return f.read()
+
+    def dumped(*args):
+        code, out = run(dump, *args)
+        return out if code == 0 else ""
+
+    code, log = run(exe, src, "-o", copy, "--proxy", "--others", "40%", "--dry-run")
     check(code == 0 and "get a proxy" in log and "proxy: /Asset/geo/proxy/Body" in log and
           "proxy: /Asset/geo/proxy/Spinner/Wheel" in log and "kept unchanged (guide)" in log and
-          not os.path.exists(out), "--proxy --dry-run plan")
+          "asset_px_proxy.usdc\", referenced by" in log and "a copy of the scene" in log and
+          not os.path.exists(copy) and not os.path.exists(layer), "--proxy --dry-run plan")
 
-    code, log = run(exe, src, "-o", out, "-d", "--proxy", "--others", "40%")
-    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
-    check(code == 0 and "@./asset.usdc@" in text and 'def Scope "proxy"' in text and 'def Mesh "Body"' in text and
-          "rel proxyPrim = </Asset/geo/proxy/Body>" in text and 'uniform token purpose = "proxy"' in text and
-          'uniform token purpose = "render"' in text and "texCoord2f[] primvars:st" in text and
-          "xformOp:rotateX.timeSamples" in text and "rel material:binding = </Asset/mtl/paint>" in text and
-          'over "Helper"' not in text, "--proxy layer (UVs transferred by default, transforms copied)")
+    # another name: a copy of the scene, that references the proxy layer
+    code, log = run(exe, src, "-o", copy, "-d", "--proxy", "--others", "40%")
+    after = read(copy)
+    check(code == 0 and read(src) == before, "--proxy -o another name: the scene is not touched")
+    check(len(after) > len(before) and after[:16] == before[:16] and after[24:len(before)] == before[24:],
+          "the copy: the scene's bytes, then what is appended (references, new tables)")
+    text = dumped(layer)
+    check('PRIM /Asset/geo/proxy def Scope' in text and "PRIM /Asset/geo/proxy/Body def Mesh" in text and
+          "REL proxyPrim [/Asset/geo/proxy/Body]" in text and "ATTR purpose uniform token = s1 [proxy]" in text and
+          "ATTR purpose uniform token = s1 [render]" in text and "ATTR primvars:st texCoord2f[]" in text and
+          "ATTR xformOp:rotateX float = - (timeSamples)" in text and "REL material:binding [/Asset/mtl/paint]" in text
+          and "Helper" not in text and "subLayers" not in text,
+          "the proxy layer (UVs transferred by default, transforms copied, no sublayer)")
+    stage = dumped("--stage", copy)
+    check("PRIM /Asset/geo/proxy/Spinner/Wheel def Mesh" in stage and
+          "REL proxyPrim [/Asset/geo/proxy/Parts/Bolt]" in stage and "Helper_proxy" not in stage,
+          "the copy composes the proxies (reference to the proxy layer)")
 
-    code, log = run(exe, src, "-o", out, "-d", "--proxy", "-m", "Bolt=50%", "--uv", "none")
-    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
-    check(code == 0 and 'def Mesh "Bolt"' in text and "primvars:st" not in text and 'def Mesh "Body"' not in text,
-          "--proxy --uv none: no UVs")
+    # the scene's own name: edited in place, numbered layers for the next runs
+    code, log = run(exe, src, "-o", src, "-d", "--proxy", "-m", "Bolt=50%", "--uv", "none")
+    text = dumped(os.path.join(tmp, "asset_proxy.usdc"))
+    after = read(src)
+    check(code == 0 and "PRIM /Asset/geo/proxy/Parts/Bolt def Mesh" in text and "primvars:st" not in text and
+          "proxy/Body" not in text and after[24:len(before)] == before[24:] and "the scene itself" in log,
+          "--proxy -o the scene: edited in place (--uv none: no UVs)")
+    code, log = run(exe, src, "-o", src, "-d", "--proxy", "-m", "Asset/geo/render/Body=40%")
+    stage = dumped("--stage", src)
+    check(code == 0 and os.path.exists(os.path.join(tmp, "asset_proxy2.usdc")) and
+          "PRIM /Asset/geo/proxy/Body def Mesh" in stage and "PRIM /Asset/geo/proxy/Parts/Bolt def Mesh" in stage,
+          "a second run: asset_proxy2.usdc, both referenced")
+    code, log = run(exe, src, "-o", src, "-d", "--proxy", "-m", "Asset/geo/render/Body=40%")
+    check(code != 0 and "already exists" in log and "Optimizing" not in log, "the same proxy again is refused")
 
     for args, expect in ((["-m", "Helper=50%"], "cannot get a proxy"),
                          ([], "--proxy adds proxies"),
                          (["-f", "50%"], "--proxy adds proxies")):
-        code, log = run(exe, src, "-o", out, "--proxy", *args)
+        code, log = run(exe, original, "-o", copy, "--proxy", *args)
         check(code != 0 and expect in log and "Optimizing" not in log, "--proxy %s -> '%s'" % (" ".join(args), expect))
+    for out, expect in (("asset.usda", "with its format"), ("asset.usdz", "not a .usdz")):
+        code, log = run(exe, original, "-o", os.path.join(tmp, out), "--proxy", "--others", "40%")
+        check(code != 0 and expect in log and "Optimizing" not in log, "--proxy -o %s refused" % out)
+    code, log = run(exe, os.path.join(DATA, "usd_scene.usdz"), "-o", os.path.join(tmp, "z.usdc"), "--proxy",
+                    "--others", "40%")
+    check(code != 0 and "cannot be edited" in log, "--proxy refused on a .usdz package")
     code, log = run(exe, os.path.join(DATA, "scene_ab.abc"), "-o", os.path.join(tmp, "x.abc"), "--proxy",
                     "--others", "50%")
     check(code != 0 and "--proxy adds proxies" in log, "--proxy refused on Alembic")
 
-    # next to the meshes without geo/render
-    scene = os.path.join(tmp, "pscene.usdc")
-    shutil.copy(os.path.join(DATA, "usd_scene.usdc"), scene)
-    out = os.path.join(tmp, "pscene_proxy.usda")
-    code, log = run(exe, scene, "-o", out, "-d", "--proxy", "-m", "MeshA=300%", "-m", "MeshC=30%")
-    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
-    check(code == 0 and 'def Mesh "MeshA_proxy"' in text and "rel proxyPrim = </World/geo/MeshA_proxy>" in text,
-          "--proxy next to the mesh")
+    # .usda, in place: the reference is the only change; proxies next to the meshes without geo/render
+    scene = os.path.join(tmp, "pscene.usda")
+    shutil.copy(os.path.join(DATA, "usd_scene.usda"), scene)
+    with open(scene, encoding="utf-8") as f:
+        before = f.read()
+    code, log = run(exe, scene, "-o", scene, "-d", "--proxy", "-m", "MeshA=300%", "-m", "MeshC=30%")
+    with open(scene, encoding="utf-8") as f:
+        after = f.read()
+    path = os.path.join(tmp, "pscene_proxy.usda")
+    text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    ref = "prepend references = @./pscene_proxy.usda@</World>"
+    check(code == 0 and ref in after and 'def Mesh "MeshA_proxy"' in text and
+          "rel proxyPrim = </World/geo/MeshA_proxy>" in text and "subLayers" not in text,
+          "--proxy next to the mesh, in a .usda scene")
+    check([l for l in after.split("\n") if ref not in l] == before.split("\n"),
+          "the .usda scene: only the reference added")
 
 
 def test_usd_composition(exe, tmp):
@@ -638,12 +688,16 @@ def test_usd_composition(exe, tmp):
     check(code != 0 and "instanced" in log, "an instanced mesh is refused")
 
     # proxies of referenced meshes: geo/proxy inside each reference
+    code, log = run(exe, scene, "-o", scene, "-d", "--proxy", "-m", "propA=200%", "-m", "propC=200%")
     out = os.path.join(work, "assembly_proxy.usda")
-    code, log = run(exe, scene, "-o", out, "-d", "--proxy", "-m", "propA=200%", "-m", "propC=200%")
     text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
     check(code == 0 and "rel proxyPrim = </World/propA/geo/proxy/Box>" in text and
           "rel material:binding = </World/propA/mtl/wood>" in text and
-          "rel proxyPrim = </World/propC/geo/proxy/Box>" in text, "--proxy on referenced meshes")
+          "rel proxyPrim = </World/propC/geo/proxy/Box>" in text and
+          "@./assembly_proxy.usda@</World>" in open(scene, encoding="utf-8").read(), "--proxy on referenced meshes")
+    code, meshes = list_meshes(exe, scene)
+    check(code == 0 and "/World/propA/geo/proxy/Box" in meshes and "/World/propC/geo/proxy/Box" in meshes,
+          "the assembly composes its proxies")
 
 
 def test_usd_binary(exe, tmp):
@@ -672,11 +726,14 @@ def test_usd_binary(exe, tmp):
         head = f.read(64)
     check(head[:4] == b"PK\x03\x04" and (30 + head[26] + head[28]) % 64 == 0, ".usdz data 64-byte aligned")
 
-    base = os.path.join(work, "proxy")
-    for ext in (".usda", ".usdc"):
-        run(exe, os.path.join(work, "usd_asset.usdc"), "-o", base + ext, "-d", "--proxy", "--others", "40%")
-    same(base, (".usdc",))
-    code, log = run(exe, os.path.join(work, "usd_asset.usdc"), "-o", base + ".usdz", "--proxy", "--others", "40%")
+    # the proxy layer of a .usdc copy, and of a .usd copy (text): the same layer
+    for ext in (".usd", ".usdc"):
+        run(exe, os.path.join(work, "usd_asset.usdc"), "-o", os.path.join(work, "copy" + ext), "-d", "--proxy",
+            "--others", "40%")
+    shutil.copy(os.path.join(work, "copy_proxy.usd"), os.path.join(work, "copy_proxy.usda"))
+    same(os.path.join(work, "copy_proxy"), (".usdc",))
+    code, log = run(exe, os.path.join(work, "usd_asset.usdc"), "-o", os.path.join(work, "layer.usdz"),
+                    "-m", "Body=40%")
     check(code != 0 and "holds every file it uses" in log, "a layer over the scene cannot be a .usdz")
 
 

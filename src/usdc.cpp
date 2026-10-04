@@ -213,17 +213,18 @@ void CrateFile::parse() {
     const uint64_t numSections = get<uint64_t>(pos);
     if (numSections > 64)
         fail("invalid table of contents");
-    struct Section { uint64_t start = 0, size = 0; bool found = false; };
-    std::map<std::string, Section> sections;
+    struct Sec { uint64_t start = 0, size = 0; bool found = false; };
+    std::map<std::string, Sec> sections;
     for (uint64_t k = 0; k < numSections; ++k) {
         char name[17] = { 0 };
         read(pos, 16, name);
         pos += 16;
-        Section sec;
+        Sec sec;
         sec.start = get<uint64_t>(pos);
         sec.size = get<uint64_t>(pos);
         sec.found = true;
         sections[name] = sec;
+        mSections.push_back(Section { name, sec.start, sec.size });
     }
     for (const char *name : { "TOKENS", "STRINGS", "FIELDS", "FIELDSETS", "PATHS", "SPECS" })
         if (!sections[name].found)
@@ -310,6 +311,7 @@ void CrateFile::parse() {
             const std::vector<int32_t> elementTokens = compressed_ints<int32_t>(pos, n);
             const std::vector<int32_t> jumps = compressed_ints<int32_t>(pos, n);
             build_paths(pathIndexes, elementTokens, jumps);
+            mPathTree = PathTree { pathIndexes, elementTokens, jumps };
         } else {
             old_paths(pos);
         }

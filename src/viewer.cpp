@@ -3974,7 +3974,8 @@ void Viewer::buildOutliner() {
     mKeepBorderBox = new CheckBox(checks1, "Keep border", [&](bool) { setDirty(); });
     mKeepBorderBox->setTooltip("--keep-border: objects touching along their borders stay closed");
     mProxyBox = new CheckBox(checks1, "USD proxies", [&](bool) { setDirty(); refreshOutliner(); });
-    mProxyBox->setTooltip("--proxy: keep the meshes, add the new ones as their proxies (USD scenes)");
+    mProxyBox->setTooltip("--proxy: keep the meshes, add the new ones as their proxies, in a proxy layer "
+                          "that the scene references (USD scenes)");
     mDeterministicBox = new CheckBox(checks2, "Deterministic", [&](bool) { setDirty(); });
     mDeterministicBox->setTooltip("-d: the same result on every run (slower)");
     mDeterministicBox->setChecked(mDeterministic);
@@ -4472,11 +4473,14 @@ void Viewer::writeScene() {
     if (!mProject || busy())
         return;
     const std::string ext = lower_extension(mProject->source);
+    const bool usdScene = usd::is_usd_file(mProject->source), proxies = usdScene && mProxyBox->checked();
     std::vector<std::pair<std::string, std::string>> types;
     if (ext == ".abc")
         types = { {"abc", "Alembic"} };
     else if (ext == ".obj")
         types = { {"obj", "Wavefront OBJ"} };
+    else if (proxies)   /* the scene itself, or a copy: its format */
+        types = { {ext == ".usda" ? "usda" : ext == ".usd" ? "usd" : "usdc", "USD scene"} };
     else
         types = { {"usda", "USD layer (text)"}, {"usdc", "USD layer (binary)"} };
     std::string file = nanogui::file_dialog(types, true);
@@ -4484,20 +4488,35 @@ void Viewer::writeScene() {
         return;
     if (lower_extension(file).empty())
         file += "." + types[0].first;
-    if (usd::is_usd_file(mProject->source) && str_tolower(file) == str_tolower(mProject->source)) {
+    const bool itself = str_tolower(file) == str_tolower(mProject->source);
+    if (usdScene && !proxies && itself) {
         new MessageDialog(this, MessageDialog::Type::Warning, "Write scene",
                           "The layer loads the scene: it cannot replace it. Choose another name.");
         return;
     }
-    try {
-        guiToOptions();
-        mProject->write(file);
-    } catch (const std::exception &e) {
-        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+    auto write = [this, file] {
+        try {
+            guiToOptions();
+            mProject->write(file);
+        } catch (const std::exception &e) {
+            new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+            return;
+        }
+        mBatchLabel->setCaption("Scene written: " + base_name(file));
+        setDirty();
+    };
+    if (proxies && itself) {
+        auto dlg = new MessageDialog(this, MessageDialog::Type::Question, "Write scene",
+                                     "Add the proxies to the scene itself? It gets a reference to its proxy "
+                                     "layer (" + base_name(file) + " stays as it is otherwise).",
+                                     "Yes", "No", true);
+        dlg->setCallback([write](int result) {
+            if (result == 0)
+                write();
+        });
         return;
     }
-    mBatchLabel->setCaption("Scene written: " + base_name(file));
-    setDirty();
+    write();
 }
 
 RemeshParams Viewer::guiParams() const {

@@ -583,7 +583,7 @@ def build(cover_image=None):
         "Classes, overs and inactive prims are skipped; meshes below an instanceable prim or a PointInstancer "
         "are marked as instanced (listed, not remeshed). Transforms count on Xformable prims only, as in USD.",
         "A mesh that comes from a reference or a payload can be remeshed or get a proxy like any other: the "
-        "layer written puts its opinions over it, the referenced files stay untouched.",
+        "layer written (or the proxy layer) puts its opinions over it, the referenced files stay untouched.",
     ])
     story += [Spacer(1, 4 * mm), SubHeader("3.5", "USD: the layer written"), Spacer(1, 3 * mm),
               p("In per-mesh mode, the result is not a copy of the scene but a light <b>layer</b> (.usda text or "
@@ -624,13 +624,31 @@ def build(cover_image=None):
               p("With <b>--proxy</b>, -m and --others keep the meshes of the scene and add their remeshed copy as "
                 "a <b>proxy</b>: the light mesh viewports show while the renderer keeps the original. This is "
                 "the USD purpose mechanism, understood by usdview, Houdini / Solaris, Maya and Blender."),
+              Spacer(1, 2 * mm),
+              p("The proxies go to a <b>proxy layer</b> of their own, and the scene <b>references</b> it, as in "
+                "production: you keep opening the scene, which now brings its proxies along. Three runs give "
+                "three proxy layers, all referenced by the one scene."),
               Spacer(1, 3 * mm),
-              codeblock(['InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%',
-                         'InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy -m "Hero=10%" --others 3%'])]
+              codeblock(["# -o names the scene: it is edited in place",
+                         "InstantMeshes.exe asset.usdc -o asset.usdc --proxy --others 5%",
+                         "# another name: a copy of the scene, like a Save As (the original untouched)",
+                         'InstantMeshes.exe asset.usdc -o asset_v2.usdc --proxy -m "Hero=10%" --others 3%',
+                         "",
+                         "#usda 1.0  (asset.usda after --proxy, simplified)",
+                         'def Xform "Asset" (',
+                         "    prepend references = @./asset_proxy.usda@</Asset>    # the only change",
+                         ")",
+                         "{ ... }"])]
     story += bullets([
+        "In place, the reference is the <b>only change</b> to the scene: in a .usdc file the new data is "
+        "appended, every other byte stays where it was; in a .usda file the reference is written into the "
+        "text. A copy keeps the format of the scene (.usda, .usdc, or .usd); a .usdz package cannot be edited.",
+        "The proxy layer is <b>&lt;output&gt;_proxy</b>, next to the output, in its format: asset_proxy.usdc. "
+        "It holds the proxies and what the meshes gain (purpose, proxyPrim), and loads nothing itself. A "
+        "second run writes asset_proxy2.usdc, referenced too. The reference goes on the root prim (/Asset).",
         "The original gets purpose <b>render</b> and a <b>proxyPrim</b> relationship to its proxy; the proxy is "
         "a new Mesh with purpose <b>proxy</b>, no subdivision and the material of the original (the most used "
-        "one of its GeomSubsets).",
+        "one of its GeomSubsets, when it lives under the same root prim).",
         "The proxy gets the <b>UVs of the original</b> (--uv transfer is the default with --proxy; --uv none or "
         "--uv unwrap change it).",
         "Assets under the <b>geo/render</b> convention get their proxies in <b>geo/proxy</b>, same hierarchy: "
@@ -638,8 +656,10 @@ def build(cover_image=None):
         "mirror, animation included, so the proxies follow. Never below the render scope: some importers "
         "(Blender) skip it whole when proxies are asked for.",
         "Elsewhere, the proxy is a sibling named <b>&lt;name&gt;_proxy</b>, with the transform of the mesh.",
-        "Proxy and guide meshes get no proxy (--list shows the purpose); a proxy path already used is an error, "
-        "found before any computation. --dry-run shows where each proxy will go.",
+        "Proxy and guide meshes get no proxy (--list shows the purpose); a proxy that already exists is an "
+        "error, found before any computation (to redo it, remove its reference). A mesh at the root of the scene "
+        "(/Hero) cannot get one: it must be under a root prim (/World/Hero). --dry-run shows where each proxy "
+        "will go and the layer that holds them.",
         "Blender imports the render meshes by default: tick <b>Proxy</b> in the USD import options to see the "
         "proxies.",
     ])
@@ -649,10 +669,11 @@ def build(cover_image=None):
                               "UVs; the second adds a 10% proxy, which takes over those UVs."),
                             Spacer(1, 2 * mm),
                             codeblock(["InstantMeshes.exe model.obj -o model.usda -f 100% --uv unwrap",
-                                       "InstantMeshes.exe model.usda -o model_proxy.usda --proxy --others 10%"])]),
-              Spacer(1, 2 * mm),
-              p("Open <b>model_proxy.usda</b>: it loads model.usda and adds /model/model_proxy. The first command "
-                "merges every object of the OBJ into one mesh (whole-file mode).")]
+                                       "InstantMeshes.exe model.usda -o model.usda --proxy --others 10%"]),
+                            Spacer(1, 2 * mm),
+                            p("Open <b>model.usda</b>: it references model_proxy.usda, which adds "
+                              "/model/model_proxy. The first command merges every object of the OBJ into one mesh "
+                              "(whole-file mode).")])]
     story += [PageBreak()]
 
     # ---------------- 4 command line
@@ -695,8 +716,8 @@ def build(cover_image=None):
                          "InstantMeshes.exe scene.abc -o scene.abc -f 60%",
                          "# A USD asset: a layer over it, the original untouched",
                          'InstantMeshes.exe asset.usdz -o asset_retopo.usda -m "Hero=40%" --uv transfer',
-                         "# Viewport proxies at 5% for every mesh of a USD asset",
-                         "InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%",
+                         "# Viewport proxies at 5% for every mesh of a USD asset (asset_proxy.usdc)",
+                         "InstantMeshes.exe asset.usdc -o asset.usdc --proxy --others 5%",
                          "# Prepare a job, run it later on the farm (or open it in the interface)",
                          'InstantMeshes.exe scene.abc -m "Hero=30%" --others 10% --save-imd job.imd --dry-run',
                          "InstantMeshes.exe job.imd -o scene_retopo.abc"])]),

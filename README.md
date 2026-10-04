@@ -41,7 +41,7 @@ InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 | `-f 75%` | Objectif en pourcentage des polygones d'origine (tels qu'affichés dans Blender) ; `-f 5000` = nombre de faces |
 | `--list` | Liste les maillages d'un `.abc` (chemin, faces, sommets, animé / instancié) ou les objets d'un `.obj` ou d'un fichier USD |
 | `-m <nom>=<cible>` | Remaille séparément les maillages désignés et les réinjecte dans une copie du fichier (`.abc` ou `.obj`), ou dans un calque `.usda` / `.usdc` posé sur un fichier USD |
-| `--proxy` | USD : garde les maillages et ajoute leur copie remaillée comme **proxy** (purpose `proxy`, `proxyPrim` sur l'original passé en `render`, matériau de l'original, UV transférées par défaut) dans le calque `.usda` / `.usdc` |
+| `--proxy` | USD : garde les maillages et ajoute leur copie remaillée comme **proxy** (purpose `proxy`, `proxyPrim` sur l'original passé en `render`, matériau de l'original, UV transférées par défaut) dans un calque de proxies `<sortie>_proxy.usda` / `.usdc`, **référencé par la scène** |
 | `--others <cible>` | Remaille aussi tous les autres maillages ; sans cette option ils sont recopiés intacts |
 | `--sort asc\|desc`, `--top <n>` | Avec `--list` : tri par nombre de faces croissant / décroissant, et seulement les n premiers (`--sort desc --top 10` = les 10 objets les plus lourds) |
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
@@ -112,20 +112,39 @@ InstantMeshes.exe asset.usdc -o asset_retopo.usda -m "Hero*=50%" --uv transfer
 
 Proxies USD (`--proxy`) : les maillages visés par `-m` / `--others` sont
 gardés, leur copie remaillée est ajoutée comme proxy (ce que les viewports
-affichent, le rendu garde l'original).
+affichent, le rendu garde l'original). Les proxies vont dans un **calque à
+part**, et c'est la **scène qui le référence** (comme en production) : on
+continue d'ouvrir la scène, qui amène ses proxies. Trois passes donnent trois
+calques de proxies, tous référencés par la même scène.
 
 ```
-InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%
+# -o nomme la scène : elle est modifiée sur place
+InstantMeshes.exe asset.usdc -o asset.usdc --proxy --others 5%
+# un autre nom : une copie de la scène, comme un « Enregistrer sous »
+InstantMeshes.exe asset.usdc -o asset_v2.usdc --proxy -m "Hero=10%" --others 3%
 ```
+
+- Sur place, la **seule modification** de la scène est la référence
+  (`prepend references = @./asset_proxy.usdc@</Asset>` sur la prim racine) :
+  dans un `.usdc` les nouvelles données sont ajoutées à la fin, tous les
+  autres octets restent en place ; dans un `.usda` la référence est écrite
+  dans le texte, le reste intact. Une copie garde le format de la scène
+  (`.usda`, `.usdc` ou `.usd`) ; un paquet `.usdz` ne peut pas être modifié.
+- Le calque de proxies est `<sortie>_proxy`, à côté de la sortie, dans son
+  format (`asset_proxy.usdc`). Il contient les proxies et ce que gagnent les
+  maillages (purpose, `proxyPrim`), et ne charge rien lui-même. Une deuxième
+  passe écrit `asset_proxy2.usdc`, référencé lui aussi.
 
 - Convention `geo/render` : `/Asset/geo/render/Body` reçoit
   `/Asset/geo/proxy/Body`, même hiérarchie, transformations recopiées
   (animation comprise). Jamais sous le scope `render`, que Blender ignore en
   bloc quand on importe les proxies.
 - Sinon : un frère `<nom>_proxy` avec la transformation du maillage.
-- Les maillages `proxy` / `guide` n'en reçoivent pas ; un chemin de proxy
-  déjà pris est une erreur, détectée avant tout calcul (`--dry-run` montre
-  où chaque proxy ira).
+- Les maillages `proxy` / `guide` n'en reçoivent pas ; un proxy qui existe
+  déjà est une erreur, détectée avant tout calcul (pour le refaire, retirer
+  sa référence). Un maillage à la racine (`/Hero`) n'en reçoit pas : il doit
+  être sous une prim racine (`/World/Hero`). `--dry-run` montre où chaque
+  proxy ira et le calque qui les contient.
 - Blender importe les maillages de rendu par défaut : cocher **Proxy** dans les
   options d'import USD pour voir les proxies.
 
@@ -136,7 +155,7 @@ fusionne tous les objets de l'OBJ en un seul maillage.
 
 ```
 InstantMeshes.exe model.obj -o model.usda -f 100% --uv unwrap
-InstantMeshes.exe model.usda -o model_proxy.usda --proxy --others 10%
+InstantMeshes.exe model.usda -o model.usda --proxy --others 10%
 ```
 
 Mémoire, en mode par objet : un seul maillage est remaillé à la fois (environ

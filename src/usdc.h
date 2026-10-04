@@ -43,6 +43,22 @@ public:
     const std::vector<uint32_t> &field_sets() const { return mFieldSets; }
     const std::vector<Spec> &specs() const { return mSpecs; }
 
+    /* The structure as stored, for the in-place edits of usdedit.h */
+    const std::vector<std::string> &tokens() const { return mTokens; }
+    /// Token index of every string
+    const std::vector<uint32_t> &string_tokens() const { return mStrings; }
+    size_t path_count() const { return mPaths.size(); }
+    /// The path tree in pre-order (0.4.0 and later): path index, element
+    /// token (negative for a property), jump (see usdcwrite.cpp)
+    struct PathTree { std::vector<uint32_t> indexes; std::vector<int32_t> elements, jumps; };
+    const PathTree &path_tree() const { return mPathTree; }
+    struct Section { std::string name; uint64_t start = 0, size = 0; };
+    /// The table of contents, in its order
+    const std::vector<Section> &sections() const { return mSections; }
+    uint64_t size() const { return mSize; }
+    /// 'size' bytes of the file at 'pos'
+    std::vector<uint8_t> raw(uint64_t pos, uint64_t size) { return bytes(pos, size); }
+
     [[noreturn]] void fail(const std::string &msg) const;
 
 private:
@@ -85,6 +101,8 @@ private:
     std::vector<uint32_t> mFieldSets;
     std::vector<std::string> mPaths;
     std::vector<Spec> mSpecs;
+    PathTree mPathTree;
+    std::vector<Section> mSections;
 };
 
 } // namespace usd

@@ -1,8 +1,13 @@
 """
-check_usd_proxy.py -- Pixar's USD composes a .usda proxy layer written by
-Instant Meshes (--proxy) over its input, and checks it.
+check_usd_proxy.py -- Pixar's USD opens a scene to which Instant Meshes
+added proxies (--proxy), and checks it.
 
-    blender -b --factory-startup --python tests/check_usd_proxy.py -- <input> <output.usda> [--tol=0.05] <mesh path>...
+    blender -b --factory-startup --python tests/check_usd_proxy.py -- <input> <output> [--tol=0.05] <mesh path>...
+
+<input>: the scene before (a copy, when the proxies were added in place);
+<output>: the scene after. Its layer is the input's, plus one reference
+prepended to some root prims, to the proxy layer (a layer that sublayers
+nothing): with those references removed, both layers are identical.
 
 For every given mesh: its proxyPrim relationship targets a new Mesh; the
 computed purposes are "render" for the mesh and "proxy" for the proxy; the
@@ -16,7 +21,7 @@ unchanged, no proxy. Stage metadata unchanged. Exit code 1 on any failure.
 import sys
 
 import numpy as np
-from pxr import Gf, Usd, UsdGeom, UsdShade
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 args = sys.argv[sys.argv.index("--") + 1:]
 tol = float(next((a[6:] for a in args if a.startswith("--tol=")), 0.01))
@@ -30,6 +35,44 @@ def check(label, ok):
     print(("OK      " if ok else "FAILED  ") + label)
     failed += not ok
 
+
+# the layers: the scene's own, the reference added, the proxy layer
+src_layer, out_layer = Sdf.Layer.FindOrOpen(src_path), Sdf.Layer.FindOrOpen(out_path)
+check("sublayers kept", list(src_layer.subLayerPaths) == list(out_layer.subLayerPaths))
+stripped = Sdf.Layer.CreateAnonymous(".usda")
+stripped.TransferContent(out_layer)
+added, made = set(), []
+for prim in list(stripped.rootPrims):
+    before = src_layer.GetPrimAtPath(prim.path)
+    refs = prim.referenceList
+    explicit = refs.isExplicit
+    old = list((before.referenceList.explicitItems if explicit else before.referenceList.prependedItems)
+               if before else [])
+    items = list(refs.explicitItems if explicit else refs.prependedItems)
+    for r in items:
+        if r in old:
+            continue
+        added.add(r.assetPath)
+        check("%s references %s%s%s" % (prim.path, r.assetPath, r.primPath, " (explicit list)" if explicit else ""),
+              r.primPath == prim.path and r.assetPath.startswith("./") and "_proxy" in r.assetPath and
+              items.index(r) == 0)
+    if explicit:
+        refs.explicitItems = old
+    else:
+        refs.prependedItems = old
+    if not before:
+        made.append(prim)   # an over made for the reference (root prim defined in a sublayer)
+for prim in made:
+    check("%s: an over holding the reference only" % prim.path,
+          prim.specifier == Sdf.SpecifierOver and not prim.properties and not prim.nameChildren)
+    del stripped.rootPrims[prim.name]
+check("one proxy layer referenced (%s)" % ", ".join(sorted(added)), len(added) == 1)
+want = Sdf.Layer.CreateAnonymous(".usda")
+want.TransferContent(src_layer)
+check("the layer is the input's, but for the references", stripped.ExportToString() == want.ExportToString())
+for asset in added:
+    proxy_layer = Sdf.Layer.FindOrOpenRelativeToLayer(out_layer, asset)
+    check("%s: no sublayer" % asset, proxy_layer is not None and not list(proxy_layer.subLayerPaths))
 
 src = Usd.Stage.Open(src_path)
 out = Usd.Stage.Open(out_path)
@@ -93,7 +136,8 @@ for prim in src.Traverse():
     if path not in targets:
         same = (list(UsdGeom.Mesh(prim).GetPointsAttr().Get(first) or []) ==
                 list(UsdGeom.Mesh(r).GetPointsAttr().Get(first) or []))
-        check("%s unchanged, no proxy" % path, same and not rel)
+        had = UsdGeom.Imageable(prim).GetProxyPrimRel().GetTargets()
+        check("%s unchanged, no new proxy" % path, same and rel == had)
         continue
     check("%s: proxyPrim -> %s" % (path, [str(t) for t in rel]), len(rel) == 1)
     if len(rel) != 1:

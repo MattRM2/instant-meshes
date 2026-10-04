@@ -27,6 +27,7 @@
 #include "scene.h"
 #include "spool.h"
 #include "project.h"
+#include "usdscene.h"
 #include "uvtransfer.h"
 #include "uvunwrap.h"
 #include <iomanip>
@@ -601,6 +602,11 @@ static void run_project(Project &project, const std::string &label, const std::s
         if (proxy && t.valid())
             cout << "   " << std::string(width, ' ') << "  proxy: " << proxyOf[o.mesh.path] << endl;
     }
+    if (proxy && !output.empty() && usd::proxy_output_error(project.source, output).empty())
+        cout << "The proxies go to \"" << usd::proxy_layer_path(project.source, output) << "\", referenced by \""
+             << output << "\" (" << (str_tolower(output) == str_tolower(project.source) ? "the scene itself"
+                                                                                       : "a copy of the scene")
+             << ")" << endl;
     if (count == 0)
         throw std::runtime_error("Nothing to remesh!");
     if (dryRun) {

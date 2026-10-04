@@ -79,30 +79,33 @@ private:
 class UsdScene : public SceneFile {
 public:
     explicit UsdScene(const std::string &filename)
-        : SceneFile(filename), mStage(usd::open_stage(filename)), mLayer(*mStage) { }
+        : SceneFile(filename), mStage(usd::open_stage(filename)) { }
 
-    std::vector<SceneMesh> meshes() override { return usd::list_meshes(mLayer); }
+    std::vector<SceneMesh> meshes() override { return usd::list_meshes(*mStage); }
 
     void load(const std::string &path, MatrixXu &F, MatrixXf &V, uint64_t *polygons,
               std::vector<UVSet> *uvs) override {
-        usd::load_mesh(mLayer, path, F, V, polygons, uvs);
+        usd::load_mesh(*mStage, path, F, V, polygons, uvs);
     }
 
     void write(const std::string &output, const std::vector<SceneReplacement> &replacements) override {
-        usd::write_overlay(mLayer, output, replacements);
+        usd::write_overlay(*mStage, output, replacements);
     }
 
     std::vector<std::string> proxy_paths(const std::vector<std::string> &meshes) override {
-        return usd::proxy_paths(mLayer, meshes);
+        return usd::proxy_paths(*mStage, meshes);
     }
 
     void write_proxies(const std::string &output, const std::vector<SceneReplacement> &proxies) override {
-        usd::write_proxies(mLayer, output, proxies);
+        usd::write_proxies(*mStage, output, proxies);
+        /* the scene itself now references its proxies: composed again, a
+           next write sees them */
+        if (str_tolower(output) == str_tolower(filename()))
+            mStage = usd::open_stage(filename());
     }
 
 private:
     std::shared_ptr<const usd::Layer> mStage;
-    const usd::Layer &mLayer;
 };
 
 } // namespace

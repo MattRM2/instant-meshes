@@ -11,6 +11,9 @@ library (the pxr module that ships with Blender 4.x / 5.x).
         writes the assembly of tests/data/compose (every composition arc)
     blender -b --factory-startup --python tests/usd_reference.py -- dump_stage <file>
         prints the composed stage as usd_dump --stage does
+    blender -b --factory-startup --python tests/usd_reference.py -- refs <dir>
+        writes usd_refs.usdc: root prims with prepended, explicit or no
+        references (the in-place edits of usdedit.h)
 
 Set USD_WRITE_NEW_USDC_FILES_AS_VERSION (e.g. 0.8.0) before starting
 Blender to write an older Crate version.
@@ -324,6 +327,23 @@ def make_compose(out):
     world_obj(os.path.join(out, "assembly.usda"), os.path.join(out, "assembly_world.obj"))
 
 
+def make_refs(path):
+    layer = Sdf.Layer.CreateNew(path)
+    for name, how in (("Prepended", "prepend"), ("Explicit", "explicit"), ("Plain", None)):
+        prim = Sdf.PrimSpec(layer, name, Sdf.SpecifierDef, "Xform")
+        prim.SetInfo("kind", "assembly")
+        if how:
+            refs = [Sdf.Reference("./usd_asset.usdc", "/Asset", Sdf.LayerOffset(0, 1)),
+                    Sdf.Reference("./usd_scene.usda", "/World", Sdf.LayerOffset(0, 1))]
+            if how == "explicit":
+                prim.referenceList.explicitItems = refs
+            else:
+                prim.referenceList.prependedItems = refs
+        Sdf.AttributeSpec(prim, "answer", Sdf.ValueTypeNames.Int).default = 42
+    layer.defaultPrim = "Prepended"
+    layer.Save()
+
+
 def dump_stage(path):
     """The composed stage, in the canonical form of usd_dump --stage"""
     stage = Usd.Stage.Open(path)
@@ -488,3 +508,6 @@ elif args[0] == "compose":
     print("[OK] composition data in", args[1])
 elif args[0] == "dump_stage":
     dump_stage(args[1])
+elif args[0] == "refs":
+    make_refs(os.path.join(os.path.abspath(args[1]), "usd_refs.usdc"))
+    print("[OK] usd_refs.usdc in", args[1])

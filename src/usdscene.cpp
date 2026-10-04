@@ -14,6 +14,7 @@
 
 #include "usdscene.h"
 #include "usdcwrite.h"
+#include "usdedit.h"
 #include <sstream>
 #include <Eigen/Geometry>
 #include <fstream>
@@ -610,20 +611,30 @@ void write_geometry(std::ostream &os, const MeshOut &m, const std::string &ind,
     }
 }
 
+std::string dir_of(const std::string &p) {
+    const size_t s = p.find_last_of("/\\");
+    return s == std::string::npos ? std::string() : p.substr(0, s + 1);
+}
+
+std::string file_name(const std::string &p) {
+    return p.substr(dir_of(p).size());
+}
+
+std::string absolute(const std::string &p) {
+#if defined(_WIN32)
+    char buf[4096];
+    if (_fullpath(buf, p.c_str(), sizeof buf))
+        return std::string(buf);
+#endif
+    return p;
+}
+
+bool same_file(const std::string &a, const std::string &b) {
+    return str_tolower(absolute(a)) == str_tolower(absolute(b));
+}
+
 /* Sublayer path of the input, relative when the output is next to it */
 std::string sublayer_path(const Layer &layer, const std::string &output) {
-    auto dir_of = [](const std::string &p) {
-        const size_t s = p.find_last_of("/\\");
-        return s == std::string::npos ? std::string() : p.substr(0, s + 1);
-    };
-    auto absolute = [](const std::string &p) {
-#if defined(_WIN32)
-        char buf[4096];
-        if (_fullpath(buf, p.c_str(), sizeof buf))
-            return std::string(buf);
-#endif
-        return p;
-    };
     std::string sub = layer.filename();
     if (str_tolower(dir_of(absolute(sub))) == str_tolower(dir_of(absolute(output))))
         sub = "./" + sub.substr(dir_of(sub).size());
@@ -648,7 +659,9 @@ void write_header(std::ostream &os, const Layer &layer, const std::string &sub, 
         if (it != layer.meta.end() && it->second.kind == Value::Numbers && !it->second.numbers.empty())
             os << "    " << key << " = " << num(it->second.num()) << "\n";
     }
-    os << "    subLayers = [\n        @" << sub << "@\n    ]\n)\n";
+    if (!sub.empty())
+        os << "    subLayers = [\n        @" << sub << "@\n    ]\n";
+    os << ")\n";
 }
 
 /* The material bound to most faces of a mesh: its own binding and those of
@@ -709,6 +722,8 @@ struct Node {
 
 void write_overlay(const Layer &layer, const std::string &output, const std::vector<abc::Replacement> &replacements) {
     Timer<> timer;
+    if (same_file(output, layer.filename()))
+        fail(layer, "the layer cannot replace its input (it sublayers it): choose another name");
     cout << "Writing \"" << output << "\" (" << replacements.size() << " mesh"
          << (replacements.size() > 1 ? "es" : "") << " replaced, over \"" << layer.filename() << "\") .. ";
     cout.flush();
@@ -1025,6 +1040,44 @@ std::string bound_material(const Layer &layer, const Prim &mesh) {
     return best;
 }
 
+/* The format of a USD file from its first bytes: "usdc", "usdz" or "usda" */
+std::string file_format(const std::string &path) {
+    char head[8] = { 0 };
+    std::ifstream f(path, std::ios::binary);
+    f.read(head, 8);
+    if (memcmp(head, "PXR-USDC", 8) == 0)
+        return "usdc";
+    if (memcmp(head, "PK\x03\x04", 4) == 0)
+        return "usdz";
+    return "usda";
+}
+
+std::string root_of(const std::string &path) {
+    const size_t s = path.find('/', 1);
+    return s == std::string::npos ? path : path.substr(0, s);
+}
+
+/* The proxy layer of 'output': <name>_proxy next to it, with its
+   extension; numbered when the scene already references a layer of that
+   name (proxies made earlier) */
+std::string proxy_layer_for(const Layer &raw, const std::string &output) {
+    std::set<std::string> used;
+    for (const auto &c : raw.root.children)
+        if (const Value *v = c->metadata("references"))
+            for (const std::vector<std::string> *list : { &v->explicitItems, &v->prepended, &v->appended })
+                for (const std::string &item : *list)
+                    used.insert(str_tolower(file_name(item.substr(0, item.find('<')))));
+    const std::string name = file_name(output);
+    const size_t dot = name.rfind('.');
+    const std::string stem = output.substr(0, dir_of(output).size() + (dot == std::string::npos ? name.size() : dot));
+    const std::string ext = dot == std::string::npos ? std::string() : name.substr(dot);
+    for (int k = 1;; ++k) {
+        const std::string candidate = stem + "_proxy" + (k > 1 ? std::to_string(k) : std::string()) + ext;
+        if (!used.count(str_tolower(file_name(candidate))))
+            return candidate;
+    }
+}
+
 /* One prim of the proxy layer: an over, or a prim to define */
 struct ProxyNode {
     std::map<std::string, ProxyNode> children;
@@ -1048,9 +1101,13 @@ std::vector<std::string> proxy_paths(const Layer &layer, const std::vector<std::
 
 void write_proxies(const Layer &layer, const std::string &output, const std::vector<abc::Replacement> &proxies) {
     Timer<> timer;
-    cout << "Writing \"" << output << "\" (" << proxies.size() << " prox" << (proxies.size() > 1 ? "ies" : "y")
-         << ", over \"" << layer.filename() << "\") .. ";
-    cout.flush();
+    const std::string input = layer.filename();
+    const std::string problem = proxy_output_error(input, output);
+    if (!problem.empty())
+        throw std::runtime_error(problem);
+    const Layer raw(input);   /* the scene's own layer, that references the proxies */
+    const std::string proxyFile = proxy_layer_for(raw, output);
+    const bool inPlace = same_file(output, input);
 
     std::map<std::string, abc::MeshSummary> meshes;
     for (const abc::MeshSummary &m : list_meshes(layer))
@@ -1084,6 +1141,9 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         const abc::Replacement &r = proxies[i];
         const Placement &pl = places[i];
         const Prim *src = layer.prim(r.path);
+        if (str_tokenize(r.path, '/', false).size() < 2)
+            fail(layer, "\"" + r.path + "\" is a root prim: its proxy would be another root prim, out of reach of "
+                        "the reference that brings it in (put the mesh under a root prim, e.g. /World" + r.path + ")");
 
         /* the render side: purpose "render" on the render scope and on the
            mesh itself (a typeless scope is not imageable: its purpose would
@@ -1128,6 +1188,11 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         n.source = src;
         n.toLocal = world.inverse();
         n.binding = bound_material(layer, *src);
+        if (!n.binding.empty() && root_of(n.binding) != root_of(pl.proxy)) {
+            /* a reference maps only the paths below its root prim */
+            notes.push_back(pl.proxy + ": no material (" + n.binding + " is outside " + root_of(pl.proxy) + ")");
+            n.binding.clear();
+        }
         n.lines.push_back("uniform token purpose = \"proxy\"");
         n.lines.push_back("uniform token subdivisionScheme = \"none\"");
         if (const Property *d = src->property("doubleSided"))
@@ -1137,21 +1202,27 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         notes.push_back(r.path + " -> " + pl.proxy + (n.binding.empty() ? std::string() : " (" + n.binding + ")"));
     }
 
-    const std::string sub = sublayer_path(layer, output);
-    const std::string temp = output + ".tmp";
-    struct TempGuard {
-        const std::string &path;
-        bool armed = true;
-        ~TempGuard() { if (armed) std::remove(path.c_str()); }
-    } guard { temp };
+    /* the proxy layer: the proxies and what the scene's prims gain (purpose,
+       proxyPrim), below root prims that the scene references */
+    cout << "Writing \"" << proxyFile << "\" (" << proxies.size() << " prox" << (proxies.size() > 1 ? "ies" : "y")
+         << ") .. ";
+    cout.flush();
     {
+        const std::string temp = proxyFile + ".tmp";
+        struct TempGuard {
+            const std::string &path;
+            bool armed = true;
+            ~TempGuard() { if (armed) std::remove(path.c_str()); }
+        } guard { temp };
         std::ostringstream os;
-        write_header(os, layer, sub, "Instant Meshes: proxies over " + sub);
+        write_header(os, layer, std::string(), "Instant Meshes: proxies of " + file_name(input) +
+                                               ", referenced by " + file_name(output));
         std::function<void(const ProxyNode &, const std::string &)> write;
         write = [&](const ProxyNode &n, const std::string &ind) {
             for (const std::string &name : n.order) {
                 const ProxyNode &c = n.children.at(name);
-                os << ind << (c.type.empty() ? "over" : "def " + c.type) << " " << quote(name);
+                /* a root prim is defined (the scene's own definition wins) */
+                os << ind << (!c.type.empty() ? "def " + c.type : ind.empty() ? "def" : "over") << " " << quote(name);
                 if (!c.binding.empty())
                     os << " (\n" << ind << "    prepend apiSchemas = [\"MaterialBindingAPI\"]\n" << ind << ")";
                 os << "\n" << ind << "{\n";
@@ -1169,13 +1240,93 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
             }
         };
         write(root, "");
-        write_layer_file(temp, os.str(), output);
+        write_layer_file(temp, os.str(), proxyFile);
+        replace_file(temp, proxyFile);
+        guard.armed = false;
     }
-    replace_file(temp, output);
-    guard.armed = false;
+    cout << "done." << endl;
+
+    /* the scene: each root prim of the proxy layer gets a reference to it */
+    std::vector<RootReference> refs;
+    for (const std::string &name : root.order)
+        refs.push_back(RootReference { name, "./" + file_name(proxyFile), "/" + name });
+    cout << "Referencing it from \"" << output << "\" ("
+         << (inPlace ? std::string("the scene itself") : "a copy of \"" + input + "\"") << ") .. ";
+    cout.flush();
+    if (raw.format() == "usda") {
+        std::ifstream in(input, std::ios::binary);
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        const std::string edited = usda_add_references(text, refs);
+        const std::string temp = output + ".tmp";
+        {
+            std::ofstream out(temp, std::ios::binary);
+            out.write(edited.data(), (std::streamsize) edited.size());
+            if (!out) {
+                std::remove(temp.c_str());
+                throw std::runtime_error("Unable to write \"" + temp + "\"!");
+            }
+        }
+        replace_file(temp, output);
+    } else {
+        const std::vector<uint8_t> bytes = usdc_add_references(input, refs);
+        if (inPlace) {
+            /* only appended to: the tail, then the table of contents offset
+               (until then the file reads as it was) */
+            std::fstream f(output, std::ios::binary | std::ios::in | std::ios::out);
+            f.seekg(0, std::ios::end);
+            const uint64_t size = (uint64_t) f.tellg();
+            if (!f || size > bytes.size() || memcmp(bytes.data(), "PXR-USDC", 8) != 0)
+                throw std::runtime_error("Unable to update \"" + output + "\" (is it open in another program?)!");
+            f.seekp((std::streamoff) size);
+            f.write((const char *) bytes.data() + size, (std::streamsize) (bytes.size() - size));
+            f.flush();
+            f.seekp(16);
+            f.write((const char *) bytes.data() + 16, 8);
+            f.flush();
+            if (!f)
+                throw std::runtime_error("Unable to update \"" + output + "\"!");
+        } else {
+            const std::string temp = output + ".tmp";
+            {
+                std::ofstream out(temp, std::ios::binary);
+                out.write((const char *) bytes.data(), (std::streamsize) bytes.size());
+                if (!out) {
+                    std::remove(temp.c_str());
+                    throw std::runtime_error("Unable to write \"" + temp + "\"!");
+                }
+            }
+            replace_file(temp, output);
+        }
+    }
     cout << "done. (took " << timeString(timer.value()) << ")" << endl;
     for (const std::string &n : notes)
         cout << "   " << n << endl;
+    if (!inPlace && str_tolower(dir_of(absolute(output))) != str_tolower(dir_of(absolute(input))))
+        cout << "Warning: the copy is not next to \"" << input << "\": the relative paths it holds (sublayers, "
+                "references, textures) are kept as written." << endl;
+}
+
+std::string proxy_layer_path(const std::string &input, const std::string &output) {
+    return proxy_layer_for(Layer(input), output);
+}
+
+std::string proxy_output_error(const std::string &input, const std::string &output) {
+    const std::string format = file_format(input);
+    if (format == "usdz")
+        return "--proxy adds a reference to the scene: a .usdz package cannot be edited (unpack it, or convert "
+               "it to .usdc)!";
+    std::string ext = file_name(output);
+    ext = ext.rfind('.') == std::string::npos ? std::string() : str_tolower(ext.substr(ext.rfind('.')));
+    if (ext == ".usdz")
+        return "--proxy writes the scene and its proxy layer next to it, as .usdc or .usda (not a .usdz package)!";
+    if (ext != ".usd" && ext != ".usda" && ext != ".usdc")
+        return "--proxy writes the scene as a USD file: the scene itself (-o " + file_name(input) +
+               ") or a copy of it!";
+    if (ext != ".usd" && ext.substr(1) != format)
+        return "--proxy writes the scene with its format, ." + format + ": -o " + file_name(input) +
+               " (the scene itself) or a copy named *." + format + "!";
+    return std::string();
 }
 
 SceneUnits stage_units(const Layer &layer) {

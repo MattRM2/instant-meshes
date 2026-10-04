@@ -10,6 +10,7 @@
 #include "usdscene.h"
 #include "usdstage.h"
 #include "usdcwrite.h"
+#include "usdedit.h"
 #include "meshio.h"
 #include <pcg32.h>
 #include <chrono>
@@ -283,11 +284,114 @@ static void test_write() {
     }
 }
 
+/* The references of a root prim, as read back */
+static std::vector<std::string> refs_of(const std::map<std::string, Value> &, const Prim &root, const std::string &name,
+                                        bool *isExplicit = nullptr, Specifier *spec = nullptr) {
+    const Prim *p = root.child(name);
+    const Value *v = p ? p->metadata("references") : nullptr;
+    if (isExplicit)
+        *isExplicit = v && v->isExplicit;
+    if (spec && p)
+        *spec = p->specifier;
+    return v ? (v->isExplicit ? v->explicitItems : v->prepended) : std::vector<std::string>();
+}
+
+static void test_edit() {
+    std::cout << "usd: references added in place (.usda text, .usdc appended)" << std::endl;
+    const RootReference ref { "W", "./p.usda", "/W" };
+    const std::string item = "./p.usda</W>";
+    auto parse = [](const std::string &text, std::map<std::string, Value> &meta, Prim &root) {
+        root = Prim();
+        root.path = "/";
+        meta.clear();
+        return error_of([&] { parse_usda(text, "edit", meta, root); });
+    };
+    std::map<std::string, Value> meta;
+    Prim root;
+
+    /* .usda: every way the root prim may hold its references */
+    struct Case { const char *before; std::vector<std::string> want; bool isExplicit; };
+    const Case cases[] = {
+        { "def Xform \"W\"\n{\n}\n", { item }, false },
+        { "def Xform \"W\" (\n    kind = \"component\"\n)\n{\n}\n", { item }, false },
+        { "def Xform \"W\" (kind = \"component\")\n{\n}\n", { item }, false },
+        { "def \"W\" (\n    prepend references = @a.usda@</A> (offset = 2)\n)\n{\n}\n", { item, "a.usda</A>" }, false },
+        { "def \"W\" (\n    prepend references = [@a.usda@, @b.usda@</B>]\n)\n{\n}\n",
+          { item, "a.usda", "b.usda</B>" }, false },
+        { "def \"W\" (\n    references = None\n)\n{\n}\n", { item }, true },
+        { "def \"W\" (\n    references = [</X>]\n    append references = @c.usda@\n)\n{\n}\n", { item, "</X>" }, true },
+        { "def \"W\" (\n    delete references = @c.usda@\n)\n{\n}\n", { item }, false },
+    };
+    for (const Case &c : cases) {
+        const std::string before = std::string("#usda 1.0\n(\n    doc = \"(not { a prim\"\n)\n# def \"W\"\n") + c.before +
+                                   "def \"V\" {\n    string s = \"}\"\n}\n";
+        bool changed = false;
+        const std::string after = usda_add_references(before, { ref }, &changed);
+        bool isExplicit = false;
+        CHECK(changed && parse(after, meta, root) == "");
+        CHECK(refs_of(meta, root, "W", &isExplicit) == c.want && isExplicit == c.isExplicit);
+        CHECK(root.child("V") && root.child("V")->property("s"));
+        bool again = true;
+        CHECK(usda_add_references(after, { ref }, &again) == after && !again);
+    }
+    /* a root prim defined in a sublayer: an over that holds the reference */
+    {
+        const std::string before = "#usda 1.0\n(\n    subLayers = [@./a.usda@]\n)\n";
+        Specifier spec = Specifier::Def;
+        CHECK(parse(usda_add_references(before, { ref }), meta, root) == "" &&
+              refs_of(meta, root, "W", nullptr, &spec) == std::vector<std::string> { item } && spec == Specifier::Over);
+    }
+
+    /* .usdc: written by Pixar's USD (references prepended, explicit, none) */
+    const std::string src = data_path("usd_refs.usdc"), out = temp_path("usd_refs_edit.usdc");
+    const std::vector<uint8_t> original = read_file(src);
+    const std::vector<RootReference> refs = { { "Prepended", "./p.usdc", "/Prepended" },
+                                              { "Explicit", "./p.usdc", "/Explicit" },
+                                              { "Plain", "./p.usdc", "/Plain" },
+                                              { "Elsewhere", "./p.usdc", "/Elsewhere" } };
+    std::vector<uint8_t> edited;
+    bool changed = false;
+    CHECK(error_of([&] { edited = usdc_add_references(src, refs, &changed); }) == "" && changed);
+    CHECK(edited.size() > original.size() && std::equal(original.begin(), original.begin() + 16, edited.begin()) &&
+          std::equal(original.begin() + 24, original.end(), edited.begin() + 24));
+    write_file(out, edited);
+    std::unique_ptr<Layer> back;
+    CHECK(error_of([&] { back.reset(new Layer(out)); }) == "");
+    if (back) {
+        bool isExplicit = false;
+        Specifier spec = Specifier::Def;
+        const std::vector<std::string> two = { "./usd_asset.usdc</Asset>", "./usd_scene.usda</World>" };
+        std::vector<std::string> want = two;
+        want.insert(want.begin(), "./p.usdc</Prepended>");
+        CHECK(refs_of(back->meta, back->root, "Prepended", &isExplicit) == want && !isExplicit);
+        want = two;
+        want.insert(want.begin(), "./p.usdc</Explicit>");
+        CHECK(refs_of(back->meta, back->root, "Explicit", &isExplicit) == want && isExplicit);
+        CHECK(refs_of(back->meta, back->root, "Plain") == std::vector<std::string> { "./p.usdc</Plain>" });
+        CHECK(refs_of(back->meta, back->root, "Elsewhere", nullptr, &spec) ==
+              std::vector<std::string> { "./p.usdc</Elsewhere>" } && spec == Specifier::Over);
+        CHECK(back->root.children.size() == 4 && back->meta.count("defaultPrim") &&
+              back->meta.at("defaultPrim").str() == "Prepended");
+        for (const char *name : { "Prepended", "Explicit", "Plain" }) {
+            const Prim *p = back->root.child(name);
+            const Property *q = p ? p->property("answer") : nullptr;
+            CHECK(p && p->type == "Xform" && q && back->value(*q).num() == 42);
+        }
+        back.reset();
+        changed = true;
+        std::vector<uint8_t> twice;
+        CHECK(error_of([&] { twice = usdc_add_references(out, refs, &changed); }) == "" && !changed &&
+              twice == edited);
+    }
+    std::remove(out.c_str());
+}
+
 void test_usd(int fuzz_scale) {
     test_read();
     test_world();
     test_compose();
     test_write();
     test_proxy_paths();
+    test_edit();
     test_fuzz(fuzz_scale);
 }

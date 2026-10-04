@@ -16,6 +16,7 @@
 #include "viewer.h"
 #include "serializer.h"
 #include "association.h"
+#include "usdscene.h"
 #include <thread>
 #include <cstdlib>
 
@@ -242,8 +243,9 @@ int main(int argc, char **argv) {
     /* Check the output format before spending time on the computation */
     if (!batchOutput.empty()) {
         const std::string extension = extension_of(batchOutput);
+        /* .usd: with --proxy, a copy of the scene (in its format) */
         if (extension != ".obj" && extension != ".ply" && extension != ".abc" && extension != ".usda" &&
-            extension != ".usdc" && extension != ".usdz") {
+            extension != ".usdc" && extension != ".usdz" && !(extension == ".usd" && proxy)) {
             cerr << "Error: unsupported output format \"" << batchOutput
                  << "\" (.obj/.ply/.abc/.usda/.usdc/.usdz are supported)!" << endl;
             help = true;
@@ -304,7 +306,7 @@ int main(int argc, char **argv) {
     }
     if (proxy && (!objectMode || !usdScene)) {
         cerr << "Error: --proxy adds proxies to the meshes of a USD scene chosen with -m / --others "
-                "(e.g. scene.usdc -o scene_proxy.usda --proxy --others 5%)!" << endl;
+                "(e.g. scene.usdc -o scene.usdc --proxy --others 5%)!" << endl;
         help = true;
     }
     if (objectMode && nConstraints > 0) {
@@ -318,7 +320,14 @@ int main(int argc, char **argv) {
              << sceneExt << ")!" << endl;
         help = true;
     }
-    if (objectMode && needOutput && usdScene) {
+    if (objectMode && needOutput && usdScene && proxy) {
+        /* the scene itself or a copy of it, that references the proxy layer */
+        const std::string problem = usd::proxy_output_error(args[0], batchOutput);
+        if (!problem.empty()) {
+            cerr << "Error: " << problem << endl;
+            help = true;
+        }
+    } else if (objectMode && needOutput && usdScene) {
         /* a layer over the input: it cannot be the input itself, nor a
            package (which would have to hold the input too) */
         const std::string ext = extension_of(batchOutput);
@@ -372,7 +381,9 @@ int main(int argc, char **argv) {
         cout << "       --others <target>     Remesh every other polygon mesh with <target>" << endl;
         cout << "                             (without it, the other objects are copied unchanged)" << endl;
         cout << "       --proxy               USD: keep the meshes, add their remeshed copy as a proxy" << endl;
-        cout << "                             (purpose proxy, proxyPrim; UVs transferred unless --uv)" << endl;
+        cout << "                             (purpose proxy, proxyPrim; UVs transferred unless --uv)." << endl;
+        cout << "                             The proxies go to <output>_proxy.usda/.usdc, referenced by" << endl;
+        cout << "                             <output>: the scene itself when -o names it, else a copy" << endl;
         cout << "       --dry-run             Print the plan of -m / --others and stop" << endl;
         cout << "       --save-imd <job.imd>  Save the plan (and the results) as a project: run it later" << endl;
         cout << "                             with InstantMeshes job.imd -o <scene>, or open it in the" << endl;

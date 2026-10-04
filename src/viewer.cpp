@@ -31,6 +31,7 @@
 #define NANOVG_GL3
 #include <nanovg_gl.h>
 #include <fstream>
+#include <tuple>
 #if defined(_WIN32)
 #  include <direct.h>
 #endif
@@ -82,6 +83,8 @@ static Float slider_from_percent(Float percent) {
 static Float percent_from_slider(Float value) {
     return std::max(value * 100, (Float) 0.1);
 }
+
+static std::string base_name(const std::string &path);
 
 static nanogui::Label *section(nanogui::Widget *parent, const std::string &caption) {
     nanogui::Label *label = new nanogui::Label(parent, caption, "sans-bold");
@@ -819,7 +822,50 @@ void Viewer::draw(NVGcontext *ctx) {
     }
 
     Screen::draw(ctx);
+    drawModeBanner(ctx);
     mMenuBar.draw(ctx, mSize.x());
+}
+
+/* What the viewport shows, with a scene open: the whole scene (all its
+   meshes merged into one) or one mesh alone */
+void Viewer::drawModeBanner(NVGcontext *ctx) {
+    if (!mProject || mRes.levels() == 0)
+        return;
+    std::string text, hint;
+    if (mOpenObject >= 0) {
+        text = "MESH: " + base_name(mProject->objects[(size_t) mOpenObject].mesh.path) + " (alone)";
+        hint = "Use viewport result keeps the extracted mesh for this mesh";
+    } else {
+        text = "WHOLE SCENE: all meshes merged into one";
+        hint = "Use viewport result splits the extracted mesh back into the scene's meshes";
+    }
+    nvgSave(ctx);
+    nvgFontFace(ctx, "sans-bold");
+    nvgFontSize(ctx, 16);
+    float b[4];
+    nvgTextBounds(ctx, 0, 0, text.c_str(), nullptr, b);
+    nvgFontFace(ctx, "sans");
+    nvgFontSize(ctx, 13);
+    float h[4];
+    nvgTextBounds(ctx, 0, 0, hint.c_str(), nullptr, h);
+    const float w = std::max(b[2] - b[0], h[2] - h[0]) + 32, x = (mSize.x() - w) * 0.5f, y = MenuBar::Height + 10;
+    nvgBeginPath(ctx);
+    nvgRoundedRect(ctx, x, y, w, 44, 6);
+    nvgFillColor(ctx, Color(26, 26, 26, 215));
+    nvgFill(ctx);
+    nvgStrokeColor(ctx, mOpenObject >= 0 ? Color(251, 146, 60, 200) : Color(110, 110, 110, 200));
+    nvgStrokeWidth(ctx, 1);
+    nvgStroke(ctx);
+    nvgTextAlign(ctx, NVG_ALIGN_CENTER | NVG_ALIGN_MIDDLE);
+    nvgFontFace(ctx, "sans-bold");
+    nvgFontSize(ctx, 16);
+    nvgFillColor(ctx, mOpenObject >= 0 ? Color(251, 146, 60, 255) : Color(245, 245, 245, 255));
+    nvgText(ctx, mSize.x() * 0.5f, y + 15, text.c_str(), nullptr);
+    nvgFontFace(ctx, "sans");
+    nvgFontSize(ctx, 13);
+    nvgFillColor(ctx, Color(160, 160, 160, 255));
+    nvgText(ctx, mSize.x() * 0.5f, y + 32, hint.c_str(), nullptr);
+    nvgRestore(ctx);
 }
 
 bool Viewer::resizeEvent(const Vector2i &size) {
@@ -1828,6 +1874,7 @@ void Viewer::uploadOutputMesh() {
 
     while (!(mLayers[OutputMesh]->checked() && mLayers[OutputMeshWireframe]->checked()))
         keyboardEvent(GLFW_KEY_BACKSLASH, 0, true, 0);
+    refreshOutliner();   /* Use viewport result is now possible */
 }
 
 void Viewer::traceFlowLines() {
@@ -3798,7 +3845,7 @@ void Viewer::buildMenus() {
         MenuItem::item("Show the whole scene", "", [this] { openWholeScene(); },
                        [this] { return mProject && mOpenObject >= 0 && !busy(); }),
         MenuItem::item("Use the viewport result", "", [this] { useViewportResult(); },
-                       [this] { return mProject && mOpenObject >= 0 && mF_extracted.size() > 0 && !busy(); }),
+                       [this] { return mProject && mF_extracted.size() > 0 && !busy(); }),
         MenuItem::line(),
         MenuItem::item("Copy the command line", "", [this] {
             glfwSetClipboardString(mGLFWWindow, commandLine().c_str());
@@ -3959,7 +4006,8 @@ void Viewer::buildOutliner() {
     out->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
     mUseResultBtn = new Button(out, "Use viewport result");
     mUseResultBtn->setFixedSize(Vector2i(inner / 2 - 2, 25));
-    mUseResultBtn->setTooltip("The mesh extracted in the viewport becomes the result of the open mesh");
+    mUseResultBtn->setTooltip("The mesh extracted in the viewport becomes the result of the open mesh; "
+                              "extracted from the whole scene, it is split back into its meshes");
     mUseResultBtn->setCallback([&] { useViewportResult(); });
     mWriteSceneBtn = new Button(out, "Write scene...", ENTYPO_ICON_EXPORT);
     mWriteSceneBtn->setFixedSize(Vector2i(inner / 2 - 2, 25));
@@ -4029,7 +4077,7 @@ void Viewer::refreshOutliner() {
     mProcessBtn->setEnabled(mProject && !working);
     mCancelBtn->setEnabled(working);
     mWriteSceneBtn->setEnabled(mProject && !working && done);
-    mUseResultBtn->setEnabled(mProject && !working && mOpenObject >= 0 && mF_extracted.size() > 0);
+    mUseResultBtn->setEnabled(mProject && !working && mF_extracted.size() > 0 && mRes.levels() > 0);
     mOpenObjectBtn->setEnabled(mProject && !working && mOutliner->selection().size() == 1);
     mWholeSceneBtn->setEnabled(mProject && !working && mOpenObject >= 0);
     bool shown = false;
@@ -4746,9 +4794,121 @@ void Viewer::openWholeScene() {
     refreshOutliner();
 }
 
+/* The mesh extracted from the whole scene (all meshes merged), split back
+   into the meshes it came from: every face goes to the mesh of the input
+   vertex nearest to its centre (a grid over the input vertices) */
+void Viewer::splitViewportResult() {
+    struct Point { Vector3f p; int object; };
+    std::vector<Point> points;
+    std::vector<int> objects;
+    Vector3f lo = Vector3f::Constant(std::numeric_limits<Float>::infinity()), hi = -lo;
+    for (size_t i = 0; i < mProject->objects.size(); ++i) {
+        const ProjectObject &o = mProject->objects[i];
+        if (mProject->unfit(o))
+            continue;
+        MatrixXu F;
+        MatrixXf V;
+        mProject->scene().load(o.mesh.path, F, V);
+        for (std::ptrdiff_t k = 0; k < V.cols(); ++k) {
+            points.push_back(Point { V.col(k), (int) i });
+            lo = lo.cwiseMin(V.col(k));
+            hi = hi.cwiseMax(V.col(k));
+        }
+        objects.push_back((int) i);
+    }
+    if (points.empty())
+        throw std::runtime_error("the scene has no mesh that can be remeshed");
+    const Float cell = std::max((hi - lo).maxCoeff() / std::cbrt((Float) points.size()) * 2, (Float) 1e-6f);
+    auto key = [&](const Vector3f &p) {
+        const Vector3f q = (p - lo) / cell;
+        return Eigen::Vector3i((int) std::floor(q.x()), (int) std::floor(q.y()), (int) std::floor(q.z()));
+    };
+    std::map<std::tuple<int, int, int>, std::vector<uint32_t>> grid;
+    for (uint32_t k = 0; k < (uint32_t) points.size(); ++k) {
+        const Eigen::Vector3i c = key(points[k].p);
+        grid[std::make_tuple(c.x(), c.y(), c.z())].push_back(k);
+    }
+    const Eigen::Vector3i maxCell = key(hi);
+    const int maxRing = std::max({ maxCell.x(), maxCell.y(), maxCell.z() }) + 1;
+    auto nearest = [&](const Vector3f &p) {
+        const Eigen::Vector3i c = key(p);
+        Float best = std::numeric_limits<Float>::infinity();
+        int object = points[0].object;
+        for (int r = 0; r <= maxRing; ++r) {
+            for (int x = c.x() - r; x <= c.x() + r; ++x)
+                for (int y = c.y() - r; y <= c.y() + r; ++y)
+                    for (int z = c.z() - r; z <= c.z() + r; ++z) {
+                        if (std::max({ std::abs(x - c.x()), std::abs(y - c.y()), std::abs(z - c.z()) }) != r)
+                            continue;
+                        auto it = grid.find(std::make_tuple(x, y, z));
+                        if (it == grid.end())
+                            continue;
+                        for (uint32_t k : it->second) {
+                            const Float d = (points[k].p - p).squaredNorm();
+                            if (d < best) {
+                                best = d;
+                                object = points[k].object;
+                            }
+                        }
+                    }
+            /* a ring further away cannot hold a nearer point */
+            if (std::isfinite(best) && std::sqrt(best) <= r * cell)
+                break;
+        }
+        return object;
+    };
+
+    /* faces per mesh, then each mesh with its own vertices */
+    std::map<int, std::vector<std::ptrdiff_t>> facesOf;
+    for (std::ptrdiff_t f = 0; f < mF_extracted.cols(); ++f) {
+        Vector3f centre = Vector3f::Zero();
+        for (int r = 0; r < mF_extracted.rows(); ++r)
+            centre += mV_extracted.col(mF_extracted(r, f));
+        facesOf[nearest(centre / (Float) mF_extracted.rows())].push_back(f);
+    }
+    const RemeshParams::UVMode uvMode = mProject->options.params.uv;
+    std::string summary;
+    for (const auto &kv : facesOf) {
+        std::vector<int32_t> remap((size_t) mV_extracted.cols(), -1);
+        MatrixXu F((std::ptrdiff_t) mF_extracted.rows(), (std::ptrdiff_t) kv.second.size());
+        std::vector<Vector3f> verts;
+        for (size_t k = 0; k < kv.second.size(); ++k)
+            for (int r = 0; r < mF_extracted.rows(); ++r) {
+                const uint32_t v = mF_extracted(r, kv.second[k]);
+                if (remap[v] < 0) {
+                    remap[v] = (int32_t) verts.size();
+                    verts.push_back(mV_extracted.col(v));
+                }
+                F(r, (std::ptrdiff_t) k) = (uint32_t) remap[v];
+            }
+        MatrixXf V(3, (std::ptrdiff_t) verts.size());
+        for (size_t k = 0; k < verts.size(); ++k)
+            V.col((std::ptrdiff_t) k) = verts[k];
+        ProjectObject &o = mProject->objects[(size_t) kv.first];
+        const std::vector<CornerUVs> uvs = object_uvs(mProject->scene(), o.mesh.path, F, V, uvMode);
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        mProject->store(o, F, V, uvs);
+        o.message = "split from the whole scene extracted in the viewport";
+    }
+    mBatchLabel->setCaption("Whole scene result split into " + std::to_string(facesOf.size()) + " of " +
+                            std::to_string(objects.size()) + " meshes: they are done (Write scene)");
+}
+
 void Viewer::useViewportResult() {
-    if (!mProject || busy() || mOpenObject < 0 || mF_extracted.size() == 0)
+    if (!mProject || busy() || mF_extracted.size() == 0)
         return;
+    if (mOpenObject < 0) {
+        try {
+            guiToOptions();
+            splitViewportResult();
+        } catch (const std::exception &e) {
+            new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+            return;
+        }
+        setDirty();
+        refreshOutliner();
+        return;
+    }
     try {
         guiToOptions();
         ProjectObject &o = mProject->objects[(size_t) mOpenObject];

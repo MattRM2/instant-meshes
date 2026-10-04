@@ -529,7 +529,10 @@ def build(cover_image=None):
                   "<b>Process checked</b> remeshes in the background (progress bar, Cancel); each mesh turns "
                   "<font color='#4ADE80'>done</font>, <font color='#F87171'>failed</font> (the scene keeps it "
                   "unchanged) or <font color='#FACC15'>stale</font> (its target or the scene changed).",
-                  "A mesh worked by hand: <b>Extract mesh</b>, then <b>Use viewport result</b>.",
+                  "A mesh worked by hand: <b>Extract mesh</b>, then <b>Use viewport result</b>. The banner at "
+                  "the top of the viewport says what it shows: <b>WHOLE SCENE</b> (all meshes merged into one) "
+                  "or <b>MESH: name (alone)</b>. Extracted from the whole scene, the result is split back into "
+                  "its meshes (each face goes to the nearest mesh); extracted from one mesh, it stays with it.",
                   "<b>Write scene...</b>: an Alembic or OBJ copy, or a USD layer, with every done mesh. "
                   "<b>Copy command line</b>: the same job for the render farm.",
               ])]], colWidths=[66 * mm, W - 2 * MARGIN - 66 * mm],

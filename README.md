@@ -160,7 +160,11 @@ dessous de quelques centaines de polygones.
   Par maillage : faces, cible propre (comme `-m`, en orange) ou par défaut (`--others`), état
   (done, failed, stale).
 - **Process checked** remaille les maillages cochés en tâche de fond (barre de progression,
-  annulation). **Use viewport result** garde un maillage retouché à la main. **Write scene**
+  annulation). **Use viewport result** garde un maillage retouché à la main. Le bandeau en haut
+  de la vue indique ce qu'elle montre : `WHOLE SCENE` (scène entière, tous les maillages fusionnés)
+  ou `MESH: nom (alone)`. Extrait de la scène entière, le résultat est redécoupé par maillage
+  (chaque face va au maillage le plus proche) ; extrait d'un maillage seul, il reste à ce
+  maillage. **Write scene**
   écrit la scène. **Copy command line** donne la même commande pour la ferme.
 - **Projets `.imd`** (File > Save) : la scène (référencée, pas copiée), les réglages, la cible et
   l'état de chaque maillage, les résultats déjà calculés et les traits faits à la main. Si la scène

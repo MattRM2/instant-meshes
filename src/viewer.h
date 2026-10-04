@@ -133,6 +133,8 @@ protected:
     void openObject(int index);
     void openWholeScene();
     void useViewportResult();
+    void splitViewportResult();
+    void drawModeBanner(NVGcontext *ctx);
     void setSelectedTarget(bool clear);
     void refreshOutliner();
     void setDirty(bool dirty = true);

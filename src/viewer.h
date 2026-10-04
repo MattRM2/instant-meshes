@@ -20,7 +20,13 @@
 #include "bvh.h"
 #include "meshstats.h"
 #include "meshio.h"
+#include "menubar.h"
+#include "outliner.h"
+#include "project.h"
+#include <atomic>
+#include <mutex>
 #include <set>
+#include <thread>
 
 using nanogui::Alignment;
 using nanogui::Arcball;
@@ -75,6 +81,15 @@ public:
                    Float scale = -1, int face_count = -1, int vertex_count = -1,
                    int rosy = 4, int posy = 4, int knn_points = 10);
 
+    /// Opens a file by its kind: a project (.imd), a scene (.abc, .obj,
+    /// .usd*: its meshes in the Outliner), a mesh or point cloud; asks for
+    /// one when 'filename' is empty
+    void openFile(const std::string &filename);
+
+    bool dropEvent(const std::vector<std::string> &filenames) override;
+    /// The window is closing: false keeps it open (unsaved changes)
+    bool closeRequested();
+
     void setSymmetry(int rosy, int posy);
     void setExtrinsic(bool extrinsic);
 
@@ -94,6 +109,44 @@ protected:
 
     void drawContents();
     void drawOverlay();
+
+    /* Loads a triangle mesh (or point cloud) into the viewport */
+    void loadMesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons, const std::string &label,
+                  Float creaseAngle, Float scale, int face_count, int vertex_count, int rosy, int posy,
+                  int knn_points);
+
+    /* Projects, scenes and the Outliner */
+    void buildMenus();
+    void buildOutliner();
+    void layoutOutliner();
+    void openScene(const std::string &filename);
+    void openProject(const std::string &imd, const std::string &source = std::string());
+    void newProject();
+    void saveProject(bool as);
+    void exportMesh();
+    void writeScene();
+    void processChecked();
+    void cancelProcessing();
+    void pollWorker();
+    void openObject(int index);
+    void openWholeScene();
+    void useViewportResult();
+    void setSelectedTarget(bool clear);
+    void refreshOutliner();
+    void setDirty(bool dirty = true);
+    void updateTitle();
+    RemeshParams guiParams() const;
+    void guiToOptions();
+    void optionsToGui();
+    std::string commandLine() const;
+    void confirm(const std::string &question, const std::function<void()> &then);
+    void addRecent(const std::string &file);
+    std::vector<std::string> recentFiles() const;
+    void captureWork();
+    void restoreWork(int index);
+    void clearViewport();
+    bool busy() const { return mWorkerBusy; }
+    bool hasProjectSelection() const;
 
     bool resizeEvent(const Vector2i &size);
 
@@ -144,7 +197,6 @@ protected:
         float modelZoom = 1.0f;
     };
 
-    std::vector<std::pair<int, std::string>> mExampleImages;
     std::string mFilename;
     bool mDeterministic;
     bool mUseHalfFloats;
@@ -225,6 +277,7 @@ protected:
     Button *mHierarchyMinusButton, *mHierarchyPlusButton;
     Button *mSaveBtn, *mSwitchBtn;
     PopupButton *mExportBtn;
+    Button *mAboutBtn = nullptr;
     ToolButton *mOrientationComb, *mOrientationAttractor, *mOrientationScareBrush;
     ToolButton *mEdgeBrush, *mPositionAttractor, *mPositionScareBrush;
     TextBox *mHierarchyLevelBox, *mCreaseAngleBox;
@@ -248,6 +301,31 @@ protected:
     Float mUnsafeVertexCount = std::numeric_limits<Float>::infinity();
     uint64_t mInputPolygons = 0;
     SceneUnits mUnits;                 /* of the loaded file, written to a .usda */
+
+    /* Projects, scenes, Outliner, menus */
+    MenuBar mMenuBar;
+    Window *mWindow = nullptr, *mOutlinerWindow = nullptr;
+    OutlinerView *mOutliner = nullptr;
+    Label *mOutlinerInfo = nullptr, *mBatchLabel = nullptr;
+    TextBox *mFilterBox = nullptr, *mObjectTargetBox = nullptr, *mOthersBox = nullptr;
+    ComboBox *mUVBox = nullptr;
+    CheckBox *mKeepBorderBox = nullptr, *mProxyBox = nullptr, *mSkipFailedBox = nullptr, *mDeterministicBox = nullptr;
+    Button *mProcessBtn = nullptr, *mCancelBtn = nullptr, *mUseResultBtn = nullptr, *mWriteSceneBtn = nullptr;
+    Button *mOpenObjectBtn = nullptr, *mWholeSceneBtn = nullptr;
+    ProgressBar *mBatchBar = nullptr;
+    std::unique_ptr<Project> mProject;
+    std::mutex mProjectLock;
+    std::string mProjectFile;
+    bool mDirty = false;
+    int mOpenObject = -1;
+    int mShownDone = -1;
+    bool mClosing = false;
+    static const int OutlinerWidth = 410;
+    std::thread mWorker;
+    std::atomic<bool> mWorkerBusy { false }, mCancel { false };
+    std::atomic<int> mWorkerDone { 0 }, mWorkerTotal { 0 };
+    std::string mWorkerCurrent;              /* guarded by mProjectLock */
+    std::vector<std::string> mWorkerErrors;  /* guarded by mProjectLock */
 
     /* Progress display */
     std::function<void(const std::string &, Float)> mProgress;

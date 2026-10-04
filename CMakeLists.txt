@@ -121,7 +121,6 @@ include_directories(
 set(PNG_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/comb.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/delete_stroke.png
-  ${CMAKE_CURRENT_SOURCE_DIR}/resources/loadmesh.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/scare.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/sing_dir.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/sing_pos.png
@@ -168,7 +167,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/meshstats.h src/meshstats.cpp
   src/hierarchy.h src/hierarchy.cpp
   src/extract.h src/extract.cpp
-  src/viewer.h src/viewer.cpp
+  src/viewer.h src/viewer.cpp src/menubar.h src/menubar.cpp src/outliner.h src/outliner.cpp
   src/field.h src/field.cpp
   src/bvh.h src/bvh.cpp
   src/subdivide.h src/subdivide.cpp

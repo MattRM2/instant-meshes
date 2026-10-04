@@ -529,19 +529,26 @@ void Project::apply_rules(const std::vector<MeshRule> &rules) {
     }
 }
 
+ObjectResult Project::compute(const std::string &path, const FaceTarget &target, const RemeshParams &params) {
+    return remesh_object(scene(), path, target, params);
+}
+
+void Project::store(ProjectObject &o, const MatrixXu &F, const MatrixXf &V, const std::vector<CornerUVs> &uvs) {
+    if (!mSpool)
+        mSpool.reset(new Spool(!mSpoolPath.empty() ? mSpoolPath : (mFile.empty() ? source : mFile) + ".spool.tmp"));
+    o.result = mSpool->put(F, V, uvs);
+    o.resultFaces = (uint64_t) F.cols();
+    o.state = ObjectState::Done;
+    o.message.clear();
+}
+
 RemeshReport Project::process(ProjectObject &o) {
     const FaceTarget t = target_of(o);
     if (!t.valid())
         throw std::runtime_error("\"" + o.mesh.path + "\" has no target");
     try {
         ObjectResult r = remesh_object(scene(), o.mesh.path, t, options.params);
-        if (!mSpool)
-            mSpool.reset(new Spool(!mSpoolPath.empty() ? mSpoolPath
-                                   : (mFile.empty() ? source : mFile) + ".spool.tmp"));
-        o.result = mSpool->put(r.F, r.V, r.uvs);
-        o.resultFaces = (uint64_t) r.F.cols();
-        o.state = ObjectState::Done;
-        o.message.clear();
+        store(o, r.F, r.V, r.uvs);
         return r.report;
     } catch (const std::exception &e) {
         o.state = ObjectState::Failed;

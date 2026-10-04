@@ -441,6 +441,12 @@ int main(int argc, char **argv) {
             if (args.size() == 1) {
                 if (Serializer::isSerializedFile(args[0])) {
                     viewer->loadState(args[0], compat);
+                } else if (projectInput || sceneExt == ".abc" || sceneExt == ".obj" || usdScene) {
+                    /* a project, or a scene: its meshes in the Outliner */
+                    viewer->openFile(args[0]);
+                    viewer->setExtrinsic(extrinsic);
+                    if (face_percent > 0)
+                        viewer->setTargetPercent(face_percent);
                 } else {
                     viewer->loadInput(args[0], crease_angle,
                             scale, face_count, vertex_count,

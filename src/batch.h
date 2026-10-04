@@ -91,6 +91,11 @@ struct ObjectResult {
 extern ObjectResult remesh_object(SceneFile &scene, const std::string &path, const FaceTarget &target,
                                   const RemeshParams &params);
 
+/// The UVs of a new mesh of a scene mesh: those of the original
+/// transferred, or new ones unwrapped, or none (mode)
+extern std::vector<CornerUVs> object_uvs(SceneFile &scene, const std::string &path, const MatrixXu &F,
+                                         const MatrixXf &V, RemeshParams::UVMode mode);
+
 /// Single input -> single output (whole file remeshed as one mesh)
 extern void batch_process(const std::string &input, const std::string &output,
                           const RemeshParams &params);

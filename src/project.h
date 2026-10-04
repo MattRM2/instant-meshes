@@ -87,6 +87,12 @@ public:
     /// (temporary file), or Failed with the error, rethrown
     RemeshReport process(ProjectObject &o);
 
+    /// The remeshing of one mesh, the project untouched (a worker thread
+    /// computes while the interface reads the project)
+    ObjectResult compute(const std::string &path, const FaceTarget &target, const RemeshParams &params);
+    /// Keeps a result for a mesh (temporary file): state Done
+    void store(ProjectObject &o, const MatrixXu &F, const MatrixXf &V, const std::vector<CornerUVs> &uvs);
+
     /// Writes the scene with the results of the done meshes (replaced, or
     /// added as proxies); throws if none
     void write(const std::string &output);

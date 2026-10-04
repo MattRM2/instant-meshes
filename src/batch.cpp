@@ -429,6 +429,19 @@ ObjectResult remesh_object(SceneFile &scene, const std::string &path, const Face
     return r;
 }
 
+std::vector<CornerUVs> object_uvs(SceneFile &scene, const std::string &path, const MatrixXu &F,
+                                  const MatrixXf &V, RemeshParams::UVMode mode) {
+    if (mode == RemeshParams::UVUnwrap)
+        return unwrap(F, V);
+    if (mode != RemeshParams::UVTransfer)
+        return std::vector<CornerUVs>();
+    MatrixXu F0;
+    MatrixXf V0;
+    std::vector<UVSet> uvs;
+    scene.load(path, F0, V0, nullptr, &uvs);
+    return transfer_uvs(F0, V0, uvs, F, V, path);
+}
+
 void batch_process(const std::string &input, const std::string &output,
                    const RemeshParams &params) {
     cout << endl;

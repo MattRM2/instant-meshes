@@ -30,6 +30,9 @@
 #define NANOVG_GL3
 #include <nanovg_gl.h>
 #include <fstream>
+#if defined(_WIN32)
+#  include <direct.h>
+#endif
 
 #if !defined(_WIN32)
 #  include <unistd.h>
@@ -194,18 +197,11 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     cout << "done. (took " << timeString(timer.value()) << ")" << endl;
 
     auto ctx = nvgContext();
-    /* Scan over example files in the 'datasets' directory */
-    try {
-        mExampleImages = nanogui::loadImageDirectory(ctx, "datasets");
-    } catch (const std::runtime_error &e) {
-        cout << "Unable to load image data: " << e.what() << endl;
-    }
-    mExampleImages.insert(mExampleImages.begin(),
-                          std::make_pair(nvgImageIcon(ctx, loadmesh), ""));
 
     /* Initialize user interface */
     Window *window = new Window(this, "Instant Meshes");
-    window->setPosition(Vector2i(15, 15));
+    window->setPosition(Vector2i(15, MenuBar::Height + 10));
+    mWindow = window;
     window->setLayout(new GroupLayout());
     window->setId("viewer");
 
@@ -216,17 +212,10 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     mProgressBar->setFixedWidth(250);
     mProgressWindow->setVisible(false);
 
-    PopupButton *openBtn = new PopupButton(window, "Open mesh");
+    Button *openBtn = new Button(window, "Open...", ENTYPO_ICON_FOLDER);
     openBtn->setBackgroundColor(Color(251, 146, 60, 60));
-    openBtn->setIcon(ENTYPO_ICON_FOLDER);
-    Popup *popup = openBtn->popup();
-    VScrollPanel *vscroll = new VScrollPanel(popup);
-    ImagePanel *panel = new ImagePanel(vscroll);
-    panel->setImages(mExampleImages);
-    panel->setCallback([&, openBtn](int i) {
-        openBtn->setPushed(false);
-        loadInput(mExampleImages[i].second);
-    });
+    openBtn->setTooltip("A scene (.abc, .obj, .usd), a project (.imd), a mesh or a point cloud (Ctrl+O)");
+    openBtn->setCallback([&] { openFile(""); });
 
     PopupButton *advancedBtn = new PopupButton(window, "Advanced");
     advancedBtn->setIcon(ENTYPO_ICON_ROCKET);
@@ -719,25 +708,7 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     mSaveBtn->setBackgroundColor(Color(251, 146, 60, 255));
     mSaveBtn->setTextColor(Color(26, 26, 26, 255));
     mSaveBtn->setId("saveMeshBtn");
-    mSaveBtn->setCallback([&]() {
-        try {
-            std::string filename = nanogui::file_dialog({
-                {"obj", "Wavefront OBJ"},
-                {"ply", "Stanford PLY"},
-                {"abc", "Alembic"},
-                {"usda", "USD (text)"},
-                {"usdc", "USD (binary)"},
-                {"usdz", "USD (package)"}
-            }, true);
-
-            if (filename == "")
-                return;
-            write_mesh(filename, mF_extracted, mV_extracted, MatrixXf(), mNf_extracted, MatrixXf(), MatrixXf(),
-                       ProgressCallback(), std::vector<CornerUVs>(), mUnits);
-        } catch (const std::exception &e) {
-            new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
-        }
-    });
+    mSaveBtn->setCallback([&]() { exportMesh(); });
 
     section(exportPopup, "Advanced");
     Button *consensusGraphBtn = new Button(exportPopup, "Consensus graph", ENTYPO_ICON_FLOW_TREE);
@@ -771,14 +742,30 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
         dlg->center();
     });
 
+    mAboutBtn = about;
+    buildOutliner();
+    buildMenus();
     performLayout(ctx);
+    layoutOutliner();
 
     mProgress = std::bind(&Viewer::showProgress, this, _1, _2);
     mOperationStart = mLastProgressMessage = glfwGetTime();
     resetState();
+
+    /* the window's close button asks first when there are unsaved changes */
+    static Viewer *self;
+    self = this;
+    glfwSetWindowCloseCallback(mGLFWWindow, [](GLFWwindow *w) {
+        if (self && !self->closeRequested())
+            glfwSetWindowShouldClose(w, GL_FALSE);
+    });
+    updateTitle();
 }
 
 Viewer::~Viewer() {
+    mCancel = true;
+    if (mWorker.joinable())
+        mWorker.join();
     if (mBVH)
         delete mBVH;
     mOptimizer.shutdown();
@@ -801,6 +788,7 @@ Viewer::~Viewer() {
 }
 
 void Viewer::draw(NVGcontext *ctx) {
+    pollWorker();
     const bool flow = mLayers[FlowLines]->checked();
     for (int i = 0; i < 4; ++i) {
         mFlowModeBtn[i]->setPushed(i == (flow ? mFlowColorMode : 0));
@@ -821,6 +809,7 @@ void Viewer::draw(NVGcontext *ctx) {
     }
 
     Screen::draw(ctx);
+    mMenuBar.draw(ctx, mSize.x());
 }
 
 bool Viewer::resizeEvent(const Vector2i &size) {
@@ -835,6 +824,7 @@ bool Viewer::resizeEvent(const Vector2i &size) {
 
     mFBO.init(mFBSize, nSamples);
     mCamera.arcball.setSize(mSize);
+    layoutOutliner();
     repaint();
     return true;
 }
@@ -1130,6 +1120,25 @@ Vector3f compat_uv(const Vector3f &o, const Vector3f &ref, const Vector3f &q, co
 
 bool Viewer::keyboardEvent(int key, int scancode, int event, int modifiers) {
     if (event == GLFW_PRESS) {
+        if (key == GLFW_KEY_ESCAPE && mMenuBar.close())
+            return true;
+        if (modifiers & GLFW_MOD_CONTROL) {
+            const bool shift = (modifiers & GLFW_MOD_SHIFT) != 0;
+            if (key == 'N') {
+                newProject();
+                return true;
+            } else if (key == 'O') {
+                openFile("");
+                return true;
+            } else if (key == 'S') {
+                saveProject(shift);
+                return true;
+            } else if (key == 'Q') {
+                if (closeRequested())
+                    glfwSetWindowShouldClose(mGLFWWindow, GL_TRUE);
+                return true;
+            }
+        }
 #if DEV_MODE
         if (key == GLFW_KEY_SPACE && mRes.levels() > 0) {
             if (mSolvePositionBtn->enabled()) {
@@ -3179,6 +3188,8 @@ bool Viewer::toolActive() const {
 
 bool Viewer::mouseMotionEvent(const Vector2i &p, const Vector2i &rel,
                               int button, int modifiers) {
+    if (mMenuBar.mouseMotion(p))
+        return true;
     if (mDrag && toolActive()) {
         mScreenCurve.push_back(p);
         return true;
@@ -3201,6 +3212,8 @@ bool Viewer::mouseMotionEvent(const Vector2i &p, const Vector2i &rel,
 }
 
 bool Viewer::mouseButtonEvent(const Vector2i &p, int button, bool down, int modifiers) {
+    if (mMenuBar.mouseButton(p, button, down))
+        return true;
     if (!Screen::mouseButtonEvent(p, button, down, modifiers)) {
         if (toolActive()) {
             bool drag = down && button == GLFW_MOUSE_BUTTON_1;
@@ -3339,17 +3352,16 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
     }
 
     /* Load triangle mesh data */
-    MatrixXu F, F_gpu;
-    MatrixXf V, N, V_gpu, N_gpu;
-    VectorXf A;
-    AdjacencyMatrix adj = nullptr;
+    MatrixXu F;
+    MatrixXf V, N;
+    uint64_t polygons = 0;
 
     mOperationStart = mLastProgressMessage = glfwGetTime();
     mProcessEvents = false;
     glfwMakeContextCurrent(nullptr);
 
     try {
-        load_mesh_or_pointcloud(filename, F, V, N, mProgress, &mInputPolygons, nullptr, &mUnits);
+        load_mesh_or_pointcloud(filename, F, V, N, mProgress, &polygons, nullptr, &mUnits);
     } catch (const std::exception &e) {
         new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
         glfwMakeContextCurrent(mGLFWWindow);
@@ -3357,10 +3369,24 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
         return;
     }
     mFilename = filename;
+    const size_t slash = filename.find_last_of("/\\");
+    loadMesh(F, V, N, polygons, slash == std::string::npos ? filename : filename.substr(slash + 1), creaseAngle,
+             scale, face_count, vertex_count, rosy, posy, knn_points);
+}
+
+void Viewer::loadMesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons, const std::string &name,
+                      Float creaseAngle, Float scale, int face_count, int vertex_count, int rosy, int posy,
+                      int knn_points) {
+    /* the caller released the GL context and stopped the events */
+    MatrixXu F_gpu;
+    MatrixXf V_gpu, N_gpu;
+    VectorXf A;
+    AdjacencyMatrix adj = nullptr;
+    mInputPolygons = polygons;
+    if (!std::isfinite(creaseAngle))
+        creaseAngle = -1;
     bool pointcloud = F.size() == 0;
     {
-        const size_t slash = filename.find_last_of("/\\");
-        const std::string name = slash == std::string::npos ? filename : filename.substr(slash + 1);
         mInputInfoLabel->setCaption(name + "  \xC2\xB7  " + (pointcloud
             ? group_thousands((uint64_t) V.cols()) + " points"
             : group_thousands(mInputPolygons) + " faces"));
@@ -3663,4 +3689,965 @@ void Viewer::showProgress(const std::string &_caption, Float value) {
     glfwSwapBuffers(mGLFWWindow);
     mLastProgressMessage = glfwGetTime();
     glfwMakeContextCurrent(nullptr);
+}
+
+/* ------------------------------------------------------------------------- */
+/*  Projects, scenes, Outliner and menus                                     */
+/* ------------------------------------------------------------------------- */
+
+static std::string base_name(const std::string &path) {
+    const size_t s = path.find_last_of("/\\");
+    return s == std::string::npos ? path : path.substr(s + 1);
+}
+
+static std::string lower_extension(const std::string &path) {
+    const size_t dot = path.rfind('.'), slash = path.find_last_of("/\\");
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+        return std::string();
+    return str_tolower(path.substr(dot));
+}
+
+static bool is_scene_file(const std::string &path) {
+    const std::string ext = lower_extension(path);
+    return ext == ".abc" || ext == ".obj" || usd::is_usd_file(path);
+}
+
+static std::string quote_arg(const std::string &s) {
+    return s.find_first_of(" *?\"") == std::string::npos && !s.empty() ? s : "\"" + s + "\"";
+}
+
+void Viewer::buildMenus() {
+    auto hasProject = [this] { return mProject != nullptr && !busy(); };
+    auto hasResult = [this] {
+        if (!mProject || busy())
+            return false;
+        for (const ProjectObject &o : mProject->objects)
+            if (o.state == ObjectState::Done)
+                return true;
+        return false;
+    };
+    mMenuBar.addMenu("File", {
+        MenuItem::item("New", "Ctrl+N", [this] { newProject(); }),
+        MenuItem::item("Open...", "Ctrl+O", [this] { openFile(""); }),
+        MenuItem::sub("Open recent", [this] {
+            std::vector<MenuItem> items;
+            for (const std::string &f : recentFiles()) {
+                /* the name, its folder muted on the right */
+                const std::string dir = f.substr(0, f.size() - base_name(f).size());
+                std::string folder = base_name(dir.empty() ? dir : dir.substr(0, dir.size() - 1));
+                items.push_back(MenuItem::item(base_name(f), folder, [this, f] { openFile(f); }));
+            }
+            if (items.empty())
+                items.push_back(MenuItem::item("(no recent file)", "", nullptr, [] { return false; }));
+            return items;
+        }),
+        MenuItem::line(),
+        MenuItem::item("Save", "Ctrl+S", [this] { saveProject(false); }, hasProject),
+        MenuItem::item("Save as...", "Ctrl+Shift+S", [this] { saveProject(true); }, hasProject),
+        MenuItem::line(),
+        MenuItem::item("Import legacy state...", "", [this] { loadState(""); }, [this] { return !busy(); }),
+        MenuItem::item("Export mesh...", "", [this] { exportMesh(); },
+                       [this] { return mF_extracted.size() > 0 && !busy(); }),
+        MenuItem::item("Write scene...", "", [this] { writeScene(); }, hasResult),
+        MenuItem::line(),
+        MenuItem::item("Quit", "Ctrl+Q", [this] {
+            if (closeRequested())
+                glfwSetWindowShouldClose(mGLFWWindow, GL_TRUE);
+        }),
+    });
+    mMenuBar.addMenu("Scene", {
+        MenuItem::item("Process checked meshes", "", [this] { processChecked(); }, hasProject),
+        MenuItem::item("Cancel processing", "", [this] { cancelProcessing(); }, [this] { return busy(); }),
+        MenuItem::line(),
+        MenuItem::item("Open selected mesh", "", [this] {
+            if (mOutliner->selection().size() == 1)
+                openObject(*mOutliner->selection().begin());
+        }, [this] { return hasProjectSelection(); }),
+        MenuItem::item("Show the whole scene", "", [this] { openWholeScene(); },
+                       [this] { return mProject && mOpenObject >= 0 && !busy(); }),
+        MenuItem::item("Use the viewport result", "", [this] { useViewportResult(); },
+                       [this] { return mProject && mOpenObject >= 0 && mF_extracted.size() > 0 && !busy(); }),
+        MenuItem::line(),
+        MenuItem::item("Copy the command line", "", [this] {
+            glfwSetClipboardString(mGLFWWindow, commandLine().c_str());
+            mBatchLabel->setCaption("Command line copied to the clipboard");
+        }, hasProject),
+        MenuItem::line(),
+        MenuItem::item("Show the Outliner", "", [this] {
+            mOutlinerWindow->setVisible(!mOutlinerWindow->visible());
+        }),
+    });
+    mMenuBar.addMenu("Help", {
+        MenuItem::item("About Instant Meshes", "", [this] { mAboutBtn->callback()(); }),
+    });
+}
+
+bool Viewer::hasProjectSelection() const {
+    return mProject && !busy() && mOutliner && mOutliner->selection().size() == 1;
+}
+
+void Viewer::buildOutliner() {
+    Window *win = new Window(this, "Outliner");
+    win->setId("outliner");
+    win->setLayout(new GroupLayout(12, 5, 12, 0));
+    mOutlinerWindow = win;
+    const int inner = OutlinerWidth - 24;
+
+    mOutlinerInfo = new Label(win, "No scene: File > Open (.abc, .obj, .usd, .imd)");
+    mOutlinerInfo->setColor(Color(163, 163, 163, 255));
+    mOutlinerInfo->setFixedWidth(inner);
+
+    mFilterBox = new TextBox(win, "");
+    mFilterBox->setEditable(true);
+    mFilterBox->setAlignment(TextBox::Alignment::Left);
+    mFilterBox->setFixedSize(Vector2i(inner, 25));
+    mFilterBox->setTooltip("Filter: a part of the name (Rock), or a pattern (*Rock*, Props/*)");
+    mFilterBox->setCallback([&](const std::string &v) {
+        mOutliner->setFilter(v);
+        return true;
+    });
+
+    mOutliner = new OutlinerView(win);
+    mOutliner->setFixedSize(Vector2i(inner, 200));
+    mOutliner->openCallback = [&](int i) { openObject(i); };
+    mOutliner->changeCallback = [&] { setDirty(); refreshOutliner(); };
+
+    section(win, "Selected meshes");
+    Widget *row = new Widget(win);
+    row->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    mObjectTargetBox = new TextBox(row, "50%");
+    mObjectTargetBox->setEditable(true);
+    mObjectTargetBox->setFixedSize(Vector2i(80, 25));
+    mObjectTargetBox->setTooltip("Their own target: a percentage (50%) or a face count (5000), like -m");
+    Button *set = new Button(row, "Set target");
+    set->setFixedSize(Vector2i(100, 25));
+    set->setCallback([&] { setSelectedTarget(false); });
+    Button *clear = new Button(row, "Clear");
+    clear->setFixedSize(Vector2i(64, 25));
+    clear->setTooltip("Back to the default target");
+    clear->setCallback([&] { setSelectedTarget(true); });
+    mOpenObjectBtn = new Button(row, "Open", ENTYPO_ICON_EYE);
+    mOpenObjectBtn->setFixedSize(Vector2i(inner - 80 - 100 - 64 - 12, 25));
+    mOpenObjectBtn->setTooltip("Open the selected mesh alone in the viewport (or double click it)");
+    mOpenObjectBtn->setCallback([&] {
+        if (mOutliner->selection().size() == 1)
+            openObject(*mOutliner->selection().begin());
+    });
+
+    section(win, "Scene");
+    Widget *others = new Widget(win);
+    others->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 8));
+    new Label(others, "Default target");
+    mOthersBox = new TextBox(others, "");
+    mOthersBox->setEditable(true);
+    mOthersBox->setFixedSize(Vector2i(80, 25));
+    mOthersBox->setTooltip("--others: the target of the meshes without their own (empty: kept unchanged)");
+    mOthersBox->setCallback([&](const std::string &v) {
+        if (!mProject)
+            return true;
+        try {
+            std::lock_guard<std::mutex> lock(mProjectLock);
+            mProject->options.others = v.empty() ? FaceTarget() : parse_face_target(v);
+        } catch (const std::exception &e) {
+            new MessageDialog(this, MessageDialog::Type::Warning, "Default target", e.what());
+            return false;
+        }
+        setDirty();
+        refreshOutliner();
+        return true;
+    });
+    mUVBox = new ComboBox(others, { "UVs: none", "UVs: transfer", "UVs: unwrap" });
+    mUVBox->setFixedSize(Vector2i(inner - 80 - 8 - 8 - 105, 25));
+    mUVBox->setTooltip("--uv: the UVs of the new meshes, transferred from the original or unwrapped (xatlas)");
+    mUVBox->setCallback([&](int) { setDirty(); });
+
+    Widget *checks1 = new Widget(win), *checks2 = new Widget(win);
+    checks1->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    checks2->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    mKeepBorderBox = new CheckBox(checks1, "Keep border", [&](bool) { setDirty(); });
+    mKeepBorderBox->setTooltip("--keep-border: objects touching along their borders stay closed");
+    mProxyBox = new CheckBox(checks1, "USD proxies", [&](bool) { setDirty(); refreshOutliner(); });
+    mProxyBox->setTooltip("--proxy: keep the meshes, add the new ones as their proxies (USD scenes)");
+    mDeterministicBox = new CheckBox(checks2, "Deterministic", [&](bool) { setDirty(); });
+    mDeterministicBox->setTooltip("-d: the same result on every run (slower)");
+    mDeterministicBox->setChecked(mDeterministic);
+    mSkipFailedBox = new CheckBox(checks2, "Skip failed", [&](bool) { setDirty(); });
+    mSkipFailedBox->setTooltip("--skip-failed, for the command line: here a mesh that fails is kept unchanged");
+    for (Widget *row : { checks1, checks2 })
+        for (Widget *c : row->children())
+            c->setFixedSize(Vector2i(inner / 2 - 2, 22));
+
+    Widget *run = new Widget(win);
+    run->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    mProcessBtn = new Button(run, "Process checked", ENTYPO_ICON_FLASH);
+    mProcessBtn->setBackgroundColor(Color(251, 146, 60, 255));
+    mProcessBtn->setTextColor(Color(26, 26, 26, 255));
+    mProcessBtn->setFixedSize(Vector2i(inner - 90 - 4, 27));
+    mProcessBtn->setTooltip("Remesh the checked meshes that have a target, in the background");
+    mProcessBtn->setCallback([&] { processChecked(); });
+    mCancelBtn = new Button(run, "Cancel");
+    mCancelBtn->setFixedSize(Vector2i(90, 27));
+    mCancelBtn->setCallback([&] { cancelProcessing(); });
+    mBatchBar = new ProgressBar(win);
+    mBatchBar->setFixedSize(Vector2i(inner, 8));
+    mBatchLabel = new Label(win, " ");
+    mBatchLabel->setFixedSize(Vector2i(inner, 20));
+    mBatchLabel->setColor(Color(163, 163, 163, 255));
+
+    Widget *out = new Widget(win);
+    out->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    mUseResultBtn = new Button(out, "Use viewport result");
+    mUseResultBtn->setFixedSize(Vector2i(inner / 2 - 2, 25));
+    mUseResultBtn->setTooltip("The mesh extracted in the viewport becomes the result of the open mesh");
+    mUseResultBtn->setCallback([&] { useViewportResult(); });
+    mWriteSceneBtn = new Button(out, "Write scene...", ENTYPO_ICON_EXPORT);
+    mWriteSceneBtn->setFixedSize(Vector2i(inner / 2 - 2, 25));
+    mWriteSceneBtn->setTooltip("Write the scene with the results (Alembic / OBJ copy, USD layer)");
+    mWriteSceneBtn->setCallback([&] { writeScene(); });
+    Widget *more = new Widget(win);
+    more->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    mWholeSceneBtn = new Button(more, "Whole scene");
+    mWholeSceneBtn->setFixedSize(Vector2i(inner / 2 - 2, 25));
+    mWholeSceneBtn->setTooltip("Show the whole scene in the viewport again");
+    mWholeSceneBtn->setCallback([&] { openWholeScene(); });
+    Button *copy = new Button(more, "Copy command line");
+    copy->setFixedSize(Vector2i(inner / 2 - 2, 25));
+    copy->setTooltip("The same job for the command line (render farm), to the clipboard");
+    copy->setCallback([&] {
+        if (!mProject)
+            return;
+        glfwSetClipboardString(mGLFWWindow, commandLine().c_str());
+        mBatchLabel->setCaption("Command line copied to the clipboard");
+    });
+    refreshOutliner();
+}
+
+void Viewer::layoutOutliner() {
+    if (!mOutlinerWindow || !mOutliner)
+        return;
+    const int y = MenuBar::Height + 10;
+    const int h = std::max(300, mSize.y() - y - 10);
+    mOutlinerWindow->setPosition(Vector2i(mSize.x() - OutlinerWidth - 10, y));
+    mOutliner->setFixedHeight(1);
+    const int others = mOutlinerWindow->preferredSize(mNVGContext).y() - 1;
+    mOutliner->setFixedHeight(std::max(120, h - others));
+    mOutlinerWindow->setFixedSize(Vector2i(OutlinerWidth, std::max(h, others + 120)));
+    performLayout(mNVGContext);
+}
+
+void Viewer::refreshOutliner() {
+    if (!mOutliner)
+        return;
+    const bool working = busy();
+    bool done = false;
+    if (mProject) {
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        uint64_t faces = 0;
+        size_t finished = 0;
+        for (const ProjectObject &o : mProject->objects) {
+            faces += o.mesh.faces;
+            finished += o.state == ObjectState::Done;
+        }
+        done = finished > 0;
+        std::string info = base_name(mProject->source) + "  \xC2\xB7  " + std::to_string(mProject->objects.size()) +
+                           " meshes, " + group_thousands(faces) + " faces";
+        if (finished > 0)
+            info += ", " + std::to_string(finished) + " done";
+        mOutlinerInfo->setCaption(info);
+        mOutliner->refresh();
+    } else {
+        mOutlinerInfo->setCaption("No scene: File > Open (.abc, .obj, .usd, .imd)");
+    }
+    mProcessBtn->setEnabled(mProject && !working);
+    mCancelBtn->setEnabled(working);
+    mWriteSceneBtn->setEnabled(mProject && !working && done);
+    mUseResultBtn->setEnabled(mProject && !working && mOpenObject >= 0 && mF_extracted.size() > 0);
+    mOpenObjectBtn->setEnabled(mProject && !working && mOutliner->selection().size() == 1);
+    mWholeSceneBtn->setEnabled(mProject && !working && mOpenObject >= 0);
+}
+
+void Viewer::setDirty(bool dirty) {
+    if (dirty && !mProject)
+        return;
+    mDirty = dirty;
+    updateTitle();
+}
+
+void Viewer::updateTitle() {
+    std::string title = INSTANT_MESHES_TITLE;
+    std::string what;
+    if (!mProjectFile.empty())
+        what = base_name(mProjectFile);
+    else if (mProject)
+        what = base_name(mProject->source) + " (project not saved)";
+    else if (!mFilename.empty())
+        what = base_name(mFilename);
+    if (!what.empty())
+        title += " - " + what;
+    if (mDirty)
+        title += " *";
+    glfwSetWindowTitle(mGLFWWindow, title.c_str());
+}
+
+void Viewer::confirm(const std::string &question, const std::function<void()> &then) {
+    auto dlg = new MessageDialog(this, MessageDialog::Type::Question, "Unsaved changes", question, "Yes", "No", true);
+    dlg->setCallback([then](int result) {
+        if (result == 0)
+            then();
+    });
+}
+
+bool Viewer::closeRequested() {
+    if (mClosing || (!mDirty && !busy()))
+        return true;
+    confirm(busy() ? "Meshes are being remeshed. Quit anyway?" : "The project has unsaved changes. Quit anyway?",
+            [this] {
+                mClosing = true;
+                cancelProcessing();
+                glfwSetWindowShouldClose(mGLFWWindow, GL_TRUE);
+            });
+    return false;
+}
+
+bool Viewer::dropEvent(const std::vector<std::string> &filenames) {
+    if (!filenames.empty())
+        openFile(filenames[0]);
+    return true;
+}
+
+/* Recent files, per user */
+static std::string recent_path() {
+#if defined(_WIN32)
+    const char *base = getenv("APPDATA");
+    if (!base)
+        return std::string();
+    const std::string dir = std::string(base) + "\\InstantMeshes";
+    _mkdir(dir.c_str());
+    return dir + "\\recent.txt";
+#else
+    const char *home = getenv("HOME");
+    return home ? std::string(home) + "/.instantmeshes_recent" : std::string();
+#endif
+}
+
+std::vector<std::string> Viewer::recentFiles() const {
+    std::vector<std::string> files;
+    std::ifstream in(recent_path());
+    std::string line;
+    while (std::getline(in, line) && files.size() < 10)
+        if (!line.empty())
+            files.push_back(line);
+    return files;
+}
+
+void Viewer::addRecent(const std::string &file) {
+    std::vector<std::string> files = recentFiles();
+    files.erase(std::remove_if(files.begin(), files.end(),
+                               [&](const std::string &f) { return str_tolower(f) == str_tolower(file); }),
+                files.end());
+    files.insert(files.begin(), file);
+    if (files.size() > 10)
+        files.resize(10);
+    std::ofstream out(recent_path(), std::ios::trunc);
+    for (const std::string &f : files)
+        out << f << "\n";
+}
+
+void Viewer::openFile(const std::string &name) {
+    if (busy())
+        return;
+    std::string filename = name;
+    if (filename.empty()) {
+        filename = nanogui::file_dialog({
+            {"imd", "Instant Meshes project"},
+            {"abc", "Alembic"},
+            {"obj", "Wavefront OBJ"},
+            {"usd", "USD"},
+            {"usda", "USD (text)"},
+            {"usdc", "USD (binary)"},
+            {"usdz", "USD (package)"},
+            {"ply", "Stanford PLY"},
+            {"aln", "Aligned point cloud"}
+        }, false);
+        if (filename.empty())
+            return;
+    }
+    auto go = [this, filename] {
+        if (lower_extension(filename) == ".imd") {
+            openProject(filename);
+        } else if (is_scene_file(filename)) {
+            openScene(filename);
+        } else {
+            mProject.reset();
+            mOutliner->setProject(nullptr, &mProjectLock);
+            mProjectFile.clear();
+            mOpenObject = -1;
+            mDirty = false;
+            loadInput(filename);
+            addRecent(filename);
+            refreshOutliner();
+            updateTitle();
+        }
+    };
+    if (mDirty)
+        confirm("The project has unsaved changes. Open another file anyway?", go);
+    else
+        go();
+}
+
+void Viewer::openScene(const std::string &filename) {
+    std::unique_ptr<Project> project;
+    try {
+        project = Project::create(filename);
+    } catch (const std::exception &e) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+        return;
+    }
+    mProject = std::move(project);
+    mProjectFile.clear();
+    mOpenObject = -1;
+    mOutliner->setProject(mProject.get(), &mProjectLock);
+    guiToOptions();
+    loadInput(filename, std::numeric_limits<Float>::infinity(), -1, -1, -1, mOptimizer.rosy(), mOptimizer.posy());
+    addRecent(filename);
+    mDirty = false;
+    refreshOutliner();
+    updateTitle();
+}
+
+void Viewer::openProject(const std::string &imd, const std::string &source) {
+    std::unique_ptr<Project> project;
+    try {
+        project = Project::load(imd, source);
+    } catch (const std::exception &e) {
+        const std::string what = e.what();
+        if (what.find("cannot be found") == std::string::npos) {
+            new MessageDialog(this, MessageDialog::Type::Warning, "Error", what);
+            return;
+        }
+        auto dlg = new MessageDialog(this, MessageDialog::Type::Question, "Scene not found",
+                                     what + ".\n\nWhere is it now?", "Locate...", "Cancel", true);
+        dlg->setCallback([this, imd](int result) {
+            if (result != 0)
+                return;
+            const std::string file = nanogui::file_dialog({ {"abc", "Alembic"}, {"obj", "Wavefront OBJ"},
+                {"usd", "USD"}, {"usda", "USD (text)"}, {"usdc", "USD (binary)"}, {"usdz", "USD (package)"} },
+                false);
+            if (!file.empty())
+                openProject(imd, file);
+        });
+        return;
+    }
+    mProject = std::move(project);
+    mProjectFile = imd;
+    mOpenObject = -1;
+    mOutliner->setProject(mProject.get(), &mProjectLock);
+    const RemeshParams &p = mProject->options.params;
+    loadInput(mProject->source, std::numeric_limits<Float>::infinity(), -1, -1, -1, p.rosy, p.posy);
+    optionsToGui();
+    auto ui = [&](const char *key) {
+        auto it = mProject->ui.find(key);
+        return it == mProject->ui.end() ? std::string() : it->second;
+    };
+    mFilterBox->setValue(ui("outliner.filter"));
+    mOutliner->setFilter(ui("outliner.filter"));
+    mOutliner->setSort(ui("outliner.sort"), ui("outliner.descending") == "1");
+    addRecent(imd);
+    mDirty = false;
+    refreshOutliner();
+    updateTitle();
+}
+
+void Viewer::clearViewport() {
+    {
+        std::lock_guard<ordered_lock> lock(mRes.mutex());
+        mOptimizer.stop();
+    }
+    mRes.free();
+    if (mBVH) {
+        delete mBVH;
+        mBVH = nullptr;
+    }
+    mFilename.clear();
+    mInputPolygons = 0;
+    mF_extracted.resize(0, 0);
+    mV_extracted.resize(0, 0);
+    mStrokes.clear();
+    mInputInfoLabel->setCaption("No mesh loaded");
+    resetState();
+    repaint();
+}
+
+void Viewer::newProject() {
+    if (busy())
+        return;
+    auto go = [this] {
+        mProject.reset();
+        mOutliner->setProject(nullptr, &mProjectLock);
+        mProjectFile.clear();
+        mOpenObject = -1;
+        mDirty = false;
+        clearViewport();
+        refreshOutliner();
+        updateTitle();
+    };
+    if (mDirty)
+        confirm("The project has unsaved changes. Start a new one anyway?", go);
+    else
+        go();
+}
+
+void Viewer::saveProject(bool as) {
+    if (!mProject || busy()) {
+        if (!mProject)
+            new MessageDialog(this, MessageDialog::Type::Information, "Save",
+                              "A project is made over a scene: open an Alembic, OBJ or USD file first.");
+        return;
+    }
+    std::string file = mProjectFile;
+    if (as || file.empty()) {
+        file = nanogui::file_dialog({ {"imd", "Instant Meshes project"} }, true);
+        if (file.empty())
+            return;
+        if (lower_extension(file) != ".imd")
+            file += ".imd";
+    }
+    try {
+        captureWork();
+        guiToOptions();
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        mProject->ui["outliner.filter"] = mFilterBox->value();
+        mProject->ui["outliner.sort"] = mOutliner->sortKey();
+        mProject->ui["outliner.descending"] = mOutliner->sortDescending() ? "1" : "0";
+        mProject->save(file);
+    } catch (const std::exception &e) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+        return;
+    }
+    mProjectFile = file;
+    addRecent(file);
+    mDirty = false;
+    mBatchLabel->setCaption("Saved: " + base_name(file));
+    updateTitle();
+}
+
+void Viewer::exportMesh() {
+    if (mF_extracted.size() == 0)
+        return;
+    try {
+        std::string filename = nanogui::file_dialog({
+            {"obj", "Wavefront OBJ"},
+            {"ply", "Stanford PLY"},
+            {"abc", "Alembic"},
+            {"usda", "USD (text)"},
+            {"usdc", "USD (binary)"},
+            {"usdz", "USD (package)"}
+        }, true);
+        if (filename == "")
+            return;
+        write_mesh(filename, mF_extracted, mV_extracted, MatrixXf(), mNf_extracted, MatrixXf(), MatrixXf(),
+                   ProgressCallback(), std::vector<CornerUVs>(), mUnits);
+    } catch (const std::exception &e) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+    }
+}
+
+void Viewer::writeScene() {
+    if (!mProject || busy())
+        return;
+    const std::string ext = lower_extension(mProject->source);
+    std::vector<std::pair<std::string, std::string>> types;
+    if (ext == ".abc")
+        types = { {"abc", "Alembic"} };
+    else if (ext == ".obj")
+        types = { {"obj", "Wavefront OBJ"} };
+    else
+        types = { {"usda", "USD layer (text)"}, {"usdc", "USD layer (binary)"} };
+    std::string file = nanogui::file_dialog(types, true);
+    if (file.empty())
+        return;
+    if (lower_extension(file).empty())
+        file += "." + types[0].first;
+    if (usd::is_usd_file(mProject->source) && str_tolower(file) == str_tolower(mProject->source)) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "Write scene",
+                          "The layer loads the scene: it cannot replace it. Choose another name.");
+        return;
+    }
+    try {
+        guiToOptions();
+        mProject->write(file);
+    } catch (const std::exception &e) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+        return;
+    }
+    mBatchLabel->setCaption("Scene written: " + base_name(file));
+    setDirty();
+}
+
+RemeshParams Viewer::guiParams() const {
+    RemeshParams p;
+    p.rosy = mOptimizer.rosy();
+    p.posy = mOptimizer.posy();
+    p.crease_angle = mCreaseBox->checked() ? mCreaseAngle : -1;
+    p.extrinsic = mExtrinsicBox->checked();
+    p.align_to_boundaries = mAlignToBoundariesBox->checked();
+    try {
+        p.smooth_iter = std::stoi(mSmoothBox->value());
+    } catch (...) {
+        p.smooth_iter = 2;
+    }
+    p.pure_quad = mPureQuadBox->checked();
+    p.deterministic = mDeterministicBox->checked();
+    p.keep_border = mKeepBorderBox->checked();
+    p.uv = (RemeshParams::UVMode) mUVBox->selectedIndex();
+    return p;
+}
+
+void Viewer::guiToOptions() {
+    if (!mProject)
+        return;
+    std::lock_guard<std::mutex> lock(mProjectLock);
+    mProject->options.params = guiParams();
+    mProject->options.proxy = mProxyBox->checked();
+    mProject->options.skipFailed = mSkipFailedBox->checked();
+}
+
+void Viewer::optionsToGui() {
+    if (!mProject)
+        return;
+    const ProjectOptions &o = mProject->options;
+    setSymmetry(o.params.rosy, o.params.posy);
+    mPureQuadBox->setChecked(o.params.pure_quad && o.params.posy == 4);
+    mExtrinsicBox->setChecked(o.params.extrinsic);
+    mOptimizer.setExtrinsic(o.params.extrinsic);
+    mAlignToBoundariesBox->setChecked(o.params.align_to_boundaries);
+    mSmoothBox->setValue(std::to_string(o.params.smooth_iter));
+    mSmoothSlider->setValue(o.params.smooth_iter / 10.f);
+    mDeterministicBox->setChecked(o.params.deterministic);
+    mKeepBorderBox->setChecked(o.params.keep_border);
+    mUVBox->setSelectedIndex((int) o.params.uv);
+    mProxyBox->setChecked(o.proxy);
+    mSkipFailedBox->setChecked(o.skipFailed);
+    mOthersBox->setValue(o.others.valid() ? o.others.text : "");
+}
+
+std::string Viewer::commandLine() const {
+    if (!mProject)
+        return std::string();
+    const RemeshParams p = guiParams();
+    const std::string ext = lower_extension(mProject->source);
+    std::string out = mProject->output;
+    if (out.empty()) {
+        const std::string &src = mProject->source;
+        const std::string stem = src.substr(0, src.size() - ext.size());
+        out = stem + "_retopo" + (usd::is_usd_file(src) ? std::string(".usda") : ext);
+    }
+    std::string cmd = "InstantMeshes.exe " + quote_arg(mProject->source) + " -o " + quote_arg(out);
+    if (p.rosy != 4 || p.posy != 4)
+        cmd += " -r " + std::to_string(p.rosy) + " -p " + std::to_string(p.posy == 3 ? 6 : p.posy);
+    if (!p.pure_quad && p.posy == 4)
+        cmd += " -D";
+    if (!p.extrinsic)
+        cmd += " -i";
+    if (p.crease_angle >= 0)
+        cmd += " -c " + std::to_string((int) std::round(p.crease_angle));
+    if (p.align_to_boundaries)
+        cmd += " -b";
+    if (p.smooth_iter != 2)
+        cmd += " -S " + std::to_string(p.smooth_iter);
+    if (p.deterministic)
+        cmd += " -d";
+    if (p.keep_border)
+        cmd += " --keep-border";
+    if (p.uv != RemeshParams::UVNone)
+        cmd += std::string(" --uv ") + (p.uv == RemeshParams::UVTransfer ? "transfer" : "unwrap");
+    if (mProxyBox->checked())
+        cmd += " --proxy";
+    if (mSkipFailedBox->checked())
+        cmd += " --skip-failed";
+    for (const ProjectObject &o : mProject->objects)
+        if (o.target.valid())
+            cmd += " -m " + quote_arg((o.rule.empty() ? o.mesh.path.substr(1) + "=" + o.target.text : o.rule));
+    if (mProject->options.others.valid())
+        cmd += " --others " + mProject->options.others.text;
+    return cmd;
+}
+
+void Viewer::setSelectedTarget(bool clear) {
+    if (!mProject || busy())
+        return;
+    if (mOutliner->selection().empty()) {
+        new MessageDialog(this, MessageDialog::Type::Information, "Target", "Select meshes in the Outliner first.");
+        return;
+    }
+    FaceTarget t;
+    if (!clear) {
+        try {
+            t = parse_face_target(mObjectTargetBox->value());
+        } catch (const std::exception &e) {
+            new MessageDialog(this, MessageDialog::Type::Warning, "Target", e.what());
+            return;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        for (int i : mOutliner->selection()) {
+            ProjectObject &o = mProject->objects[(size_t) i];
+            if (mProject->unfit(o))
+                continue;
+            o.target = t;
+            o.rule.clear();
+            if (o.state == ObjectState::Done) {
+                o.state = ObjectState::Stale;
+                o.message = "its target changed";
+            }
+        }
+    }
+    setDirty();
+    refreshOutliner();
+}
+
+void Viewer::processChecked() {
+    if (!mProject || busy())
+        return;
+    guiToOptions();
+    std::vector<std::pair<int, FaceTarget>> work;
+    {
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        for (size_t i = 0; i < mProject->objects.size(); ++i) {
+            const ProjectObject &o = mProject->objects[i];
+            const FaceTarget t = mProject->target_of(o);
+            if (o.checked && t.valid() && !mProject->unfit(o))
+                work.emplace_back((int) i, t);
+        }
+        mWorkerErrors.clear();
+        mWorkerCurrent.clear();
+    }
+    if (work.empty()) {
+        new MessageDialog(this, MessageDialog::Type::Information, "Process",
+                          "Check meshes in the Outliner that have a target: their own (Set target) or the "
+                          "default one.");
+        return;
+    }
+    if (mWorker.joinable())
+        mWorker.join();
+    mCancel = false;
+    mWorkerDone = 0;
+    mWorkerTotal = (int) work.size();
+    mWorkerBusy = true;
+    const RemeshParams params = mProject->options.params;
+    Project *project = mProject.get();
+    mWorker = std::thread([this, project, params, work] {
+        for (const auto &w : work) {
+            if (mCancel)
+                break;
+            std::string path;
+            {
+                std::lock_guard<std::mutex> lock(mProjectLock);
+                path = project->objects[(size_t) w.first].mesh.path;
+                mWorkerCurrent = path;
+            }
+            try {
+                ObjectResult r = project->compute(path, w.second, params);
+                std::lock_guard<std::mutex> lock(mProjectLock);
+                project->store(project->objects[(size_t) w.first], r.F, r.V, r.uvs);
+            } catch (const std::exception &e) {
+                std::lock_guard<std::mutex> lock(mProjectLock);
+                ProjectObject &o = project->objects[(size_t) w.first];
+                o.state = ObjectState::Failed;
+                o.message = e.what();
+                mWorkerErrors.push_back(base_name(path) + ": " + e.what());
+            }
+            ++mWorkerDone;
+        }
+        mWorkerBusy = false;
+    });
+    refreshOutliner();
+}
+
+void Viewer::cancelProcessing() {
+    if (busy()) {
+        mCancel = true;
+        mBatchLabel->setCaption("Cancelling after the current mesh...");
+    }
+}
+
+void Viewer::pollWorker() {
+    if (!mBatchBar)
+        return;
+    if (busy()) {
+        const int done = mWorkerDone, total = std::max(1, (int) mWorkerTotal);
+        mBatchBar->setValue((float) done / total);
+        std::string current;
+        {
+            std::lock_guard<std::mutex> lock(mProjectLock);
+            current = mWorkerCurrent;
+        }
+        if (!mCancel)
+            mBatchLabel->setCaption("Remeshing " + std::to_string(done + 1) + " / " + std::to_string(total) + ": " +
+                                    base_name(current));
+        if (done != mShownDone) {
+            mShownDone = done;
+            refreshOutliner();
+        }
+        if (!mCancelBtn->enabled() || mProcessBtn->enabled())
+            refreshOutliner();
+    } else if (mWorker.joinable()) {
+        mWorker.join();
+        mShownDone = -1;
+        const int done = mWorkerDone;
+        size_t failed;
+        std::string first;
+        {
+            std::lock_guard<std::mutex> lock(mProjectLock);
+            failed = mWorkerErrors.size();
+            if (failed)
+                first = mWorkerErrors.front();
+        }
+        mBatchBar->setValue(1.f);
+        std::string caption = std::to_string(done - (int) failed) + " remeshed";
+        if (failed)
+            caption += ", " + std::to_string(failed) + " failed (" + first + ")";
+        if (mCancel)
+            caption += ", cancelled";
+        mBatchLabel->setCaption(caption);
+        setDirty();
+        refreshOutliner();
+    }
+}
+
+void Viewer::openObject(int index) {
+    if (!mProject || busy() || index < 0 || index >= (int) mProject->objects.size())
+        return;
+    const ProjectObject &o = mProject->objects[(size_t) index];
+    if (mProject->unfit(o)) {
+        new MessageDialog(this, MessageDialog::Type::Information, "Open",
+                          "\"" + o.mesh.path + "\" is" + mesh_flags(o.mesh) + ": it cannot be remeshed here.");
+        return;
+    }
+    captureWork();
+    MatrixXu F;
+    MatrixXf V, N;
+    uint64_t polygons = 0;
+    mOperationStart = mLastProgressMessage = glfwGetTime();
+    mProcessEvents = false;
+    glfwMakeContextCurrent(nullptr);
+    try {
+        mProject->scene().load(o.mesh.path, F, V, &polygons);
+    } catch (const std::exception &e) {
+        glfwMakeContextCurrent(mGLFWWindow);
+        mProcessEvents = true;
+        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+        return;
+    }
+    loadMesh(F, V, N, polygons, base_name(o.mesh.path), mCreaseBox->checked() ? mCreaseAngle : -1, -1, -1, -1,
+             mOptimizer.rosy(), mOptimizer.posy(), 10);
+    mOpenObject = index;
+    const FaceTarget t = mProject->target_of(o);
+    if (t.percent > 0)
+        setTargetPercent(t.percent);
+    restoreWork(index);
+    refreshOutliner();
+}
+
+void Viewer::openWholeScene() {
+    if (!mProject || busy())
+        return;
+    captureWork();
+    mOpenObject = -1;
+    loadInput(mProject->source, std::numeric_limits<Float>::infinity(), -1, -1, -1, mOptimizer.rosy(),
+              mOptimizer.posy());
+    refreshOutliner();
+}
+
+void Viewer::useViewportResult() {
+    if (!mProject || busy() || mOpenObject < 0 || mF_extracted.size() == 0)
+        return;
+    try {
+        guiToOptions();
+        ProjectObject &o = mProject->objects[(size_t) mOpenObject];
+        const std::vector<CornerUVs> uvs = object_uvs(mProject->scene(), o.mesh.path, mF_extracted, mV_extracted,
+                                                      mProject->options.params.uv);
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        mProject->store(o, mF_extracted, mV_extracted, uvs);
+        o.message = "extracted in the viewport";
+    } catch (const std::exception &e) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+        return;
+    }
+    mBatchLabel->setCaption("Result kept for " + base_name(mProject->objects[(size_t) mOpenObject].mesh.path));
+    setDirty();
+    refreshOutliner();
+}
+
+/* Work in progress of the open mesh: its brush strokes, kept per mesh in
+   the project (WORK chunk): version, count, then per stroke its type and
+   points (position, normal, face) */
+void Viewer::captureWork() {
+    if (!mProject || mOpenObject < 0)
+        return;
+    std::vector<uint8_t> b;
+    auto put = [&](const void *data, size_t size) {
+        b.insert(b.end(), (const uint8_t *) data, (const uint8_t *) data + size);
+    };
+    if (!mStrokes.empty()) {
+        const uint32_t version = 1, count = (uint32_t) mStrokes.size();
+        put(&version, 4);
+        put(&count, 4);
+        for (const auto &s : mStrokes) {
+            const uint32_t type = s.first, n = (uint32_t) s.second.size();
+            put(&type, 4);
+            put(&n, 4);
+            for (const CurvePoint &c : s.second) {
+                put(c.p.data(), 12);
+                put(c.n.data(), 12);
+                put(&c.f, 4);
+            }
+        }
+    }
+    std::lock_guard<std::mutex> lock(mProjectLock);
+    ProjectObject &o = mProject->objects[(size_t) mOpenObject];
+    if (o.work != b) {
+        o.work = b;
+        mDirty = true;
+    }
+}
+
+void Viewer::restoreWork(int index) {
+    const std::vector<uint8_t> &b = mProject->objects[(size_t) index].work;
+    if (b.size() < 8)
+        return;
+    size_t pos = 0;
+    auto take = [&](void *out, size_t size) {
+        if (size > b.size() - pos)
+            throw std::runtime_error("truncated");
+        memcpy(out, b.data() + pos, size);
+        pos += size;
+    };
+    try {
+        uint32_t version, count;
+        take(&version, 4);
+        take(&count, 4);
+        std::vector<std::pair<uint32_t, std::vector<CurvePoint>>> strokes;
+        for (uint32_t i = 0; i < count && version == 1; ++i) {
+            uint32_t type, n;
+            take(&type, 4);
+            take(&n, 4);
+            std::vector<CurvePoint> curve(n);
+            for (CurvePoint &c : curve) {
+                take(c.p.data(), 12);
+                take(c.n.data(), 12);
+                take(&c.f, 4);
+                if (c.f >= (uint32_t) mRes.F().cols())
+                    throw std::runtime_error("the mesh changed");
+            }
+            if (n >= 2)
+                strokes.emplace_back(type, curve);
+        }
+        mStrokes = strokes;
+        refreshStrokes();
+        mBatchLabel->setCaption(std::to_string(strokes.size()) + " stroke(s) restored: Solve to apply them");
+    } catch (const std::exception &) {
+        mBatchLabel->setCaption("The strokes saved for this mesh no longer match it");
+    }
 }

@@ -86,6 +86,10 @@ public:
     /// Remeshes one mesh with its target: state Done and its result kept
     /// (temporary file), or Failed with the error, rethrown
     RemeshReport process(ProjectObject &o);
+    /// USD: a prototype identical to one already remeshed with the same
+    /// target (variants that change only materials) takes its result, moved
+    /// to its place; false if there is none
+    bool reuse(ProjectObject &o, const FaceTarget &t);
 
     /// The remeshing of one mesh, the project untouched (a worker thread
     /// computes while the interface reads the project)

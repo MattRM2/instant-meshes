@@ -110,11 +110,11 @@ static void test_listing_and_selection() {
         abc::load_abc(data_path("scene_ab.abc"), F, V, xformA.substr(0, xformA.size() - 1));
     }), "no polygon mesh at"));
 
-    /* Instances are listed under their own path */
+    /* An instanced mesh is listed once, where it is stored, its instances as aliases */
     CHECK(error_of([&] { meshes = abc::list_meshes(data_path("instances.abc")); }) == "");
-    CHECK(meshes.size() == 2 && meshes[0].path != meshes[1].path);
-    for (const abc::MeshSummary &m : meshes)
-        std::cout << "  instances: " << m.path << " (V=" << m.vertices << ")" << std::endl;
+    CHECK(meshes.size() == 1 && meshes[0].path == "/InstA/Pillar-0/PillarMesh" && meshes[0].instanced &&
+          !meshes[0].nested && meshes[0].instances == 2 && meshes[0].aliases.size() == 1 &&
+          meshes[0].aliases[0] == "/InstB/Pillar-0/PillarMesh");
 }
 
 static void test_unsupported() {
@@ -333,6 +333,23 @@ static void test_splice() {
         CHECK(meshes.size() == 2 && meshes[0].faces == 36);
     }
 
+    /* An instanced mesh: replaced where it is stored, every instance shows it */
+    {
+        abc::Replacement r;
+        MatrixXf corners(3, 4);
+        corners << 0, 1, 1, 0,  0, 0, 1, 1,  0, 0, 0, 0;
+        grid(corners, r.F, r.V);
+        r.path = "/InstA/Pillar-0/PillarMesh";
+        const std::string out = temp_path("splice_instances.abc");
+        CHECK(error_of([&] { abc::splice_abc(data_path("instances.abc"), out, { r }); }) == "");
+        std::vector<abc::MeshSummary> meshes = abc::list_meshes(out);
+        CHECK(meshes.size() == 1 && meshes[0].instances == 2 && meshes[0].faces == (uint64_t) r.F.cols());
+        MatrixXu F;
+        MatrixXf V;
+        CHECK(error_of([&] { abc::load_abc(out, F, V); }) == "" && F.cols() == 4 * r.F.cols());   /* quads -> 2 triangles, 2 instances */
+        std::remove(out.c_str());
+    }
+
     /* Refused, and nothing written */
     {
         abc::Replacement r;
@@ -340,7 +357,7 @@ static void test_splice() {
         grid(corners, r.F, r.V);
         const std::string out = temp_path("splice_refused.abc");
         struct { const char *file, *path, *expect; } bad[] = {
-            { "instances.abc", "/InstB/Pillar-0/PillarMesh", "instanced" },
+            { "instances.abc", "/InstB/Pillar-0/PillarMesh", "no polygon mesh" },   /* an instance: not where it is stored */
             { "animated.abc", "/Moving/Moving", "animated" },
             { "scene_ab.abc", "/Props/Nope", "no polygon mesh" },
             { "scene_ab.abc", "/Props/MeshA", "no polygon mesh" },   /* the Xform, not the mesh */

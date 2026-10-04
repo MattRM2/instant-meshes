@@ -168,6 +168,28 @@ InstantMeshes.exe model.obj -o model.usda -f 100% --uv unwrap
 InstantMeshes.exe model.usda -o model.usda --proxy --others 10%
 ```
 
+Instances : en mode par maillage, une géométrie instanciée est **une seule
+entrée** (`--list` : `(instanced x250)`), remaillée **une seule fois**, et
+toutes ses instances montrent le résultat ; l'instanciation est conservée.
+`-m` accepte n'importe laquelle de ses apparitions.
+
+- **Alembic** : la géométrie est remplacée sur l'objet source, que toutes les
+  instances (`.instanceSource`) reprennent.
+- **USD, PointInstancer** : le maillage du prototype est remplacé sur place.
+- **USD, prims `instanceable`** : USD ignore toute modification sous une
+  instance ; le nouveau maillage va dans une **classe** (`_IM_...`) dont
+  chaque instance **hérite** (`inherits`), le fichier référencé n'est pas
+  touché. Les instances partagent toujours un seul prototype.
+- **Variantes** : d'autres sélections = d'autres prototypes, listés à part ;
+  à géométrie identique (variantes de matériau), remaillée une fois.
+- `--proxy` : le proxy va dans le prototype, chaque instance l'a.
+- **Instances imbriquées** (USD) : listées, pas remaillées.
+- **Mode fichier entier** (`-f`, `-s`, `-v` sans `-m`) : un seul maillage, donc
+  pas d'instanciation possible. En Alembic, chaque instance est placée et
+  fusionnée ; en USD, les maillages instanciés sont **ignorés** (un
+  avertissement les compte). Pour garder l'instanciation : le mode par
+  maillage.
+
 Mémoire, en mode par objet : un seul maillage est remaillé à la fois (environ
 800 octets par sommet d'entrée), le pic est donc celui du plus gros objet
 remaillé, pas de la scène. Un Alembic est lu à la demande ; un OBJ est lu une

@@ -186,19 +186,28 @@ std::string child_purpose(const Layer &layer, const Prim &p, const std::string &
     return authored_purpose(layer, p, own) ? own : parent;
 }
 
+/* Where a prim sits among instances: below how many instancing prims
+   (instanceable prims, PointInstancers), the nearest of each kind */
+struct Instancing {
+    int levels = 0;
+    const Prim *native = nullptr;          ///< the nearest instanceable prim
+    const Prim *pointInstancer = nullptr;  ///< the nearest PointInstancer
+    bool instanced() const { return levels > 0; }
+};
+
 /* Walks the defined, active prims with their world matrix */
 struct Walker {
     const Layer &layer;
-    std::function<void(const Prim &, const Mat4 &, bool instanced, const std::string &purpose)> onMesh;
+    std::function<void(const Prim &, const Mat4 &, const Instancing &, const std::string &purpose)> onMesh;
     std::function<void(const Prim &, const Mat4 &)> onPrim;
     size_t visits = 0;
 
     void run() {
         for (const auto &c : layer.root.children)
-            visit(*c, Mat4::Identity(), false, std::string(), 0);
+            visit(*c, Mat4::Identity(), Instancing(), std::string(), 0);
     }
 
-    void visit(const Prim &p, const Mat4 &parent, bool instanced, const std::string &parentPurpose, int depth) {
+    void visit(const Prim &p, const Mat4 &parent, Instancing inst, const std::string &parentPurpose, int depth) {
         if (p.specifier != Specifier::Def || !active(p))
             return;
         if (depth > 1000 || ++visits > 100000000)
@@ -206,7 +215,14 @@ struct Walker {
         bool reset, animated = false;
         const Mat4 local = local_transform(layer, p, reset, animated);
         const Mat4 world = reset ? local : Mat4(parent * local);
-        const bool inst = instanced || instanceable(p) || p.type == "PointInstancer";
+        if (instanceable(p)) {
+            inst.native = &p;
+            inst.levels++;
+        }
+        if (p.type == "PointInstancer") {
+            inst.pointInstancer = &p;
+            inst.levels++;
+        }
         const std::string purpose = child_purpose(layer, p, parentPurpose);
         if (onPrim)
             onPrim(p, world);
@@ -216,6 +232,62 @@ struct Walker {
             visit(*c, world, inst, purpose, depth + 1);
     }
 };
+
+/* What the instances of an instanceable prim share: its composition arcs
+   and variant selections (USD makes one prototype per combination) */
+std::string prototype_key(const Prim &p) {
+    std::string key;
+    for (const char *k : { "references", "payload", "payloads", "inherits", "inheritPaths", "specializes" })
+        if (const Value *v = p.metadata(k)) {
+            key += std::string(k) + "=";
+            for (const std::string &item : v->list_items())
+                key += item + ",";
+            key += ";";
+        }
+    for (const char *k : { "variants", "variantSelection" })
+        if (const Value *v = p.metadata(k))
+            for (const auto &kv : v->dict)
+                key += "{" + kv.first + "=" + kv.second.str() + "}";
+    return key.empty() ? "<" + p.path + ">" : key;
+}
+
+/* Hash of a mesh's geometry in its own space (points, faces) */
+uint64_t geometry_hash(const Layer &layer, const Prim &p) {
+    uint64_t h = 1469598103934665603ull;
+    for (const char *name : { "faceVertexCounts", "faceVertexIndices", "points" }) {
+        const Property *q = p.property(name);
+        if (!q)
+            continue;
+        for (double x : first_value(layer, *q).numbers) {
+            uint64_t bits;
+            memcpy(&bits, &x, 8);
+            for (int k = 0; k < 8; ++k) {
+                h ^= (bits >> (8 * k)) & 0xff;
+                h *= 1099511628211ull;
+            }
+        }
+        h ^= 0xff;
+        h *= 1099511628211ull;
+    }
+    return h == 0 ? 1 : h;
+}
+
+/* How many points of a PointInstancer use the prototype holding 'path' */
+uint64_t point_instances(const Layer &layer, const Prim &pi, const std::string &path) {
+    const Property *protos = pi.property("prototypes"), *indices = pi.property("protoIndices");
+    if (!protos || !indices)
+        return 0;
+    for (size_t k = 0; k < protos->targets.size(); ++k) {
+        const std::string &t = protos->targets[k];
+        if (path != t && path.compare(0, t.size() + 1, t + "/") != 0)
+            continue;
+        uint64_t n = 0;
+        for (double x : first_value(layer, *indices).numbers)
+            n += (size_t) x == k;
+        return n;
+    }
+    return 0;
+}
 
 /* Texture coordinate primvars: texCoord2*, or a float2 / double2 / half2
    named like a UV set */
@@ -394,13 +466,36 @@ struct Collector {
 
 std::vector<abc::MeshSummary> list_meshes(const Layer &layer) {
     std::vector<abc::MeshSummary> result;
+    std::map<std::string, size_t> prototypes;   /* native instancing: prototype + mesh -> its entry */
     Walker w { layer, nullptr, nullptr };
-    w.onMesh = [&](const Prim &p, const Mat4 &world, bool instanced, const std::string &purpose) {
+    w.onMesh = [&](const Prim &p, const Mat4 &world, const Instancing &inst, const std::string &purpose) {
         abc::MeshSummary m;
         m.path = p.path;
         m.world = world;
-        m.instanced = instanced;
         m.purpose = purpose;
+        if (inst.levels > 1) {
+            m.instanced = m.nested = true;   /* an instance inside an instance: listed as it appears */
+        } else if (inst.native) {
+            /* listed once per prototype: its other appearances are aliases */
+            m.instanced = true;
+            m.instanceRoot = inst.native->path;
+            m.prototype = prototype_key(*inst.native);
+            const std::string key = m.prototype + "|" + p.path.substr(inst.native->path.size());
+            auto it = prototypes.find(key);
+            if (it != prototypes.end()) {
+                result[it->second].aliases.push_back(p.path);
+                result[it->second].instances++;
+                return;
+            }
+            prototypes[key] = result.size();
+            m.instances = 1;
+            m.geometry = geometry_hash(layer, p);
+        } else if (inst.pointInstancer) {
+            /* a prototype of a PointInstancer: drawn once per point */
+            m.instanced = true;
+            m.instances = point_instances(layer, *inst.pointInstancer, p.path);
+            m.geometry = geometry_hash(layer, p);
+        }
         const Property *pp = p.property("points"), *pc = p.property("faceVertexCounts"),
                        *pi = p.property("faceVertexIndices");
         if (pp) {
@@ -426,7 +521,7 @@ void load_mesh(const Layer &layer, const std::string &path, MatrixXu &F, MatrixX
     c.wantUVs = uvs != nullptr;
     bool found = false;
     Walker w { layer, nullptr, nullptr };
-    w.onMesh = [&](const Prim &p, const Mat4 &world, bool, const std::string &) {
+    w.onMesh = [&](const Prim &p, const Mat4 &world, const Instancing &, const std::string &) {
         if (p.path == path && !found) {
             found = true;
             c.add(p, world);
@@ -447,8 +542,8 @@ void load_all(const Layer &layer, MatrixXu &F, MatrixXf &V, uint64_t *polygons, 
     c.wantUVs = uvs != nullptr;
     size_t instanced = 0;
     Walker w { layer, nullptr, nullptr };
-    w.onMesh = [&](const Prim &p, const Mat4 &world, bool inst, const std::string &) {
-        if (inst)
+    w.onMesh = [&](const Prim &p, const Mat4 &world, const Instancing &inst, const std::string &) {
+        if (inst.instanced())
             ++instanced;
         else
             c.add(p, world);
@@ -750,7 +845,41 @@ struct Node {
     std::vector<std::string> order;
     const abc::Replacement *replacement = nullptr;
     Mat4 toLocal = Mat4::Identity();
+    std::string source;     ///< the scene's prim it stands for, when written elsewhere (in a class)
+    std::string rebaseFrom, rebaseTo;   ///< paths below 'rebaseFrom' are written below 'rebaseTo'
+    bool isClass = false;   ///< class "name": what the instances inherit
+    std::string inherits;   ///< an instance: prepend inherits = <inherits>
 };
+
+/* Native instancing: the class that carries the new geometry of a
+   prototype to every instance (USD ignores opinions below an instance, but
+   follows the arcs of the instance itself: an inherits is stronger than
+   the references that bring the prototype) */
+std::string class_name(const abc::MeshSummary &m) {
+    std::string name = m.instanceRoot.substr(m.instanceRoot.rfind('/') + 1);
+    for (char &c : name)
+        if (!std::isalnum((unsigned char) c) && c != '_')
+            c = '_';
+    uint32_t h = 2166136261u;
+    for (char c : m.prototype) {
+        h ^= (uint8_t) c;
+        h *= 16777619u;
+    }
+    char hex[12];
+    snprintf(hex, sizeof hex, "%08x", h);
+    return "_IM_" + name + "_" + hex;
+}
+
+/* The roots of the instances of 'm' (each appearance minus the mesh's
+   path inside the prototype) */
+std::vector<std::string> instance_roots(const abc::MeshSummary &m) {
+    const std::string inside = m.path.substr(m.instanceRoot.size());
+    std::vector<std::string> roots { m.instanceRoot };
+    for (const std::string &a : m.aliases)
+        if (a.size() > inside.size() && a.compare(a.size() - inside.size(), inside.size(), inside) == 0)
+            roots.push_back(a.substr(0, a.size() - inside.size()));
+    return roots;
+}
 
 } // namespace
 
@@ -771,23 +900,42 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
         auto it = meshes.find(r.path);
         if (it == meshes.end())
             fail(layer, "no polygon mesh at \"" + r.path + "\"");
-        if (it->second.instanced)
-            fail(layer, "\"" + r.path + "\" is instanced: its geometry cannot be replaced");
+        if (it->second.nested)
+            fail(layer, "\"" + r.path + "\" is an instance inside an instance: its geometry cannot be replaced");
         if (it->second.animated)
             fail(layer, "\"" + r.path + "\" is animated: its geometry cannot be replaced");
         const double det = it->second.world.topLeftCorner<3, 3>().determinant();
         if (!std::isfinite(det) || std::abs(det) < 1e-12)
             fail(layer, "\"" + r.path + "\" has a degenerate transform (zero scale)");
-        Node *n = &root;
-        for (const std::string &name : str_tokenize(r.path, '/', false)) {
-            if (!n->children.count(name))
-                n->order.push_back(name);
-            n = &n->children[name];
+        auto node = [&](const std::string &path) -> Node & {
+            Node *n = &root;
+            for (const std::string &name : str_tokenize(path, '/', false)) {
+                if (!n->children.count(name))
+                    n->order.push_back(name);
+                n = &n->children[name];
+            }
+            return *n;
+        };
+        const abc::MeshSummary &m = it->second;
+        std::string at = r.path;
+        if (!m.instanceRoot.empty()) {
+            /* native instancing: written once in a class, inherited by every instance */
+            const std::string cls = "/" + class_name(m);
+            node(cls).isClass = true;
+            at = cls + r.path.substr(m.instanceRoot.size());
+            for (const std::string &instance : instance_roots(m))
+                node(instance).inherits = cls;
         }
-        if (n->replacement)
+        Node &n = node(at);
+        if (n.replacement)
             fail(layer, "\"" + r.path + "\" is replaced twice");
-        n->replacement = &r;
-        n->toLocal = it->second.world.inverse();
+        n.replacement = &r;
+        n.toLocal = m.world.inverse();
+        if (at != r.path) {
+            n.source = r.path;
+            n.rebaseFrom = m.instanceRoot;
+            n.rebaseTo = at.substr(0, at.size() - (r.path.size() - m.instanceRoot.size()));
+        }
     }
 
     const std::string sub = sublayer_path(layer, output);
@@ -807,7 +955,7 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
             for (const std::string &name : n.order) {
                 const Node &c = n.children.at(name);
                 const std::string cpath = path + "/" + name;
-                const Prim *prim = layer.prim(cpath);
+                const Prim *prim = layer.prim(c.source.empty() ? cpath : c.source);
                 std::vector<std::string> dropped;
                 std::vector<const Prim *> subsets;
                 std::string binding;
@@ -820,11 +968,15 @@ void write_overlay(const Layer &layer, const std::string &output, const std::vec
                     binding = most_used_material(layer, *prim, own, subsets);
                     if (binding == own)
                         binding.clear();
+                    if (!c.rebaseFrom.empty() && binding.compare(0, c.rebaseFrom.size() + 1, c.rebaseFrom + "/") == 0)
+                        binding = c.rebaseTo + binding.substr(c.rebaseFrom.size());
                     uvTypes = uv_types(*prim, m);
                 }
-                os << ind << "over " << quote(name);
+                os << ind << (c.isClass ? "class " : "over ") << quote(name);
                 if (!binding.empty())
                     os << " (\n" << ind << "    prepend apiSchemas = [\"MaterialBindingAPI\"]\n" << ind << ")";
+                else if (!c.inherits.empty())
+                    os << " (\n" << ind << "    prepend inherits = <" << c.inherits << ">\n" << ind << ")";
                 os << "\n" << ind << "{\n";
                 if (c.replacement) {
                     const std::string in = ind + "    ";
@@ -1126,7 +1278,28 @@ struct ProxyNode {
     const abc::Replacement *mesh = nullptr;
     const Prim *source = nullptr;
     Mat4 toLocal = Mat4::Identity();
+    bool isClass = false;                 ///< class "name": what the instances inherit
+    std::string inherits;                 ///< an instance: prepend inherits = <inherits>
 };
+
+/* The paths of a moved subtree, in its properties and bindings */
+void rebase(ProxyNode &n, const std::string &from, const std::string &to) {
+    auto fix = [&](std::string &s) {
+        for (const std::string &head : { "<" + from + "/", "<" + from + ">" }) {
+            size_t at = 0;
+            while ((at = s.find(head, at)) != std::string::npos) {
+                s.replace(at + 1, from.size(), to);
+                at += to.size() + 1;
+            }
+        }
+    };
+    for (std::string &line : n.lines)
+        fix(line);
+    if (n.binding == from || n.binding.compare(0, from.size() + 1, from + "/") == 0)
+        n.binding = to + n.binding.substr(from.size());
+    for (auto &kv : n.children)
+        rebase(kv.second, from, to);
+}
 
 } // namespace
 
@@ -1161,8 +1334,11 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         auto it = meshes.find(r.path);
         if (it == meshes.end())
             fail(layer, "no polygon mesh at \"" + r.path + "\"");
-        if (it->second.instanced)
-            fail(layer, "\"" + r.path + "\" is instanced: no proxy is made for it");
+        if (it->second.nested)
+            fail(layer, "\"" + r.path + "\" is an instance inside an instance: no proxy is made for it");
+        if (!it->second.instanceRoot.empty() && root_of(it->second.instanceRoot) == it->second.instanceRoot)
+            fail(layer, "\"" + it->second.instanceRoot + "\" is an instance at the root of the scene: its proxies "
+                        "would have no root prim to live under (put the instances under a root prim, e.g. /World)");
         if (it->second.animated)
             fail(layer, "\"" + r.path + "\" is animated: a proxy could not follow it");
         paths.push_back(r.path);
@@ -1286,6 +1462,44 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
                         (via.empty() ? std::string() : ", referencing " + via) + ")"));
     }
 
+    /* native instancing: what was built for one instance moves to a class
+       that every instance inherits (below the same root prim, so that the
+       scene's reference to the proxy layer brings it) */
+    {
+        std::map<std::string, std::string> classOf;   /* instance root -> class */
+        std::map<std::string, std::vector<std::string>> rootsOf;
+        for (const abc::Replacement &r : proxies) {
+            const abc::MeshSummary &m = meshes.at(r.path);
+            if (m.instanceRoot.empty() || classOf.count(m.instanceRoot))
+                continue;
+            classOf[m.instanceRoot] = root_of(m.instanceRoot) + "/" + class_name(m);
+            rootsOf[m.instanceRoot] = instance_roots(m);
+        }
+        for (const auto &kv : classOf) {
+            const std::string &from = kv.first, &to = kv.second;
+            ProxyNode moved;
+            {
+                ProxyNode &src = node(from);
+                moved.children.swap(src.children);
+                moved.order.swap(src.order);
+                moved.lines.swap(src.lines);
+            }
+            rebase(moved, from, to);
+            ProxyNode &dst = node(to);
+            dst.isClass = true;
+            for (const std::string &name : moved.order) {
+                if (!dst.children.count(name))
+                    dst.order.push_back(name);
+                dst.children[name] = std::move(moved.children[name]);
+            }
+            dst.lines.insert(dst.lines.end(), moved.lines.begin(), moved.lines.end());
+            for (const std::string &instance : rootsOf[from])
+                node(instance).inherits = to;
+            notes.push_back(from + ": the instances of its prototype (" + std::to_string(rootsOf[from].size()) +
+                            ") inherit " + to);
+        }
+    }
+
     /* the proxy layer: the proxies and what the scene's prims gain (purpose,
        proxyPrim), below root prims that the scene references */
     cout << "Writing \"" << (packaged ? output + "[" + proxyEntry + "]" : proxyFile) << "\" (" << proxies.size()
@@ -1307,11 +1521,15 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
             for (const std::string &name : n.order) {
                 const ProxyNode &c = n.children.at(name);
                 /* a root prim is defined (the scene's own definition wins) */
-                os << ind << (!c.type.empty() ? "def " + c.type : ind.empty() ? "def" : "over") << " " << quote(name);
+                os << ind << (c.isClass ? std::string("class") : !c.type.empty() ? "def " + c.type
+                                                                   : ind.empty() ? "def" : "over")
+                   << " " << quote(name);
                 if (!c.binding.empty())
                     os << " (\n" << ind << "    prepend apiSchemas = [\"MaterialBindingAPI\"]\n" << ind << ")";
                 else if (!c.reference.empty())
                     os << " (\n" << ind << "    prepend references = " << c.reference << "\n" << ind << ")";
+                else if (!c.inherits.empty())
+                    os << " (\n" << ind << "    prepend inherits = <" << c.inherits << ">\n" << ind << ")";
                 os << "\n" << ind << "{\n";
                 const std::string in = ind + "    ";
                 if (c.mesh) {

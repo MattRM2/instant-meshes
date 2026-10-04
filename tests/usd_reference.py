@@ -17,6 +17,10 @@ library (the pxr module that ships with Blender 4.x / 5.x).
     blender -b --factory-startup --python tests/usd_reference.py -- package <dir>
         writes usd_package.usdz (root layer .usda) and usd_package_c.usdz
         (.usdc): the asset referenced from parts/, a texture, for --proxy
+    blender -b --factory-startup --python tests/usd_reference.py -- instances <dir>
+        writes usd_instances.usda (+ .usdc): native instances of an external
+        asset and of an internal prim with variants, a PointInstancer, an
+        instance inside an instance, a plain mesh (needs usd_asset.usdc)
     blender -b --factory-startup --python tests/usd_reference.py -- refs <dir>
         writes usd_refs.usdc: root prims with prepended, explicit or no
         references (the in-place edits of usdedit.h)
@@ -408,6 +412,72 @@ def make_package(out):
     shutil.rmtree(work, ignore_errors=True)
 
 
+def make_instances(path):
+    stage = Usd.Stage.CreateNew(path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+
+    # an internal prototype with variants: shape changes the geometry, color only the color
+    rock = stage.DefinePrim("/Library/Rock", "Xform")
+    stage.GetPrimAtPath("/Library").SetSpecifier(Sdf.SpecifierClass)
+    shape = rock.GetVariantSets().AddVariantSet("shape")
+    for name, (rings, segs) in (("A", (8, 16)), ("B", (10, 20))):
+        shape.AddVariant(name)
+        shape.SetVariantSelection(name)
+        with shape.GetVariantEditContext():
+            sphere(stage, "/Library/Rock/geo", rings, segs, 1.0)
+    color = rock.GetVariantSets().AddVariantSet("color")
+    for name, c in (("red", (0.8, 0.1, 0.1)), ("blue", (0.1, 0.1, 0.8))):
+        color.AddVariant(name)
+        color.SetVariantSelection(name)
+        with color.GetVariantEditContext():
+            UsdGeom.Mesh(stage.OverridePrim("/Library/Rock/geo")).CreateDisplayColorAttr([Gf.Vec3f(*c)])
+    shape.ClearVariantSelection()
+    color.ClearVariantSelection()
+
+    def instance(path, target, x, asset="", variants=()):
+        p = UsdGeom.Xform.Define(stage, path)
+        p.AddTranslateOp().Set(Gf.Vec3d(x, 0, 0))
+        if asset:
+            p.GetPrim().GetReferences().AddReference(asset, target)
+        else:
+            p.GetPrim().GetReferences().AddInternalReference(target)
+        for vs, v in variants:
+            p.GetPrim().GetVariantSets().GetVariantSet(vs).SetVariantSelection(v)
+        p.GetPrim().SetInstanceable(True)
+
+    UsdGeom.Xform.Define(stage, "/World/rocks")
+    for k, (shp, col) in enumerate((("A", "red"), ("A", "red"), ("A", "red"), ("A", "blue"), ("A", "blue"),
+                                    ("B", "red"))):
+        instance("/World/rocks/rock_%d" % (k + 1), "/Library/Rock", 3 * k, variants=(("shape", shp), ("color", col)))
+    UsdGeom.Xform.Define(stage, "/World/props")
+    for k in range(3):
+        instance("/World/props/asset_%d" % (k + 1), "/Asset", 10 * k, asset="./usd_asset.usdc")
+
+    # a PointInstancer: two prototypes, five points
+    pi = UsdGeom.PointInstancer.Define(stage, "/World/scatter")
+    UsdGeom.Scope.Define(stage, "/World/scatter/Prototypes")
+    sphere(stage, "/World/scatter/Prototypes/Pebble/mesh", 6, 12, 0.3)
+    sphere(stage, "/World/scatter/Prototypes/Stick/mesh", 4, 8, 0.2)
+    pi.CreatePrototypesRel().SetTargets(["/World/scatter/Prototypes/Pebble", "/World/scatter/Prototypes/Stick"])
+    pi.CreateProtoIndicesAttr([0, 0, 1, 0, 1])
+    pi.CreatePositionsAttr([Gf.Vec3f(i, 0, 5) for i in range(5)])
+
+    # an instance inside an instance
+    cluster = stage.DefinePrim("/Library/Cluster", "Xform")
+    for k in range(2):
+        instance("/Library/Cluster/rock_%d" % (k + 1), "/Library/Rock", 2 * k, variants=(("shape", "A"), ("color", "red")))
+    instance("/World/cluster_1", "/Library/Cluster", 0)
+    UsdGeom.Xform(stage.GetPrimAtPath("/World/cluster_1")).AddTranslateOp(opSuffix="up").Set(Gf.Vec3d(0, 5, 0))
+
+    # a plain mesh
+    sphere(stage, "/World/ground", 6, 12, 4.0)
+    stage.GetRootLayer().Save()
+    Sdf.Layer.FindOrOpen(path).Export(path.replace(".usda", ".usdc"))
+
+
 def make_refs(path):
     layer = Sdf.Layer.CreateNew(path)
     for name, how in (("Prepended", "prepend"), ("Explicit", "explicit"), ("Plain", None)):
@@ -595,6 +665,9 @@ elif args[0] == "looks":
 elif args[0] == "package":
     make_package(os.path.abspath(args[1]))
     print("[OK] usd_package.usdz, usd_package_c.usdz in", args[1])
+elif args[0] == "instances":
+    make_instances(os.path.join(os.path.abspath(args[1]), "usd_instances.usda"))
+    print("[OK] usd_instances.usda / .usdc in", args[1])
 elif args[0] == "refs":
     make_refs(os.path.join(os.path.abspath(args[1]), "usd_refs.usdc"))
     print("[OK] usd_refs.usdc in", args[1])

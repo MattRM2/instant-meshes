@@ -994,8 +994,8 @@ void splice_abc(const std::string &input, const std::string &output,
             auto it = meshes.find(r.path);
             if (it == meshes.end())
                 ar.fail("no polygon mesh at \"" + r.path + "\"");
-            if (it->second.instanced)
-                ar.fail("\"" + r.path + "\" is instanced: its geometry cannot be replaced");
+            if (it->second.nested)
+                ar.fail("\"" + r.path + "\" is stored inside an instance: its geometry cannot be replaced");
             if (it->second.animated)
                 ar.fail("\"" + r.path + "\" is animated: its geometry cannot be replaced");
             if (targets.count(r.path))

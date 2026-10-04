@@ -337,7 +337,8 @@ SECTIONS = [
     (5, "Per-Mesh Remeshing (Alembic, OBJ, USD)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
                                                  "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
                                                  "5.5 Touching objects: --keep-border",
-                                                 "5.6 Following a long run: --progress"]),
+                                                 "5.6 Following a long run: --progress",
+                                                 "5.7 Instanced meshes: remeshed once, for every instance"]),
     (6, "UVs", ["6.1 Transfer: --uv transfer", "6.2 Unwrap: --uv unwrap"]),
     (7, "Reference", ["7.1 Accuracy of the targets", "7.2 Limitations", "7.3 Credits and licenses"]),
 ]
@@ -545,7 +546,9 @@ def build(cover_image=None):
     story += bullets([
         "Every <b>polygon mesh</b> of the file, placed in world space through its parent transforms "
         "(translate, rotate, scale, matrix, non-inheriting transforms).",
-        "<b>Instances</b>: each instance appears at its own place.",
+        "<b>Instances</b>: per mesh, an instanced mesh is listed once and remeshed once for all its "
+        "instances (5.7). In whole-file mode, each instance is placed at its own place and merged with the "
+        "rest: the instancing is not kept.",
         "<b>N-gons</b> are triangulated for solving; quads keep the split of the OBJ reader, so an .abc and the "
         "same .obj give the same triangles.",
         "Animated files are read at their <b>first frame</b>.",
@@ -584,8 +587,10 @@ def build(cover_image=None):
         "turned right-handed.",
         "<b>UV primvars</b> (texCoord2f, or float2 named st / uv), indexed or not, faceVarying, vertex or "
         "uniform.",
-        "Classes, overs and inactive prims are skipped; meshes below an instanceable prim or a PointInstancer "
-        "are marked as instanced (listed, not remeshed). Transforms count on Xformable prims only, as in USD.",
+        "Classes, overs and inactive prims are skipped. Meshes below an instanceable prim or a PointInstancer "
+        "are <b>instanced</b>: per mesh, listed once per prototype and remeshed for all their instances (5.7); "
+        "in whole-file mode, <b>skipped</b> (a warning counts them). Transforms count on Xformable prims only, "
+        "as in USD.",
         "A mesh that comes from a reference or a payload can be remeshed or get a proxy like any other: the "
         "layer written (or the proxy layer) puts its opinions over it, the referenced files stay untouched.",
     ])
@@ -783,7 +788,7 @@ def build(cover_image=None):
                      ["A single face set (one material), rebuilt over all new faces", ""]],
                     [(W - 2 * MARGIN) / 2, (W - 2 * MARGIN) / 2])]),
               Spacer(1, 3 * mm),
-              callout("Refused on purpose", "Animated meshes and instanced meshes cannot be targets (-m reports them; "
+              callout("Refused on purpose", "Animated meshes and nested instances (5.7) cannot be targets (-m reports them; "
                                             "--others copies them untouched and says so in the plan). If one mesh "
                                             "fails (e.g. no faces for a tiny target), nothing is written, unless "
                                             "<b>--skip-failed</b> is given: the failed meshes are then copied "
@@ -817,6 +822,39 @@ def build(cover_image=None):
         "Neighbours touch but are not welded: their border vertices lie on the same line, not at the same places. "
         "A border vertex farther than one edge length from the input border is left in place and counted in the log.",
     ]))]
+    story5_7 = [PageBreak(), SubHeader("5.7", "Instanced meshes: remeshed once, for every instance"),
+                Spacer(1, 3 * mm),
+                p("A scene often draws the same geometry many times: a rock 250 times, a chair in every room. Per "
+                  "mesh, such a geometry is <b>one entry</b>, remeshed <b>once</b>, and every instance shows the "
+                  "result; the instancing is kept, so the scene gets lighter in faces and stays light in memory."),
+                Spacer(1, 3 * mm),
+                codeblock(["> InstantMeshes.exe forest.usdc --list",
+                           "   /World/rocks/rock_1/geo        8000 faces   (instanced x250)",
+                           "   /World/trees/tree_1/trunk     12000 faces   (instanced x40)",
+                           "   /World/cluster_1/rock_1/geo    8000 faces   (nested instance)",
+                           '> InstantMeshes.exe forest.usdc -o forest_retopo.usdc -m "World/rocks/rock_37=20%"'])]
+    story5_7 += bullets([
+        "<b>-m</b> answers to any appearance: rock_37 selects the rock prototype, remeshed once. Its percentage "
+        "is of the prototype's faces. The Outliner shows one row per prototype, with its count (x250).",
+        "<b>Alembic</b>: the geometry is stored once, on the source object; it is replaced there and every "
+        "instance (.instanceSource) shows it, at any depth.",
+        "<b>USD, PointInstancer</b>: the prototype's mesh is replaced in place, for every point.",
+        "<b>USD, instanceable prims</b>: USD ignores any change below an instance, and the prototype usually "
+        "comes from a referenced file, never touched. The new mesh goes to a <b>class</b> (_IM_rock_1_...) that "
+        "every instance <b>inherits</b> (an inherits beats the references): the instances still share one "
+        "prototype.",
+        "<b>Variants</b>: instances with other variant selections are other prototypes, listed apart. When "
+        "their geometry is the same (variants of material or color only), it is remeshed once and the result "
+        "reused.",
+        "<b>--proxy</b>: the proxy goes inside the prototype (through the same class), so every instance gets it.",
+        "<b>Nested instances</b> (an instance inside an instance, USD) are listed but not remeshed.",
+    ])
+    story5_7 += [Spacer(1, 3 * mm),
+                 callout("Whole-file mode and instances", "Whole-file mode (-f, -s, -v without -m) makes one "
+                         "mesh of the scene, so instancing cannot survive it: an Alembic file has every instance "
+                         "placed and merged with the rest, a USD file has its instanced meshes <b>skipped</b> "
+                         "(a warning counts them). To keep the instancing, use the per-mesh mode (-m / --others, "
+                         "or the Outliner).")]
     story += [Spacer(1, 4 * mm), KeepTogether([SubHeader("5.6", "Following a long run: --progress"), Spacer(1, 3 * mm),
               p("With <b>--progress</b>, a block that stands out in the log is printed before the first mesh and "
                 "after each remeshed (or skipped) mesh: the percentage, a bar, the meshes done, the elapsed time "
@@ -830,6 +868,7 @@ def build(cover_image=None):
         "a small one, as it takes longer to remesh. The mesh count is shown next to it.",
         "Per-mesh mode only (-m / --others); the last block, at 100%, comes before the file is written.",
     ]))]
+    story += story5_7
     story += [PageBreak()]
 
     # ---------------- 6 UVs
@@ -896,8 +935,8 @@ def build(cover_image=None):
         "Remeshed meshes lose their normals (new topology), and their UVs unless --uv transfer is given.",
         "Point clouds (.aln) accept face counts, not percentages.",
         "USD: layer offsets (time), relocates, value clips and variant fallbacks are not composed; packages "
-        "inside packages are not opened. A mesh inside an instance cannot be "
-        "remeshed (edit its prototype asset). Per-mesh output is a .usda or .usdc layer.",
+        "inside packages are not opened. An instance inside an instance is not remeshed. Per-mesh output is "
+        "a .usda or .usdc layer.",
         "In the interface, a mesh that fails is kept unchanged (as with --skip-failed); processing runs one "
         "mesh at a time in the background, the viewport shows the scene as one merged mesh.",
         "<b>Memory</b>, per-mesh mode: the remeshing itself takes about 800 bytes per input vertex, for one mesh "

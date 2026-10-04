@@ -289,6 +289,16 @@ void OutlinerView::draw(NVGcontext *ctx) {
             nvgIntersectScissor(ctx, x, y, facesX - x - 4, RowHeight);
             nvgFillColor(ctx, unfit ? Dim : (n.object < 0 ? Color(200, 200, 200, 255) : Text));
             nvgText(ctx, x, y + RowHeight * 0.5f, n.name.c_str(), nullptr);
+            if (n.object >= 0) {
+                /* an instanced mesh: how many times it appears (remeshed once for all) */
+                const SceneMesh &m = mProject->objects[(size_t) n.object].mesh;
+                if (m.instanced && !m.nested && m.instances > 1) {
+                    float b[4];
+                    nvgTextBounds(ctx, x, y, n.name.c_str(), nullptr, b);
+                    nvgFillColor(ctx, Muted);
+                    nvgText(ctx, b[2] + 6, y + RowHeight * 0.5f, ("x" + std::to_string(m.instances)).c_str(), nullptr);
+                }
+            }
             nvgRestore(ctx);
             /* faces */
             nvgTextAlign(ctx, NVG_ALIGN_RIGHT | NVG_ALIGN_MIDDLE);
@@ -309,7 +319,7 @@ void OutlinerView::draw(NVGcontext *ctx) {
                 nvgFill(ctx);
                 nvgFillColor(ctx, c);
                 nvgText(ctx, stateX + 13, y + RowHeight * 0.5f,
-                        unfit ? (o.mesh.instanced ? "inst." : o.mesh.animated ? "anim." : o.mesh.purpose.c_str())
+                        unfit ? (o.mesh.nested ? "nested" : o.mesh.animated ? "anim." : o.mesh.purpose.c_str())
                               : state_name(o.state), nullptr);
             }
         }

@@ -516,10 +516,42 @@ public:
 
     void run() {
         visit(mAr.top(), "/", Eigen::Matrix4d::Identity(), 0, false);
-        /* A mesh object reached several times is shared by instances */
-        for (size_t i = 0; i < meshes.size(); ++i)
-            if (mGroupUses[mGroups[i]] > 1)
-                meshes[i].instanced = true;
+        if (mGeometry) {
+            /* loading: every appearance at its place */
+            for (size_t i = 0; i < meshes.size(); ++i)
+                if (mGroupUses[mGroups[i]] > 1)
+                    meshes[i].instanced = true;
+            return;
+        }
+        /* Listing: a mesh object reached several times is shared by
+           instances; it is listed once, at the path where it is stored
+           (not through an instance), its other appearances as aliases */
+        std::map<uint64_t, size_t> first;
+        for (size_t i = 0; i < meshes.size(); ++i) {
+            auto it = first.find(mGroups[i]);
+            if (it == first.end() || (meshes[it->second].instanced && !meshes[i].instanced))
+                first[mGroups[i]] = i;   /* .instanced: reached through an instance, so far */
+        }
+        std::vector<MeshSummary> listed;
+        for (size_t i = 0; i < meshes.size(); ++i) {
+            const size_t keep = first[mGroups[i]];
+            if (keep != i)
+                continue;
+            MeshSummary m = meshes[i];
+            const uint64_t uses = mGroupUses[mGroups[i]];
+            if (uses > 1) {
+                m.nested = m.instanced;   /* stored only inside an instance: cannot be written */
+                m.instanced = true;
+                m.instances = uses;
+                for (size_t j = 0; j < meshes.size(); ++j)
+                    if (j != i && mGroups[j] == mGroups[i])
+                        m.aliases.push_back(meshes[j].path);
+            } else {
+                m.instanced = false;
+            }
+            listed.push_back(std::move(m));
+        }
+        meshes.swap(listed);
     }
 
     std::vector<Vector3f> positions;

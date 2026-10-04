@@ -136,7 +136,8 @@ def test_mesh_rules(exe, tmp):
     code, meshes = list_meshes(exe, scene)
     check(code == 0 and meshes == {A: 7872, B: 576}, "--list scene_ab: %s" % meshes)
     code, log = run(exe, os.path.join(DATA, "instances.abc"), "--list")
-    check(code == 0 and log.count("(instanced)") == 2, "--list flags instances")
+    check(code == 0 and log.count("(instanced x2)") == 1 and "/InstB/" not in log,
+          "--list: an instanced mesh once, with its instance count")
 
     # --sort / --top
     def listed(*extra):
@@ -216,9 +217,18 @@ def test_mesh_rules(exe, tmp):
           not os.path.exists(src + ".tmp"), "in-place -m: %s" % meshes)
 
     # --others alone skips what cannot be remeshed, and says so
-    code, log = run(exe, os.path.join(DATA, "instances.abc"), "--others", "50%", "--dry-run")
-    check(code != 0 and "Nothing to remesh" in log and "kept unchanged (instanced)" in log,
-          "--others skips instances")
+    code, log = run(exe, os.path.join(DATA, "animated.abc"), "--others", "50%", "--dry-run")
+    check(code != 0 and "Nothing to remesh" in log and "kept unchanged (animated)" in log,
+          "--others skips animated meshes")
+
+    # an instanced mesh: remeshed where it is stored, every instance shows it, still an instance
+    inst = os.path.join(tmp, "instances_out.abc")
+    code, log = run(exe, os.path.join(DATA, "instances.abc"), "-o", inst, "-d", "-m", "InstB/Pillar-0=300%")
+    code2, listed = run(exe, inst, "--list")
+    code3, dumped = run(dump, inst)
+    check(code == 0 and "/InstA/Pillar-0/PillarMesh" in listed and "(instanced x2)" in listed and
+          " 10 faces" not in listed and 'instanceSource' in dumped and '"/InstA/Pillar-0/PillarMesh"' in dumped,
+          "an instanced Alembic mesh remeshed once, for both instances")
 
     # Errors, all before any computation
     cases = [
@@ -239,9 +249,6 @@ def test_mesh_rules(exe, tmp):
     check(not os.path.exists(os.path.join(tmp, "e.abc")), "no output after errors")
     code, log = run(exe, os.path.join(DATA, "cube_quads.ply"), "--list")
     check(code != 0 and "need one Alembic (.abc), OBJ (.obj) or USD" in log, "--list on a PLY refused")
-    code, log = run(exe, os.path.join(DATA, "instances.abc"), "-o", os.path.join(tmp, "e.abc"),
-                    "-m", "Pillar*=50%")
-    check(code != 0 and "cannot be remeshed" in log, "instanced target refused")
     code, log = run(exe, os.path.join(DATA, "animated.abc"), "-o", os.path.join(tmp, "e.abc"),
                     "-m", "Moving=50%")
     check(code != 0 and "cannot be remeshed" in log, "animated target refused")
@@ -702,6 +709,44 @@ def test_usd_proxies(exe, tmp):
           "materials outside the root prim: stand-ins that reference them")
 
 
+def test_usd_instances(exe, tmp):
+    print("USD instances: native (external, internal with variants), PointInstancer, nested")
+    import shutil
+    work = os.path.join(tmp, "instances")
+    os.makedirs(work)
+    for name in ("usd_instances.usda", "usd_instances.usdc", "usd_asset.usdc"):
+        shutil.copy(os.path.join(DATA, name), work)
+    scene = os.path.join(work, "usd_instances.usda")
+
+    code, log = run(exe, scene, "--list")
+    check(code == 0 and log.count("(instanced x3)") == 6 and "(instanced x2)" in log and
+          log.count("(nested instance)") == 2 and "/World/rocks/rock_2/" not in log and
+          "/World/props/asset_3/" not in log, "--list: one entry per prototype, nested instances apart")
+
+    out = os.path.join(work, "retopo.usda")
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "World/rocks/*=50%", "-m", "World/props/asset_2/geo/render/Body=40%",
+                    "-m", "Pebble=50%")
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check(code == 0 and text.count('class "_IM_') == 4 and text.count("prepend inherits = </_IM_rock_1_") == 3 and
+          text.count("prepend inherits = </_IM_asset_1_") == 3 and 'over "Pebble"' in text and
+          "same geometry as /World/rocks/rock_1/geo: its result reused" in log,
+          "native instances through classes, PointInstancer prototype in place, identical prototypes once")
+    code, log = run(exe, scene, "-o", out, "-m", "World/cluster_1/*=50%")
+    check(code != 0 and "nested instances" in log and "Optimizing" not in log, "nested instances refused")
+
+    code, log = run(exe, scene, "-o", scene, "-d", "--proxy", "-m", "World/rocks/rock_6=50%", "-m", "Stick=50%")
+    proxies = os.path.join(work, "usd_instances_proxy.usda")
+    text = open(proxies, encoding="utf-8").read() if os.path.exists(proxies) else ""
+    code2, meshes = list_meshes(exe, scene)
+    check(code == 0 and 'class "_IM_rock_6_' in text and "prepend inherits = </World/_IM_rock_6_" in text and
+          "/World/rocks/rock_6/geo_proxy" in meshes and "/World/scatter/Prototypes/Stick/mesh_proxy" in meshes,
+          "--proxy: proxies inside the prototypes")
+
+    code, log = run(exe, os.path.join(work, "usd_instances.usdc"), "-o", os.path.join(work, "whole.usda"), "-d",
+                    "-f", "50%")
+    check(code == 0 and "instanced meshes skipped" in log, "whole-file mode: instanced meshes skipped (said)")
+
+
 def test_usd_composition(exe, tmp):
     print("USD composition: sublayers, references, payloads, variants, inherits, specializes")
     import shutil
@@ -729,8 +774,10 @@ def test_usd_composition(exe, tmp):
     text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
     check(code == 0 and 'over "propB"' in text and "faceVertexCounts" in text and "@./assembly.usda@" in text,
           "-m on a referenced mesh")
-    code, log = run(exe, scene, "-o", out, "-m", "World/inst/*=50%")
-    check(code != 0 and "instanced" in log, "an instanced mesh is refused")
+    code, log = run(exe, scene, "-o", out, "-d", "-m", "World/inst/*=50%")
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else ""
+    check(code == 0 and "prepend inherits = </_IM_" in text and 'class "_IM_' in text,
+          "an instanced mesh: remeshed in a class its instances inherit")
 
     # proxies of referenced meshes: geo/proxy inside each reference
     code, log = run(exe, scene, "-o", scene, "-d", "--proxy", "-m", "propA=200%", "-m", "propC=200%")
@@ -870,6 +917,7 @@ def main():
         test_usd_reader(exe, tmp)
         test_usd_scenes(exe, tmp)
         test_usd_proxies(exe, tmp)
+        test_usd_instances(exe, tmp)
         test_usd_composition(exe, tmp)
         test_usd_binary(exe, tmp)
         test_projects(exe, tmp)

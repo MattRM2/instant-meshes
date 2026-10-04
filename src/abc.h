@@ -143,7 +143,15 @@ struct MeshSummary {
     uint64_t vertices = 0;
     uint64_t faces = 0;    ///< polygons, as shown in a DCC (not triangles)
     bool animated = false; ///< positions or topology have several samples
-    bool instanced = false;///< reached through an instance, or instanced elsewhere
+    /// Its geometry is shared by instances (listed once: remeshing it
+    /// remeshes every instance); 'path' is where the geometry is written
+    bool instanced = false;
+    uint64_t instances = 0;///< instanced: how many times it appears
+    bool nested = false;   ///< USD: an instance inside an instance (not remeshed)
+    std::vector<std::string> aliases;   ///< instanced: the paths of its other appearances
+    std::string prototype; ///< USD native instancing: what its instances share (their arcs)
+    std::string instanceRoot;           ///< USD native instancing: the instanceable prim above 'path'
+    uint64_t geometry = 0; ///< USD instanced: hash of the geometry (identical prototypes are remeshed once)
     std::string purpose;   ///< USD: computed purpose when not "default" (render, proxy, guide)
     Eigen::Matrix4d world = Eigen::Matrix4d::Identity();  ///< first sample
 };

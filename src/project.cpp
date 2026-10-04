@@ -40,8 +40,10 @@ std::string mesh_flags(const SceneMesh &m) {
     std::string flags;
     if (m.animated)
         flags += " (animated)";
-    if (m.instanced)
-        flags += " (instanced)";
+    if (m.nested)
+        flags += " (nested instance)";
+    else if (m.instanced)
+        flags += " (instanced x" + std::to_string(m.instances) + ")";
     if (!m.purpose.empty())
         flags += " (" + m.purpose + ")";
     return flags;
@@ -477,7 +479,7 @@ void Project::set_spool(const std::string &path) {
 }
 
 bool Project::unfit(const ProjectObject &o) const {
-    return o.mesh.animated || o.mesh.instanced ||
+    return o.mesh.animated || o.mesh.nested ||
            (options.proxy && (o.mesh.purpose == "proxy" || o.mesh.purpose == "guide"));
 }
 
@@ -504,7 +506,11 @@ void Project::apply_rules(const std::vector<MeshRule> &rules) {
     for (ProjectObject &o : objects) {
         int rule = -1;
         for (size_t r = 0; r < rules.size(); ++r) {
-            if (rule_matches(rules[r].pattern, o.mesh.path)) {
+            /* an instanced mesh answers to any of its appearances */
+            bool hit = rule_matches(rules[r].pattern, o.mesh.path);
+            for (size_t k = 0; !hit && k < o.mesh.aliases.size(); ++k)
+                hit = rule_matches(rules[r].pattern, o.mesh.aliases[k]);
+            if (hit) {
                 rule = (int) r;
                 matches[r]++;
             }
@@ -524,8 +530,9 @@ void Project::apply_rules(const std::vector<MeshRule> &rules) {
         std::string list;
         for (const std::string &s : refused)
             list += "\n   " + s;
-        throw std::runtime_error(options.proxy ? "Animated, instanced, proxy or guide meshes cannot get a proxy:" + list
-                                               : "Animated or instanced meshes cannot be remeshed:" + list);
+        throw std::runtime_error(options.proxy ? "Animated meshes, nested instances, proxy or guide meshes cannot get "
+                                                 "a proxy:" + list
+                                               : "Animated meshes and nested instances cannot be remeshed:" + list);
     }
 }
 
@@ -542,11 +549,39 @@ void Project::store(ProjectObject &o, const MatrixXu &F, const MatrixXf &V, cons
     o.message.clear();
 }
 
+bool Project::reuse(ProjectObject &o, const FaceTarget &t) {
+    if (o.mesh.geometry == 0)
+        return false;
+    for (const ProjectObject &other : objects) {
+        if (&other == &o || other.mesh.geometry != o.mesh.geometry || !other.result ||
+            other.state != ObjectState::Done || target_of(other).text != t.text)
+            continue;
+        MatrixXu F;
+        MatrixXf V;
+        std::vector<CornerUVs> uvs;
+        other.result(F, V, uvs);
+        /* the result is in the other one's world space: moved to this one's */
+        const Eigen::Matrix4d move = o.mesh.world * other.mesh.world.inverse();
+        for (std::ptrdiff_t i = 0; i < V.cols(); ++i) {
+            const Eigen::Vector4d q = move * Eigen::Vector4d(V(0, i), V(1, i), V(2, i), 1.0);
+            V.col(i) = Vector3f((Float) q.x(), (Float) q.y(), (Float) q.z());
+        }
+        store(o, F, V, uvs);
+        o.message = "same geometry as " + other.mesh.path + ": its result reused";
+        return true;
+    }
+    return false;
+}
+
 RemeshReport Project::process(ProjectObject &o) {
     const FaceTarget t = target_of(o);
     if (!t.valid())
         throw std::runtime_error("\"" + o.mesh.path + "\" has no target");
     try {
+        if (reuse(o, t)) {
+            cout << "   " << o.mesh.path << ": " << o.message << endl;
+            return RemeshReport();
+        }
         ObjectResult r = remesh_object(scene(), o.mesh.path, t, options.params);
         store(o, r.F, r.V, r.uvs);
         return r.report;

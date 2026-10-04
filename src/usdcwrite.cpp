@@ -135,7 +135,7 @@ int meta_type(const std::string &key) {
         { "metersPerUnit", TDouble }, { "kilogramsPerUnit", TDouble }, { "startTimeCode", TDouble },
         { "endTimeCode", TDouble }, { "timeCodesPerSecond", TDouble }, { "framesPerSecond", TDouble },
         { "elementSize", TInt }, { "apiSchemas", TTokenListOp }, { "subLayers", TStringVector },
-        { "references", TReferenceListOp },
+        { "references", TReferenceListOp }, { "inherits", TPathListOp }, { "specializes", TPathListOp },
     };
     auto it = types.find(key);
     return it == types.end() ? TInvalid : it->second;
@@ -526,6 +526,17 @@ private:
             }
             case TTokenListOp: rep = list_op(TTokenListOp, v); break;
             case TReferenceListOp: rep = reference_list_op(v); break;
+            case TPathListOp: {
+                /* the .usda reader keeps paths as "<path>" */
+                Value paths = v;
+                for (std::vector<std::string> *l : { &paths.explicitItems, &paths.prepended, &paths.appended,
+                                                     &paths.deleted })
+                    for (std::string &item : *l)
+                        if (item.size() > 1 && item.front() == '<' && item.back() == '>')
+                            item = item.substr(1, item.size() - 2);
+                rep = list_op(TPathListOp, paths);
+                break;
+            }
             case TStringVector: {
                 std::vector<uint32_t> ids;
                 for (const std::string &s : v.strings)
@@ -548,7 +559,8 @@ private:
                     cout << "Warning: .usdc writer: metadata \"" << key << "\" not written" << endl;
                 return;
         }
-        fields.emplace_back(token(key), rep);
+        /* the field Sdf stores the text's "inherits" in */
+        fields.emplace_back(token(key == "inherits" ? "inheritPaths" : key), rep);
     }
 
     void prim(const Prim &p) {

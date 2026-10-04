@@ -4698,6 +4698,13 @@ void Viewer::processChecked() {
                 mWorkerCurrent = path;
             }
             try {
+                {
+                    std::lock_guard<std::mutex> lock(mProjectLock);
+                    if (project->reuse(project->objects[(size_t) w.first], w.second)) {
+                        ++mWorkerDone;
+                        continue;
+                    }
+                }
                 ObjectResult r = project->compute(path, w.second, params);
                 std::lock_guard<std::mutex> lock(mProjectLock);
                 project->store(project->objects[(size_t) w.first], r.F, r.V, r.uvs);

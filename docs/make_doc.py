@@ -257,7 +257,7 @@ def callout(title, text):
         ("TOPPADDING", (0, 0), (-1, 0), 7),
         ("BOTTOMPADDING", (0, -1), (-1, -1), 8),
     ]))
-    return t
+    return KeepTogether([t])   # never the title on one page and the text on the next
 
 
 def steps(items):

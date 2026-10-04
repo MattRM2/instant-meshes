@@ -351,7 +351,8 @@ class TocEntry(Flowable):
 SECTIONS = [
     (1, "Overview", ["1.1 What this fork adds", "1.2 Installation", "1.3 Files in the release"]),
     (2, "The Matt Dark Interface", ["2.1 Panel reference", "2.2 Target: faces or percentage",
-                                    "2.3 Flow line colors", "2.4 Typical workflow"]),
+                                    "2.3 Flow line colors", "2.4 Typical workflow", "2.5 Menus and shortcuts",
+                                    "2.6 The Outliner: a scene, mesh by mesh", "2.7 Projects (.imd)"]),
     (3, "Alembic and USD Support", ["3.1 What is read", "3.2 What is written", "3.3 Robustness",
                                     "3.4 USD: what is read", "3.5 USD: the layer written",
                                     "3.6 USD: proxies (--proxy)"]),
@@ -398,6 +399,8 @@ def build(cover_image=None):
         "<b>Percentage targets</b>: 75% means 75% of the original face count, in the interface and on the "
         "command line.",
         "<b>UVs</b>: the original's carried over (--uv transfer), or new ones unwrapped (--uv unwrap).",
+        "<b>Outliner and projects</b>: the meshes of a scene in a tree, a target per mesh, processing in the "
+        "background, and the whole job saved as a project (.imd) that the command line can run.",
         "<b>Typed targets</b>: faces or %, presets and a full-width slider.",
         "<b>Meaningful colors</b>: flow lines by direction (U / V), your strokes in orange, singularities with "
         "consistent colors.",
@@ -427,8 +430,9 @@ def build(cover_image=None):
                 "orange; the main actions (Solve, Extract, Export, Save) are orange buttons."),
               Spacer(1, 4 * mm), SubHeader("2.1", "Panel reference"), Spacer(1, 3 * mm),
               table([["Control", "What it does"],
-                     ["Open mesh", "Loads .obj, .ply, .abc or an .aln point cloud. The line below shows the file "
-                                   "and its face count."],
+                     ["Open...", "A scene (.abc, .obj, .usd*: its meshes in the Outliner), a project (.imd), a "
+                                 ".ply mesh or an .aln point cloud. Dropping a file on the window opens it too. "
+                                 "The line below shows the file and its face count."],
                      ["Advanced", "Saves / loads the session, visualization modes, render layers, hierarchy level, "
                                   "crease angle."],
                      ["Remesh as", "Triangles (6/6), Quads 2/4 or Quads 4/4 (default)."],
@@ -487,7 +491,7 @@ def build(cover_image=None):
                         ("#F472B6", "Position singularity", "Large offset"),
                         ("#6B6B6B", "Input mesh", "Neutral clay so colors stand out")]),
               Spacer(1, 5 * mm), SubHeader("2.4", "Typical workflow"), Spacer(1, 3 * mm),
-              steps(["<b>Open mesh</b> and pick <b>Remesh as</b> (Quads 4/4 for most models).",
+              steps(["<b>Open...</b> a file and pick <b>Remesh as</b> (Quads 4/4 for most models).",
                      "Set the <b>Target</b>, for example 50% of the input.",
                      "Click <b>Solve</b> under Orientation field. Check the flow in Direction mode; comb the "
                      "field or move singularities where needed, then stop the solver.",
@@ -495,6 +499,57 @@ def build(cover_image=None):
                      "<b>Extract mesh</b>, check it with <b>Show output</b>, then <b>Save</b> as .obj, .ply, "
                      ".abc, .usda, .usdc or .usdz."]),
               PageBreak()]
+    outliner = Image(os.path.join(HERE, "outliner.png"))
+    outliner.drawWidth = 62 * mm
+    outliner.drawHeight = outliner.drawWidth * 881 / 414
+    story += [SubHeader("2.5", "Menus and shortcuts"), Spacer(1, 3 * mm),
+              table([["Menu", "Entries"],
+                     ["File", "New (Ctrl+N), Open... (Ctrl+O), Open recent, Save (Ctrl+S), Save as... "
+                              "(Ctrl+Shift+S), Import legacy state..., Export mesh..., Write scene..., Open .imd "
+                              "files with Instant Meshes, Quit (Ctrl+Q)"],
+                     ["Scene", "Process checked meshes, Cancel processing, Open selected mesh, Show the whole "
+                               "scene, Use the viewport result, Copy the command line, Show the Outliner"],
+                     ["Help", "About"]],
+                    [24 * mm, W - 2 * MARGIN - 24 * mm]),
+              Spacer(1, 2 * mm),
+              p("A <b>*</b> in the window title marks unsaved changes: New, Open and Quit ask before losing them, "
+                "the window's close button too."),
+              Spacer(1, 4 * mm), SubHeader("2.6", "The Outliner: a scene, mesh by mesh"), Spacer(1, 3 * mm),
+              Table([[outliner, [
+                  p("Opening a scene lists its meshes on the right, as a tree of their paths. The viewport shows "
+                    "the whole scene; a <b>double click</b> on a mesh opens it alone, with the interactive tools."),
+                  Spacer(1, 2 * mm)] + bullets([
+                  "<b>Check</b> the meshes to process (a group checks its meshes). Click selects, Ctrl adds, "
+                  "Shift extends; the header sorts by name, faces or state; the filter keeps the matching paths "
+                  "(Rock, *Rock*, Props/*).",
+                  "<b>Set target</b> gives the selected meshes their own target (like -m), in orange; the "
+                  "others take the <b>Default target</b> (--others), muted. Clear goes back to it.",
+                  "<b>Scene</b> settings are those of the command line: UVs, keep border, USD proxies, "
+                  "deterministic, skip failed; Remesh as, configuration and smoothing come from the left panel.",
+                  "<b>Process checked</b> remeshes in the background (progress bar, Cancel); each mesh turns "
+                  "<font color='#4ADE80'>done</font>, <font color='#F87171'>failed</font> (the scene keeps it "
+                  "unchanged) or <font color='#FACC15'>stale</font> (its target or the scene changed).",
+                  "A mesh worked by hand: <b>Extract mesh</b>, then <b>Use viewport result</b>.",
+                  "<b>Write scene...</b>: an Alembic or OBJ copy, or a USD layer, with every done mesh. "
+                  "<b>Copy command line</b>: the same job for the render farm.",
+              ])]], colWidths=[66 * mm, W - 2 * MARGIN - 66 * mm],
+                    style=[("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]),
+              Spacer(1, 4 * mm), KeepTogether([SubHeader("2.7", "Projects (.imd)"), Spacer(1, 3 * mm),
+              p("<b>File &gt; Save</b> writes the whole job as a project: the scene (referenced, not copied), the "
+                "settings, every mesh's target and state, the results already computed and the brush strokes of "
+                "the meshes worked by hand. Reopening it computes nothing again.")])]
+    story += bullets([
+        "If the scene moved, the project looks next to itself, then asks where it is. If the scene changed, the "
+        "meshes whose geometry changed are marked stale.",
+        "The command line runs a project (farm) and the interface opens one made by the command line: "
+        "<b>--save-imd job.imd</b> saves a plan, <b>InstantMeshes.exe job.imd -o scene_retopo.abc</b> runs it "
+        "(section 4).",
+        "Binary chunks with a checksum each, results compressed (LZ4), settings in readable text; a damaged "
+        "project is refused, never half read.",
+        "<b>File &gt; Open .imd files with Instant Meshes</b> (or --register-imd) opens projects with a double "
+        "click, with their own icon (Windows, for your user account, no administrator rights).",
+    ])
+    story += [PageBreak()]
 
     # ---------------- 3 alembic
     story += [SectionHeader(3, "Alembic and USD Support", "Native readers and writers, no Alembic or USD library"),
@@ -645,6 +700,9 @@ def build(cover_image=None):
                      ["--proxy", "USD: keep the meshes, add the remeshed copies as proxies (3.6)"],
                      ["--list / --dry-run", "List the meshes (--sort asc|desc, --top <n>) / print the plan"],
                      ["--skip-failed / --progress", "Copy failed meshes unchanged and go on / print the progress"],
+                     ["--save-imd <job.imd>", "Save the plan (and results) of -m / --others as a project (2.7)"],
+                     ["<job.imd> -o <scene>", "Run a project: compute what is not done, write the scene"],
+                     ["--register-imd", "Open .imd projects with a double click (Windows, current user)"],
                      ["-V, --version", "Print the version"]],
                     [58 * mm, W - 2 * MARGIN - 58 * mm], pad=(2.5, 3.5), literal_first=True),
               Spacer(1, 4 * mm), KeepTogether([SubHeader("4.3", "Examples"), Spacer(1, 3 * mm),
@@ -657,7 +715,10 @@ def build(cover_image=None):
                          "# A USD asset: a layer over it, the original untouched",
                          'InstantMeshes.exe asset.usdz -o asset_retopo.usda -m "Hero=40%" --uv transfer',
                          "# Viewport proxies at 5% for every mesh of a USD asset",
-                         "InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%"])]),
+                         "InstantMeshes.exe asset.usdc -o asset_proxy.usda --proxy --others 5%",
+                         "# Prepare a job, run it later on the farm (or open it in the interface)",
+                         'InstantMeshes.exe scene.abc -m "Hero=30%" --others 10% --save-imd job.imd --dry-run',
+                         "InstantMeshes.exe job.imd -o scene_retopo.abc"])]),
               PageBreak()]
 
     # ---------------- 5 per-mesh
@@ -825,8 +886,8 @@ def build(cover_image=None):
         "USD: layer offsets (time), relocates, value clips and variant fallbacks are not composed; files "
         "inside a .usdz package other than its root layer are not opened. A mesh inside an instance cannot be "
         "remeshed (edit its prototype asset). Per-mesh output is a .usda or .usdc layer.",
-        "The per-mesh mode (-m / --others, Alembic, OBJ and USD) is available on the command line; the interface "
-        "remeshes the whole loaded file.",
+        "In the interface, a mesh that fails is kept unchanged (as with --skip-failed); processing runs one "
+        "mesh at a time in the background, the viewport shows the scene as one merged mesh.",
         "<b>Memory</b>, per-mesh mode: the remeshing itself takes about 800 bytes per input vertex, for one mesh "
         "at a time (the peak is that of the largest remeshed mesh, not of the scene). An Alembic file is read on "
         "demand; an OBJ scene is parsed once and kept at about 3x its file size. Remeshed meshes wait in a "

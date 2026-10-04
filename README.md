@@ -150,6 +150,27 @@ subdivisée avant le remaillage (le plus coûteux) est signalé dans le log.
 Précision de `-f N%` : environ ±3 % sur des maillages réels, moins précis en
 dessous de quelques centaines de polygones.
 
+### Interface : Outliner et projets (`.imd`)
+
+- **Menu File** : New, Open (scènes `.abc` `.obj` `.usd*`, projets `.imd`, maillages), Open recent, Save,
+  Save as, Import legacy state, Export mesh, Write scene, Quit, avec Ctrl+N / O / S / Maj+S / Q. Un
+  fichier lâché sur la fenêtre s'ouvre aussi.
+- **Outliner** (à droite) : les maillages de la scène en arborescence. Cases à cocher, sélection,
+  tri, filtre (`Rock`, `*Rock*`, `Props/*`). Double-clic : le maillage s'ouvre seul dans la vue.
+  Par maillage : faces, cible propre (comme `-m`, en orange) ou par défaut (`--others`), état
+  (done, failed, stale).
+- **Process checked** remaille les maillages cochés en tâche de fond (barre de progression,
+  annulation). **Use viewport result** garde un maillage retouché à la main. **Write scene**
+  écrit la scène. **Copy command line** donne la même commande pour la ferme.
+- **Projets `.imd`** (File > Save) : la scène (référencée, pas copiée), les réglages, la cible et
+  l'état de chaque maillage, les résultats déjà calculés et les traits faits à la main. Si la scène
+  a bougé, le projet la cherche à côté de lui puis te la demande ; si elle a changé, les maillages
+  modifiés passent en « stale ».
+- **Ligne de commande** : `--save-imd job.imd` sauve un plan (`-m` / `--others`, avec ou sans
+  `--dry-run`) ; `InstantMeshes.exe job.imd -o scene_retopo.abc` l'exécute (ce qui est déjà fait
+  n'est pas recalculé) ; `--register-imd` (ou File > Open .imd files with Instant Meshes) ouvre les
+  `.imd` d'un double-clic, avec leur icône (pour ton utilisateur, sans droits administrateur).
+
 ### Compiler (Windows)
 
 Double-cliquer `build_windows.bat` (Visual Studio 2022 requis ; le script

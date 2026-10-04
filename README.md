@@ -221,7 +221,7 @@ recent projects is available [here](https://www.foundry.com/trends/design-visual
 
 ## Screenshot
 
-![Instant Meshes logo](https://github.com/wjakob/instant-meshes/raw/master/resources/screenshot.jpg)
+![Instant Meshes 2.4: the Matt Dark interface and the Outliner](docs/cover.png)
 
 ## Pre-compiled binaries
 

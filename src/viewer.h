@@ -105,6 +105,8 @@ public:
 
 protected:
     void extractMesh();
+    void uploadOutputMesh();
+    void showResults();
     void extractConsensusGraph();
 
     void drawContents();
@@ -311,7 +313,7 @@ protected:
     ComboBox *mUVBox = nullptr, *mExportUVBox = nullptr;
     CheckBox *mKeepBorderBox = nullptr, *mProxyBox = nullptr, *mSkipFailedBox = nullptr, *mDeterministicBox = nullptr;
     Button *mProcessBtn = nullptr, *mCancelBtn = nullptr, *mUseResultBtn = nullptr, *mWriteSceneBtn = nullptr;
-    Button *mOpenObjectBtn = nullptr, *mWholeSceneBtn = nullptr;
+    Button *mOpenObjectBtn = nullptr, *mWholeSceneBtn = nullptr, *mShowResultBtn = nullptr;
     ProgressBar *mBatchBar = nullptr;
     std::unique_ptr<Project> mProject;
     std::mutex mProjectLock;

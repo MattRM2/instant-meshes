@@ -1782,7 +1782,14 @@ void Viewer::extractMesh() {
                   mPureQuadBox->checked(), mBVH, smooth_iterations);
 
     cout << "Extraction is done. (total time: " << timeString(timer.value()) << ")" << endl;
+    uploadOutputMesh();
+}
 
+/* The output mesh (mF_extracted, mV_extracted, mNf_extracted) to the GPU,
+   then shown with its wireframe */
+void Viewer::uploadOutputMesh() {
+    const int posy = (int) mF_extracted.rows();
+    Vector3f red = hex_color(0x111111);   /* output wireframe */
     int fmult = posy == 3 ? 1 : 2;
 
     MatrixXu F_gpu(3, mF_extracted.cols()*fmult);
@@ -3960,12 +3967,19 @@ void Viewer::buildOutliner() {
     mWriteSceneBtn->setCallback([&] { writeScene(); });
     Widget *more = new Widget(win);
     more->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    mShowResultBtn = new Button(more, "Show result", ENTYPO_ICON_EYE);
+    mShowResultBtn->setFixedSize(Vector2i(inner / 2 - 2, 25));
+    mShowResultBtn->setTooltip("Show the result of the open mesh, or of every done mesh with the whole scene "
+                               "(\\ switches between input and output)");
+    mShowResultBtn->setCallback([&] { showResults(); });
     mWholeSceneBtn = new Button(more, "Whole scene");
     mWholeSceneBtn->setFixedSize(Vector2i(inner / 2 - 2, 25));
     mWholeSceneBtn->setTooltip("Show the whole scene in the viewport again");
     mWholeSceneBtn->setCallback([&] { openWholeScene(); });
-    Button *copy = new Button(more, "Copy command line");
-    copy->setFixedSize(Vector2i(inner / 2 - 2, 25));
+    Widget *last = new Widget(win);
+    last->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    Button *copy = new Button(last, "Copy command line");
+    copy->setFixedSize(Vector2i(inner, 25));
     copy->setTooltip("The same job for the command line (render farm), to the clipboard");
     copy->setCallback([&] {
         if (!mProject)
@@ -4018,6 +4032,89 @@ void Viewer::refreshOutliner() {
     mUseResultBtn->setEnabled(mProject && !working && mOpenObject >= 0 && mF_extracted.size() > 0);
     mOpenObjectBtn->setEnabled(mProject && !working && mOutliner->selection().size() == 1);
     mWholeSceneBtn->setEnabled(mProject && !working && mOpenObject >= 0);
+    bool shown = false;
+    if (mProject && !working && mRes.levels() > 0) {
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        if (mOpenObject >= 0) {
+            const ProjectObject &o = mProject->objects[(size_t) mOpenObject];
+            shown = (o.state == ObjectState::Done || o.state == ObjectState::Stale) && o.result;
+        } else {
+            shown = done;
+        }
+    }
+    mShowResultBtn->setEnabled(shown);
+}
+
+/* The results in the viewport: the open mesh's, or every done mesh with the
+   whole scene (in world space, as the scene is shown) */
+void Viewer::showResults() {
+    if (!mProject || busy() || mRes.levels() == 0)
+        return;
+    std::vector<Spool::Fetch> fetches;
+    {
+        std::lock_guard<std::mutex> lock(mProjectLock);
+        for (size_t i = 0; i < mProject->objects.size(); ++i) {
+            const ProjectObject &o = mProject->objects[i];
+            if (!o.result || (o.state != ObjectState::Done && o.state != ObjectState::Stale))
+                continue;
+            if (mOpenObject < 0 || (int) i == mOpenObject)
+                fetches.push_back(o.result);
+        }
+    }
+    if (fetches.empty())
+        return;
+    try {
+        std::vector<MatrixXu> Fs;
+        std::vector<MatrixXf> Vs;
+        int rows = 3;
+        size_t faces = 0, vertices = 0;
+        for (const Spool::Fetch &f : fetches) {
+            MatrixXu F;
+            MatrixXf V;
+            std::vector<CornerUVs> uvs;
+            f(F, V, uvs);
+            rows = std::max(rows, (int) F.rows());
+            faces += (size_t) F.cols();
+            vertices += (size_t) V.cols();
+            Fs.push_back(std::move(F));
+            Vs.push_back(std::move(V));
+        }
+        /* one mesh: triangles among quads become (a, b, c, c) */
+        mF_extracted.resize(rows, (std::ptrdiff_t) faces);
+        mV_extracted.resize(3, (std::ptrdiff_t) vertices);
+        size_t f0 = 0, v0 = 0;
+        for (size_t k = 0; k < Fs.size(); ++k) {
+            for (std::ptrdiff_t i = 0; i < Fs[k].cols(); ++i)
+                for (int r = 0; r < rows; ++r)
+                    mF_extracted(r, (std::ptrdiff_t) f0 + i) =
+                        (uint32_t) v0 + Fs[k](std::min(r, (int) Fs[k].rows() - 1), i);
+            mV_extracted.block(0, (std::ptrdiff_t) v0, 3, Vs[k].cols()) = Vs[k];
+            f0 += (size_t) Fs[k].cols();
+            v0 += (size_t) Vs[k].cols();
+        }
+        /* face normals (Newell) */
+        mNf_extracted.resize(3, mF_extracted.cols());
+        for (std::ptrdiff_t i = 0; i < mF_extracted.cols(); ++i) {
+            Vector3f n = Vector3f::Zero();
+            for (int r = 0; r < rows; ++r) {
+                const Vector3f a = mV_extracted.col(mF_extracted(r, i)),
+                               b = mV_extracted.col(mF_extracted((r + 1) % rows, i));
+                n += Vector3f((a.y() - b.y()) * (a.z() + b.z()), (a.z() - b.z()) * (a.x() + b.x()),
+                              (a.x() - b.x()) * (a.y() + b.y()));
+            }
+            const Float len = n.norm();
+            mNf_extracted.col(i) = len > 0 ? Vector3f(n / len) : Vector3f(0, 0, 1);
+        }
+    } catch (const std::exception &e) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
+        return;
+    }
+    uploadOutputMesh();
+    mSwitchBtn->setEnabled(true);
+    mBatchLabel->setCaption("Showing " + std::string(fetches.size() > 1 ? std::to_string(fetches.size()) + " results"
+                                                                        : "the result") +
+                            ": " + group_thousands((uint64_t) mF_extracted.cols()) + " faces (\\: input / output)");
+    repaint();
 }
 
 void Viewer::setDirty(bool dirty) {
@@ -4596,10 +4693,12 @@ void Viewer::pollWorker() {
             caption += ", " + std::to_string(failed) + " failed: " + first;
         if (mCancel)
             caption += ", cancelled";
-        mBatchLabel->setCaption(caption);
-        mBatchLabel->setTooltip(caption);   /* the whole message, if it is longer than three lines */
         setDirty();
         refreshOutliner();
+        if (done > (int) failed)
+            showResults();
+        mBatchLabel->setCaption(caption + (done > (int) failed ? "  (shown, \\: input / output)" : ""));
+        mBatchLabel->setTooltip(caption);   /* the whole message, if it is longer than three lines */
     }
 }
 

@@ -134,6 +134,10 @@ InstantMeshes.exe asset.usdc -o asset_v2.usdc --proxy -m "Hero=10%" --others 3%
   format (`asset_proxy.usdc`). Il contient les proxies et ce que gagnent les
   maillages (purpose, `proxyPrim`), et ne charge rien lui-même. Une deuxième
   passe écrit `asset_proxy2.usdc`, référencé lui aussi.
+- Le proxy reprend le matériau de l'original. Un matériau hors de la prim
+  racine (`/materials`, comme en sort Solaris) passe par un relais,
+  `/World/proxy_materials/<nom>`, qui le **référence** : même réseau, mêmes
+  textures, ses modifications suivies.
 
 - Convention `geo/render` : `/Asset/geo/render/Body` reçoit
   `/Asset/geo/proxy/Body`, même hiérarchie, transformations recopiées

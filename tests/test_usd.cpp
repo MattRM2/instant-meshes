@@ -384,6 +384,24 @@ static void test_edit() {
               twice == edited);
     }
     std::remove(out.c_str());
+
+    /* references written in a .usdc (the proxy layer's material stand-ins) */
+    const std::string layerText = "#usda 1.0\ndef \"W\"\n{\n    def Material \"M\" (\n"
+                                  "        prepend references = @./scene.usdc@</materials/m>\n    )\n    {\n    }\n"
+                                  "    def \"E\" (\n        references = [@./a.usda@</A>, </W/M>]\n    )\n    {\n    }\n}\n";
+    const std::string crate = temp_path("usd_refs_write.usdc");
+    CHECK(error_of([&] { write_layer_file(crate, layerText, crate); }) == "");
+    std::unique_ptr<Layer> written;
+    CHECK(error_of([&] { written.reset(new Layer(crate)); }) == "");
+    if (written) {
+        const Prim *m = written->prim("/W/M"), *e = written->prim("/W/E");
+        const Value *rm = m ? m->metadata("references") : nullptr, *re = e ? e->metadata("references") : nullptr;
+        const std::vector<std::string> wantM = { "./scene.usdc</materials/m>" }, wantE = { "./a.usda</A>", "</W/M>" };
+        CHECK(rm && !rm->isExplicit && rm->prepended == wantM);
+        CHECK(re && re->isExplicit && re->explicitItems == wantE);
+    }
+    written.reset();
+    std::remove(crate.c_str());
 }
 
 void test_usd(int fuzz_scale) {

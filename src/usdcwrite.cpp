@@ -135,6 +135,7 @@ int meta_type(const std::string &key) {
         { "metersPerUnit", TDouble }, { "kilogramsPerUnit", TDouble }, { "startTimeCode", TDouble },
         { "endTimeCode", TDouble }, { "timeCodesPerSecond", TDouble }, { "framesPerSecond", TDouble },
         { "elementSize", TInt }, { "apiSchemas", TTokenListOp }, { "subLayers", TStringVector },
+        { "references", TReferenceListOp },
     };
     auto it = types.find(key);
     return it == types.end() ? TInvalid : it->second;
@@ -368,6 +369,55 @@ private:
         return rep_of(type, false, false, at);
     }
 
+    /* References, items as the .usda reader keeps them ("asset<path>",
+       "asset", "<path>"): asset (string index), prim path (path index),
+       layer offset (0, scale 1), no custom data */
+    uint64_t reference_list_op(const Value &v) {
+        std::vector<std::vector<std::array<uint32_t, 2>>> lists;
+        auto ids = [&](const std::vector<std::string> &items) {
+            std::vector<std::array<uint32_t, 2>> out;
+            for (const std::string &item : items) {
+                const size_t lt = item.find('<');
+                const std::string asset = item.substr(0, lt);
+                const std::string prim = lt == std::string::npos ? std::string()
+                                                                 : item.substr(lt + 1, item.size() - lt - 2);
+                out.push_back({ string(asset), prim.empty() ? path_none() : path(prim) });
+            }
+            return out;
+        };
+        uint8_t header = v.isExplicit ? 1 : 0;
+        if (!v.explicitItems.empty()) header |= 2;
+        if (!v.prepended.empty()) header |= 32;
+        if (!v.appended.empty()) header |= 64;
+        if (!v.deleted.empty()) header |= 8;
+        for (const std::vector<std::string> *list : { &v.explicitItems, &v.prepended, &v.appended, &v.deleted })
+            lists.push_back(list->empty() ? std::vector<std::array<uint32_t, 2>>() : ids(*list));
+        const uint64_t at = here();
+        put<uint8_t>(header);
+        for (const auto &l : lists) {
+            if (l.empty())
+                continue;
+            put<uint64_t>(l.size());
+            for (const auto &x : l) {
+                put<uint32_t>(x[0]);
+                put<uint32_t>(x[1]);
+                put<double>(0.0);
+                put<double>(1.0);
+                put<uint64_t>(0);
+            }
+        }
+        return rep_of(TReferenceListOp, false, false, at);
+    }
+
+    /* The empty path of a reference to the default prim */
+    uint32_t path_none() {
+        if (mEmptyPath < 0) {
+            mPaths.push_back(std::string());
+            mEmptyPath = (int64_t) mPaths.size() - 1;
+        }
+        return (uint32_t) mEmptyPath;
+    }
+
     /* One element of a numeric value at 'at' in 'v.numbers' */
     void element(const Storage &s, const std::vector<double> &n, size_t at) {
         for (int k = 0; k < s.count; ++k) {
@@ -475,6 +525,7 @@ private:
                 break;
             }
             case TTokenListOp: rep = list_op(TTokenListOp, v); break;
+            case TReferenceListOp: rep = reference_list_op(v); break;
             case TStringVector: {
                 std::vector<uint32_t> ids;
                 for (const std::string &s : v.strings)
@@ -568,6 +619,7 @@ private:
     std::vector<uint32_t> mFieldSets;
     std::vector<std::array<uint32_t, 3>> mSpecs;
     std::set<std::string> mSkipped;
+    int64_t mEmptyPath = -1;
 };
 
 } // namespace

@@ -656,6 +656,20 @@ def test_usd_proxies(exe, tmp):
     check([l for l in after.split("\n") if ref not in l] == before.split("\n"),
           "the .usda scene: only the reference added")
 
+    # materials outside the root prim of the proxies: stand-ins that reference them
+    looks = os.path.join(tmp, "looks.usda")
+    shutil.copy(os.path.join(DATA, "usd_looks.usda"), looks)
+    code, log = run(exe, looks, "-o", looks, "-d", "--proxy", "--others", "40%")
+    path = os.path.join(tmp, "looks_proxy.usda")
+    text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    check(code == 0 and 'def Scope "proxy_materials"' in text and 'def Material "paint" (' in text and
+          "prepend references = @./looks.usda@</materials/paint>" in text and 'def Material "paint_2" (' in text and
+          "prepend references = @./looks.usda@</materials/car/paint>" in text and
+          "rel material:binding = </World/proxy_materials/paint>" in text and
+          "rel material:binding = </World/proxy_materials/paint_2>" in text and
+          "rel material:binding = </World/mtl/rubber>" in text and "proxy_materials/rubber" not in text,
+          "materials outside the root prim: stand-ins that reference them")
+
 
 def test_usd_composition(exe, tmp):
     print("USD composition: sublayers, references, payloads, variants, inherits, specializes")

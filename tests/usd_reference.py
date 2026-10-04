@@ -11,6 +11,9 @@ library (the pxr module that ships with Blender 4.x / 5.x).
         writes the assembly of tests/data/compose (every composition arc)
     blender -b --factory-startup --python tests/usd_reference.py -- dump_stage <file>
         prints the composed stage as usd_dump --stage does
+    blender -b --factory-startup --python tests/usd_reference.py -- looks <dir>
+        writes usd_looks.usda: materials outside the root prim of the meshes
+        (/materials, as Houdini Solaris makes them), for --proxy
     blender -b --factory-startup --python tests/usd_reference.py -- refs <dir>
         writes usd_refs.usdc: root prims with prepended, explicit or no
         references (the in-place edits of usdedit.h)
@@ -327,6 +330,35 @@ def make_compose(out):
     world_obj(os.path.join(out, "assembly.usda"), os.path.join(out, "assembly_world.obj"))
 
 
+def make_looks(path):
+    """Meshes under /World, materials under /materials (outside the root
+    prim the proxies are referenced into) and one under /World"""
+    stage = Usd.Stage.CreateNew(path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+    world = UsdGeom.Xform.Define(stage, "/World")
+    stage.SetDefaultPrim(world.GetPrim())
+    UsdGeom.Scope.Define(stage, "/materials")
+
+    def material(path, color):
+        m = UsdShade.Material.Define(stage, path)
+        shader = UsdShade.Shader.Define(stage, path + "/surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(color)
+        m.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        return m
+
+    paint = material("/materials/paint", Gf.Vec3f(0.8, 0.1, 0.1))
+    other = material("/materials/car/paint", Gf.Vec3f(0.1, 0.1, 0.8))   # the same name, elsewhere
+    rubber = material("/World/mtl/rubber", Gf.Vec3f(0.05, 0.05, 0.05))
+    UsdGeom.Xform.Define(stage, "/World/geo")
+    for name, mat, offset in (("Hero", paint, 0), ("Car", other, 5), ("Tire", rubber, -5)):
+        mesh, _ = sphere(stage, "/World/geo/" + name, 10, 20, 1.5)
+        mesh.AddTranslateOp().Set(Gf.Vec3d(offset, 0, 0))
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(mat)
+    stage.GetRootLayer().Save()
+
+
 def make_refs(path):
     layer = Sdf.Layer.CreateNew(path)
     for name, how in (("Prepended", "prepend"), ("Explicit", "explicit"), ("Plain", None)):
@@ -508,6 +540,9 @@ elif args[0] == "compose":
     print("[OK] composition data in", args[1])
 elif args[0] == "dump_stage":
     dump_stage(args[1])
+elif args[0] == "looks":
+    make_looks(os.path.join(os.path.abspath(args[1]), "usd_looks.usda"))
+    print("[OK] usd_looks.usda in", args[1])
 elif args[0] == "refs":
     make_refs(os.path.join(os.path.abspath(args[1]), "usd_refs.usdc"))
     print("[OK] usd_refs.usdc in", args[1])

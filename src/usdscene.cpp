@@ -475,8 +475,16 @@ namespace {
 
 void replace_file(const std::string &temp, const std::string &target) {
 #if defined(_WIN32)
-    const bool moved = MoveFileExA(temp.c_str(), target.c_str(),
-                                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+    /* a file just written may be held a moment (antivirus, indexing): retry */
+    bool moved = false;
+    for (int attempt = 0; attempt < 40 && !moved; ++attempt) {
+        moved = MoveFileExA(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+        const DWORD error = moved ? 0 : GetLastError();
+        if (!moved && error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION)
+            break;
+        if (!moved)
+            Sleep(50);
+    }
 #else
     const bool moved = std::rename(temp.c_str(), target.c_str()) == 0;
 #endif
@@ -1085,6 +1093,7 @@ struct ProxyNode {
     std::string type;                     ///< prim to define ("Scope", "Xform", "Mesh"); empty: over
     std::vector<std::string> lines;       ///< properties
     std::string binding;
+    std::string reference;                ///< prepend references = <reference> (a material of the scene)
     const abc::Replacement *mesh = nullptr;
     const Prim *source = nullptr;
     Mat4 toLocal = Mat4::Identity();
@@ -1137,6 +1146,45 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
     };
     std::set<std::string> renderSet;
     std::vector<std::string> notes;
+
+    /* A material outside the root prim of a proxy: the proxy layer cannot
+       bind it (a reference maps only the paths below its root prim), so it
+       gets <root>/proxy_materials/<name>, a Material that references the
+       scene's one (the same network, the same textures, its edits followed) */
+    std::map<std::string, std::string> materialOf;   /* root + material -> its stand-in */
+    std::set<std::string> madeHere;
+    auto stand_in = [&](const std::string &material, const std::string &rootPrim) {
+        const std::string key = rootPrim + "|" + material, item = "<" + material + ">";
+        auto it = materialOf.find(key);
+        if (it != materialOf.end())
+            return it->second;
+        const std::string scope = rootPrim + "/proxy_materials", name = material.substr(material.rfind('/') + 1);
+        std::string path = scope + "/" + name;
+        for (int k = 2;; ++k) {
+            const Prim *existing = layer.prim(path);
+            if (existing) {   /* made by an earlier run for the same material? */
+                const Value *refs = existing->metadata("references");
+                bool same = false;
+                if (refs)
+                    for (const std::string &x : refs->list_items())
+                        same |= x.size() >= item.size() && x.compare(x.size() - item.size(), item.size(), item) == 0;
+                if (same)
+                    break;
+            } else if (!madeHere.count(path)) {
+                ProxyNode &sc = node(scope);
+                if (!layer.prim(scope))
+                    sc.type = "Scope";
+                ProxyNode &m = node(path);
+                m.type = "Material";
+                m.reference = "@./" + file_name(output) + "@" + item;
+                madeHere.insert(path);
+                break;
+            }
+            path = scope + "/" + name + "_" + std::to_string(k);
+        }
+        return materialOf[key] = path;
+    };
+
     for (size_t i = 0; i < proxies.size(); ++i) {
         const abc::Replacement &r = proxies[i];
         const Placement &pl = places[i];
@@ -1188,10 +1236,10 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
         n.source = src;
         n.toLocal = world.inverse();
         n.binding = bound_material(layer, *src);
+        std::string via;
         if (!n.binding.empty() && root_of(n.binding) != root_of(pl.proxy)) {
-            /* a reference maps only the paths below its root prim */
-            notes.push_back(pl.proxy + ": no material (" + n.binding + " is outside " + root_of(pl.proxy) + ")");
-            n.binding.clear();
+            via = n.binding;
+            n.binding = stand_in(n.binding, root_of(pl.proxy));
         }
         n.lines.push_back("uniform token purpose = \"proxy\"");
         n.lines.push_back("uniform token subdivisionScheme = \"none\"");
@@ -1199,7 +1247,8 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
             if (!d->relationship && layer.value(*d).kind == Value::Numbers)
                 n.lines.push_back(std::string("uniform bool doubleSided = ") +
                                   (layer.value(*d).num() != 0 ? "true" : "false"));
-        notes.push_back(r.path + " -> " + pl.proxy + (n.binding.empty() ? std::string() : " (" + n.binding + ")"));
+        notes.push_back(r.path + " -> " + pl.proxy + (n.binding.empty() ? std::string() : " (" + n.binding +
+                        (via.empty() ? std::string() : ", referencing " + via) + ")"));
     }
 
     /* the proxy layer: the proxies and what the scene's prims gain (purpose,
@@ -1225,6 +1274,8 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
                 os << ind << (!c.type.empty() ? "def " + c.type : ind.empty() ? "def" : "over") << " " << quote(name);
                 if (!c.binding.empty())
                     os << " (\n" << ind << "    prepend apiSchemas = [\"MaterialBindingAPI\"]\n" << ind << ")";
+                else if (!c.reference.empty())
+                    os << " (\n" << ind << "    prepend references = " << c.reference << "\n" << ind << ")";
                 os << "\n" << ind << "{\n";
                 const std::string in = ind + "    ";
                 if (c.mesh) {

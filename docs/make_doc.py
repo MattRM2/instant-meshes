@@ -648,7 +648,9 @@ def build(cover_image=None):
         "second run writes asset_proxy2.usdc, referenced too. The reference goes on the root prim (/Asset).",
         "The original gets purpose <b>render</b> and a <b>proxyPrim</b> relationship to its proxy; the proxy is "
         "a new Mesh with purpose <b>proxy</b>, no subdivision and the material of the original (the most used "
-        "one of its GeomSubsets, when it lives under the same root prim).",
+        "one of its GeomSubsets). A material outside the root prim (/materials, as Solaris makes them) is "
+        "bound through a stand-in, /World/proxy_materials/&lt;name&gt;, that <b>references</b> it: the same "
+        "network and textures, its edits followed.",
         "The proxy gets the <b>UVs of the original</b> (--uv transfer is the default with --proxy; --uv none or "
         "--uv unwrap change it).",
         "Assets under the <b>geo/render</b> convention get their proxies in <b>geo/proxy</b>, same hierarchy: "

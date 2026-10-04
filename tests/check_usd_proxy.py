@@ -15,7 +15,8 @@ proxy lies on the surface of the mesh (within 1% of its size, --tol for
 strong reductions, whose coarse proxies cut the curves) at the first
 frame and at the last one (it follows animated parents); valid topology, no
 subdivision, the material of the mesh (one of its subsets' when it has
-some), UVs per face corner when the mesh has UVs. Every other mesh:
+some; outside the proxy's root prim, a stand-in that references it and
+keeps its shading), UVs per face corner when the mesh has UVs. Every other mesh:
 unchanged, no proxy. Stage metadata unchanged. Exit code 1 on any failure.
 """
 import sys
@@ -164,9 +165,15 @@ for prim in src.Traverse():
                for s in UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Imageable(prim))]
     allowed = {str(x.GetPath()) for x in [want] + subsets if x}
     got, _ = UsdShade.MaterialBindingAPI(p).ComputeBoundMaterial()
+    # a material outside the proxy's root prim: a stand-in that references it
+    via = [str(spec.path) for spec in got.GetPrim().GetPrimStack()] if got else []
+    via = [v for v in via if v in allowed and v != str(got.GetPath())]
+    shading = got and bool(got.GetSurfaceOutput().GetConnectedSources()[0]) if got else False
     got = str(got.GetPath()) if got else ""
-    check("%s: material %s (of %s)" % (rel[0], got or "none", sorted(allowed) or "none"),
-          got in allowed if allowed else got == "")
+    check("%s: material %s%s (of %s)" % (rel[0], got or "none", " referencing " + via[0] if via else "",
+                                          sorted(allowed) or "none"),
+          (got in allowed or (via and shading and got.split("/")[1] == rel[0].pathString.split("/")[1]))
+          if allowed else got == "")
     if has_uvs(prim):
         uvs = [pv for pv in UsdGeom.PrimvarsAPI(p).GetPrimvars() if pv.GetTypeName().role == "TextureCoordinate"]
         ok = bool(uvs) and all(pv.GetInterpolation() == UsdGeom.Tokens.faceVarying and

@@ -167,7 +167,7 @@ add_executable(InstantMeshes MACOSX_BUNDLE
   src/meshstats.h src/meshstats.cpp
   src/hierarchy.h src/hierarchy.cpp
   src/extract.h src/extract.cpp
-  src/viewer.h src/viewer.cpp src/menubar.h src/menubar.cpp src/outliner.h src/outliner.cpp
+  src/viewer.h src/viewer.cpp src/menubar.h src/menubar.cpp src/outliner.h src/outliner.cpp src/association.h src/association.cpp
   src/field.h src/field.cpp
   src/bvh.h src/bvh.cpp
   src/subdivide.h src/subdivide.cpp

@@ -1,5 +1,6 @@
 ﻿id ICON "im.ico"
 GLFW_ICON ICON "im.ico" 
+101 ICON "icons/imd.ico"
 
 1 VERSIONINFO
 FILEVERSION     2,3,0,0

@@ -15,6 +15,7 @@
 #include "version.h"
 #include "viewer.h"
 #include "serializer.h"
+#include "association.h"
 #include <thread>
 #include <cstdlib>
 
@@ -175,6 +176,14 @@ int main(int argc, char **argv) {
                 uvGiven = true;
             } else if (strcmp("--progress", argv[i]) == 0) {
                 progress = true;
+            } else if (strcmp("--register-imd", argv[i]) == 0) {
+                std::string error;
+                if (!register_imd_files(error)) {
+                    cerr << "Error: .imd files not registered: " << error << endl;
+                    return -1;
+                }
+                cout << ".imd files now open with " << argv[0] << " (current user)" << endl;
+                return 0;
             } else if (strcmp("--save-imd", argv[i]) == 0) {
                 if (++i >= argc) {
                     cerr << "Missing --save-imd project file (e.g. job.imd)!" << endl;
@@ -378,6 +387,7 @@ int main(int argc, char **argv) {
         cout << "   -C, --compat              Compatibility mode to load snapshots from old software versions" << endl;
         cout << "   -k, --knn <count>         Point cloud mode: number of adjacent points to consider" << endl;
         cout << "   -F, --fullscreen          Open a full-screen window" << endl;
+        cout << "       --register-imd        Open .imd projects with a double click (Windows, current user)" << endl;
         cout << "   -V, --version             Print the version" << endl;
         cout << "   -h, --help                Display this message" << endl;
         return -1;

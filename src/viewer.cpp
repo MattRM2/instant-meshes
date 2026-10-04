@@ -23,6 +23,7 @@
 #include "smoothcurve.h"
 #include "gui_serializer.h"
 #include "version.h"
+#include "association.h"
 #include <nanogui/theme.h>
 #include <resources.h>
 #include <pcg32.h>
@@ -3749,6 +3750,15 @@ void Viewer::buildMenus() {
         MenuItem::item("Export mesh...", "", [this] { exportMesh(); },
                        [this] { return mF_extracted.size() > 0 && !busy(); }),
         MenuItem::item("Write scene...", "", [this] { writeScene(); }, hasResult),
+        MenuItem::line(),
+        MenuItem::item("Open .imd files with Instant Meshes", "", [this] {
+            std::string error;
+            if (register_imd_files(error))
+                new MessageDialog(this, MessageDialog::Type::Information, "Projects",
+                                  "A double click on a .imd file now opens it here (for your user account).");
+            else
+                new MessageDialog(this, MessageDialog::Type::Warning, "Projects", "Not registered: " + error);
+        }),
         MenuItem::line(),
         MenuItem::item("Quit", "Ctrl+Q", [this] {
             if (closeRequested())

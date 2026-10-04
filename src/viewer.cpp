@@ -3866,15 +3866,40 @@ void Viewer::buildOutliner() {
     mOthersBox->setCallback([&](const std::string &v) {
         if (!mProject)
             return true;
+        FaceTarget t;
         try {
-            std::lock_guard<std::mutex> lock(mProjectLock);
-            mProject->options.others = v.empty() ? FaceTarget() : parse_face_target(v);
+            t = v.empty() ? FaceTarget() : parse_face_target(v);
         } catch (const std::exception &e) {
             new MessageDialog(this, MessageDialog::Type::Warning, "Default target", e.what());
             return false;
         }
-        setDirty();
-        refreshOutliner();
+        auto apply = [this](const FaceTarget &target) {
+            {
+                std::lock_guard<std::mutex> lock(mProjectLock);
+                mProject->options.others = target;
+            }
+            setDirty();
+            refreshOutliner();
+        };
+        /* "2" is 2 faces: almost surely a percentage without its % */
+        if (t.count > 0 && t.count < 100) {
+            const std::string n = std::to_string(t.count);
+            auto dlg = new MessageDialog(this, MessageDialog::Type::Question, "Default target",
+                                         n + " faces per mesh, or " + n + "% of their polygons?",
+                                         n + "%", n + " faces", true);
+            mAskingTarget = true;
+            dlg->setCallback([this, n, t, apply](int result) {
+                mAskingTarget = false;
+                if (result == 0) {
+                    mOthersBox->setValue(n + "%");
+                    apply(parse_face_target(n + "%"));
+                } else {
+                    apply(t);
+                }
+            });
+            return true;
+        }
+        apply(t);
         return true;
     });
     mUVBox = new DropDown(others, { "UVs: none", "UVs: transfer", "UVs: unwrap" });
@@ -3915,7 +3940,8 @@ void Viewer::buildOutliner() {
     mBatchBar = new ProgressBar(win);
     mBatchBar->setFixedSize(Vector2i(inner, 8));
     mBatchLabel = new Label(win, " ");
-    mBatchLabel->setFixedSize(Vector2i(inner, 20));
+    mBatchLabel->setFixedSize(Vector2i(inner, 58));   /* three lines: a failure message wraps */
+    mBatchLabel->setFontSize(14);
     mBatchLabel->setColor(Color(163, 163, 163, 255));
 
     Widget *out = new Widget(win);
@@ -4426,6 +4452,23 @@ void Viewer::setSelectedTarget(bool clear) {
             new MessageDialog(this, MessageDialog::Type::Warning, "Target", e.what());
             return;
         }
+        /* "2" is 2 faces: almost surely a percentage without its % */
+        if (t.count > 0 && t.count < 100 && !mTargetAsked) {
+            const std::string n = std::to_string(t.count);
+            auto dlg = new MessageDialog(this, MessageDialog::Type::Question, "Target",
+                                         n + " faces per mesh, or " + n + "% of their polygons?",
+                                         n + "%", n + " faces", true);
+            mAskingTarget = true;
+            dlg->setCallback([this, n](int result) {
+                mAskingTarget = false;
+                if (result == 0)
+                    mObjectTargetBox->setValue(n + "%");
+                mTargetAsked = true;
+                setSelectedTarget(false);
+                mTargetAsked = false;
+            });
+            return;
+        }
     }
     {
         std::lock_guard<std::mutex> lock(mProjectLock);
@@ -4446,7 +4489,8 @@ void Viewer::setSelectedTarget(bool clear) {
 }
 
 void Viewer::processChecked() {
-    if (!mProject || busy())
+    /* not while a question about a target waits for its answer */
+    if (!mProject || busy() || mAskingTarget)
         return;
     guiToOptions();
     std::vector<std::pair<int, FaceTarget>> work;
@@ -4545,10 +4589,11 @@ void Viewer::pollWorker() {
         mBatchBar->setValue(1.f);
         std::string caption = std::to_string(done - (int) failed) + " remeshed";
         if (failed)
-            caption += ", " + std::to_string(failed) + " failed (" + first + ")";
+            caption += ", " + std::to_string(failed) + " failed: " + first;
         if (mCancel)
             caption += ", cancelled";
         mBatchLabel->setCaption(caption);
+        mBatchLabel->setTooltip(caption);   /* the whole message, if it is longer than three lines */
         setDirty();
         refreshOutliner();
     }

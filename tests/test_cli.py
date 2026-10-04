@@ -229,7 +229,7 @@ def test_mesh_rules(exe, tmp):
         (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA"], "expected name=target"),
         (["-o", os.path.join(tmp, "e.abc"), "-m", "=50%"], "expected name=target"),
         (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=0%"], "Invalid face percentage"),
-        (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=abc"], "Could not parse"),
+        (["-o", os.path.join(tmp, "e.abc"), "-m", "MeshA=abc"], "Invalid target"),
         (["-o", os.path.join(tmp, "e.abc"), "--dry-run"], "--dry-run shows the plan"),
     ]
     for args, expect in cases:

@@ -41,14 +41,20 @@
 FaceTarget parse_face_target(const std::string &text) {
     FaceTarget t;
     t.text = text;
+    try {
+        if (!text.empty() && text.back() == '%')
+            t.percent = str_to_float(text.substr(0, text.size() - 1));
+        else
+            t.count = str_to_int32_t(text);
+    } catch (const std::exception &) {
+        throw std::runtime_error("Invalid target \"" + text + "\": a percentage of the polygons (50%) or a "
+                                 "face count (5000)");
+    }
     if (!text.empty() && text.back() == '%') {
-        t.percent = str_to_float(text.substr(0, text.size() - 1));
         if (!std::isfinite(t.percent) || !(t.percent > 0))
             throw std::runtime_error("Invalid face percentage \"" + text + "\"");
-    } else {
-        t.count = str_to_int32_t(text);
-        if (t.count <= 0)
-            throw std::runtime_error("Invalid face count \"" + text + "\"");
+    } else if (t.count <= 0) {
+        throw std::runtime_error("Invalid face count \"" + text + "\"");
     }
     return t;
 }

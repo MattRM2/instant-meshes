@@ -320,6 +320,7 @@ protected:
     int mOpenObject = -1;
     int mShownDone = -1;
     bool mClosing = false;
+    bool mTargetAsked = false, mAskingTarget = false;
     static const int OutlinerWidth = 410;
     std::thread mWorker;
     std::atomic<bool> mWorkerBusy { false }, mCancel { false };

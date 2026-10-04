@@ -96,33 +96,9 @@ def cover_page(c, doc):
         from reportlab.lib.utils import ImageReader
         img = ImageReader(shot)
         iw, ih = img.getSize()
-        # fill the top band, cropped (keep the left UI panel visible)
-        scale = max(W / iw, top_h / ih)
-        dw, dh = iw * scale, ih * scale
-        c.saveState()
-        p = c.beginPath()
-        p.rect(0, H - top_h, W, top_h)
-        c.clipPath(p, stroke=0, fill=0)
-        c.drawImage(img, 0, H - dh, dw, dh)
-        c.restoreState()
-    # title plate on the picture
-    c.setFillColor(HexColor("#141414"))
-    c.setFillAlpha(0.82)
-    c.roundRect(12 * mm, H - 30 * mm, 86 * mm, 20 * mm, 3 * mm, stroke=0, fill=1)
-    c.setFillAlpha(1)
-    c.setFillColor(TEXT)
-    c.setFont("Roboto-Light", 20)
-    c.drawString(17 * mm, H - 20 * mm, PRODUCT)
-    c.setFillColor(ORANGE)
-    c.setFont("Roboto", 8)
-    c.drawString(17.5 * mm, H - 26.5 * mm, "R e l e a s e   %s" % "   ".join(VERSION))
-    c.setFillColor(HexColor("#141414"))
-    c.setFillAlpha(0.75)
-    c.roundRect(12 * mm, H - top_h + 4 * mm, 70 * mm, 6 * mm, 1.5 * mm, stroke=0, fill=1)
-    c.setFillAlpha(1)
-    c.setFillColor(MUTED)
-    c.setFont("Roboto", 7.5)
-    c.drawString(15 * mm, H - top_h + 6 * mm, "GitHub : https://%s" % REPO)
+        # the whole screenshot, page wide, nothing cropped or covered
+        top_h = W * ih / iw
+        c.drawImage(img, 0, H - top_h, W, top_h)
 
     # orange timeline
     y = H - top_h - 5 * mm
@@ -150,6 +126,7 @@ def cover_page(c, doc):
     c.setFillColor(MUTED)
     c.setFont("Roboto", 8)
     c.drawCentredString(cx, 34 * mm, "Created by Matthieu Barbi\u00e9  \u00b7  2026")
+    c.drawCentredString(cx, 40 * mm, "GitHub : https://%s" % REPO)
     c.setFillColor(HexColor("#3A2A1A"))
     c.roundRect(cx - 17 * mm, 23 * mm, 34 * mm, 7 * mm, 1.5 * mm, stroke=0, fill=1)
     c.setFillColor(ORANGE)

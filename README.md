@@ -27,7 +27,10 @@ animé est lu à sa première image).
 USD (`.usd`, `.usda`, `.usdc`, `.usdz`) est lu et écrit de la même façon, **sans la
 bibliothèque USD** (`src/usd*.cpp`) : texte, binaire Crate (versions 0.2 à
 0.13, compressé ou non) et paquet usdz, vérifiés valeur par valeur contre la
-bibliothèque de Pixar.
+bibliothèque de Pixar. Sur les 2 440 fichiers de test d'OpenUSD lui-même
+(tous les recoins du format, Crate 0.0.1 à 0.11) : 2 214 calques lus comme
+Pixar les lit, 1 731 de ses 1 740 maillages composés à l'identique, et aucun
+fichier ne fait planter ni bloquer le lecteur (`tests/check_openusd_corpus.py`).
 
 ### Ligne de commande
 

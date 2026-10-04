@@ -177,6 +177,7 @@ public:
                 case CrateFile::SpecPrim:
                 case CrateFile::SpecVariant: {
                     Prim *p = prim(path);
+                    p->specifier = Specifier::Over;   /* Sdf's fallback when none is written; a variant has none */
                     for (const CrateFile::Field *f : fs) {
                         const std::string &name = cf.token(f->token);
                         Value v = cf.value(f->rep);
@@ -220,7 +221,8 @@ public:
                         } else if (name == "custom") {
                             prop.custom = cf.value(f->rep).num() != 0;
                         } else if (name == "targetPaths" || name == "connectionPaths") {
-                            prop.targets = cf.value(f->rep).list_items();
+                            prop.targetOps = cf.value(f->rep);
+                            prop.targets = prop.targetOps.list_items();
                         } else {
                             prop.meta[name] = cf.value(f->rep);
                         }

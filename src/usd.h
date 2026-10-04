@@ -64,6 +64,10 @@ struct Property {
     Value value;                              ///< default value (see Layer::value())
     bool hasTimeSamples = false;
     std::vector<std::string> targets;         ///< relationship targets, or attribute connections
+    /// The targets as list edits (explicit, or prepended / appended /
+    /// deleted), for their composition across layers; 'targets' is what
+    /// this layer alone lists
+    Value targetOps;
     std::map<std::string, Value> meta;        ///< interpolation, elementSize...
 
     /* .usdc: where the default value and the time samples are (decoded by Layer::value()) */

@@ -427,6 +427,78 @@ static void test_package() {
     CHECK(error_of([&] { release_file(package); }) == "" && stage->value(*points).size() == 266);
 }
 
+/* What the OpenUSD test files showed (tests/check_openusd_corpus.py) */
+static void test_syntax() {
+    std::cout << "usd: .usda syntax and composition corners (OpenUSD's own test files)" << std::endl;
+    std::map<std::string, Value> meta;
+    Prim root;
+    root.path = "/";
+    const std::string text =
+        "#usda 1.0\n(\n    relocates = {\n        </A/B>: </A/C>\n    }\n    prefixSubstitutions = { \"$L\": \"R\" }\n)\n"
+        "// a C-like comment\n/* and a block\n   comment */\n"
+        "reorder rootPrims = [\"B\", \"A\"]\n"
+        "def \"S\" (symmetryFunction = )\n{\n}\n"
+        "def Xform \"A\" (\n    references = [</X> (offset = 11; scale = 22)]\n)\n{\n"
+        "    Vec3f[] extent = [(0, 0, 0), (1, 1, 1)]\n"
+        "    config token info:id = \"PxrSurface\"\n"
+        "    half h = 0.51\n"
+        "    half big = 1e10\n"
+        "    bool flag = True\n"
+        "    string utf8_\xe6\x83\x85\xe5\xa0\xb1 = \"ok\"\n"
+        "    rel skel = <Skel>\n"
+        "    rel up = <../Other>\n"
+        "    rel self = <.attr>\n"
+        "    prepend rel list = </P1>\n"
+        "    append rel list = </P2>\n"
+        "    add rel list = </P3>\n"
+        "    delete uniform double d.connect = </X.a>\n"
+        "    reorder uniform double d.connect = [</X.a>]\n"
+        "    reorder varying rel list = [</P2>]\n"
+        "    rel list.default = </P9>\n"
+        "    variantSet \"v\" = {\n        \"a\" {\n            rel inV = <Child>\n        }\n    }\n"
+        "}\n";
+    CHECK(error_of([&] { parse_usda(text, "syntax", meta, root); }) == "");
+    const Prim *a = root.child("A");
+    CHECK(a && meta.count("relocates") && meta.at("relocates").dict.count("</A/B>"));
+    if (a) {
+        const Property *extent = a->property("extent"), *id = a->property("info:id"), *h = a->property("h"),
+                       *big = a->property("big"), *flag = a->property("flag"), *skel = a->property("skel"),
+                       *up = a->property("up"), *self = a->property("self"), *list = a->property("list");
+        CHECK(extent && extent->value.numbers.size() == 6);
+        CHECK(id && id->uniform);
+        CHECK(h && std::abs(h->value.num() - 0.509765625) < 1e-12);   /* stored as a half */
+        CHECK(big && std::isinf(big->value.num()));
+        CHECK(flag && flag->value.num() == 1);
+        CHECK(a->property("utf8_\xe6\x83\x85\xe5\xa0\xb1") != nullptr);
+        CHECK(skel && skel->targets == std::vector<std::string> { "/A/Skel" });
+        CHECK(up && up->targets == std::vector<std::string> { "/Other" });
+        CHECK(self && self->targets == std::vector<std::string> { "/A.attr" });
+        const std::vector<std::string> listed = { "/P1", "/P2" }, prepended = { "/P1" };
+        CHECK(list && list->targets == listed && list->targetOps.prepended == prepended &&
+              list->targetOps.appended.size() == 2 && !a->property("list.default"));
+        const auto vs = a->variants.find("v");
+        const Prim *va = vs != a->variants.end() && vs->second.count("a") ? vs->second.at("a").get() : nullptr;
+        const Property *inV = va ? va->property("inV") : nullptr;
+        CHECK(va && va->specifier == Specifier::Over && inV && inV->targets == std::vector<std::string> { "/A/Child" });
+    }
+
+    /* composition: list edits across layers, cycles reported, never followed */
+    write_file(temp_path("syntax_weak.usda"), "#usda 1.0\ndef \"P\"\n{\n    prepend rel r = </W1>\n    append rel r = </W2>\n}\n");
+    write_file(temp_path("syntax_root.usda"),
+               "#usda 1.0\n(\n    subLayers = [@./syntax_weak.usda@]\n)\n"
+               "over \"P\"\n{\n    prepend rel r = </S1>\n    delete rel r = </W2>\n}\n"
+               "def \"Parent\"\n{\n    over \"Child\" (\n        inherits = </Parent>\n    )\n    {\n    }\n}\n"
+               "def \"C1\"\n{\n    over \"K\" (\n        inherits = </C2>\n    )\n    {\n    }\n}\n"
+               "def \"C2\"\n{\n    over \"K\" (\n        inherits = </C1>\n    )\n    {\n    }\n}\n");
+    std::shared_ptr<const Layer> stage;
+    CHECK(error_of([&] { stage = open_stage(temp_path("syntax_root.usda")); }) == "");
+    const Prim *pr = stage ? stage->prim("/P") : nullptr;
+    const Property *r = pr ? pr->property("r") : nullptr;
+    const std::vector<std::string> composed = { "/S1", "/W1" };
+    CHECK(r && r->targets == composed);
+    CHECK(stage && stage->prim("/C1/K/K") && !stage->prim("/C1/K/K/K/K/K/K/K/K/K/K"));
+}
+
 void test_usd(int fuzz_scale) {
     test_read();
     test_world();
@@ -435,5 +507,6 @@ void test_usd(int fuzz_scale) {
     test_proxy_paths();
     test_edit();
     test_package();
+    test_syntax();
     test_fuzz(fuzz_scale);
 }

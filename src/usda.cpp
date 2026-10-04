@@ -4,6 +4,7 @@
 */
 
 #include "usd.h"
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <set>
@@ -76,9 +77,45 @@ int numeric_tuple(const std::string &base) {
         { "texCoord3h", 3 }, { "texCoord3f", 3 }, { "texCoord3d", 3 },
         { "quath", 4 }, { "quatf", 4 }, { "quatd", 4 },
         { "matrix2d", 4 }, { "matrix3d", 9 }, { "matrix4d", 16 }, { "frame4d", 16 },
+        /* the type names of older files */
+        { "Vec2i", 2 }, { "Vec3i", 3 }, { "Vec4i", 4 }, { "Vec2h", 2 }, { "Vec3h", 3 }, { "Vec4h", 4 },
+        { "Vec2f", 2 }, { "Vec3f", 3 }, { "Vec4f", 4 }, { "Vec2d", 2 }, { "Vec3d", 3 }, { "Vec4d", 4 },
+        { "Matrix2d", 4 }, { "Matrix3d", 9 }, { "Matrix4d", 16 }, { "Quath", 4 }, { "Quatf", 4 }, { "Quatd", 4 },
+        { "PointFloat", 3 }, { "PointDouble", 3 }, { "Point", 3 }, { "NormalFloat", 3 }, { "NormalDouble", 3 },
+        { "Normal", 3 }, { "ColorFloat", 3 }, { "ColorDouble", 3 }, { "Color", 3 }, { "Transform", 16 },
+        { "Frame", 16 }, { "PointIndex", 1 }, { "EdgeIndex", 1 }, { "FaceIndex", 1 }, { "Vector", 3 },
+        { "VectorFloat", 3 }, { "VectorDouble", 3 },
     };
     auto it = types.find(base);
     return it == types.end() ? 0 : it->second;
+}
+
+/* Storage precision of a numeric type: 'h' half, 'f' float, 'd' otherwise */
+char precision(const std::string &base) {
+    if (base == "half" || base == "Quath")
+        return 'h';
+    if (base == "float" || base == "Quatf" || base == "PointFloat" || base == "NormalFloat" || base == "ColorFloat" ||
+        base == "VectorFloat")
+        return 'f';
+    if (base.size() >= 2 && std::isdigit((unsigned char) base[base.size() - 2]))
+        return base.back() == 'h' ? 'h' : base.back() == 'f' ? 'f' : 'd';   /* point3f, Vec3h... */
+    if (base.size() >= 2 && std::isdigit((unsigned char) base.back()))
+        return base.compare(0, 4, "half") == 0 ? 'h' : base.compare(0, 5, "float") == 0 ? 'f' : 'd';   /* half3, float2 */
+    return 'd';
+}
+
+/* A value as a half (IEEE 754 binary16) holds it, rounded to nearest */
+double as_half(double x) {
+    if (!std::isfinite(x))
+        return x;
+    const double a = std::abs(x);
+    if (a >= 65520.0)
+        return x > 0 ? INFINITY : -INFINITY;
+    if (a < 6.103515625e-05)   /* subnormal: steps of 2^-24 */
+        return std::nearbyint(x * 16777216.0) / 16777216.0;
+    int e;
+    const double m = std::frexp(x, &e);   /* 0.5 <= |m| < 1 */
+    return std::ldexp(std::nearbyint(std::ldexp(m, 11)), e - 11);
 }
 
 bool string_type(const std::string &base) {
@@ -106,6 +143,13 @@ public:
             ws();
             if (i >= s.size())
                 break;
+            if (peek_ident() == "reorder") {   /* reorder rootPrims = [...]: the order is kept as written */
+                ident();
+                ident();
+                expect('=');
+                any();
+                continue;
+            }
             prim(root);
         }
     }
@@ -115,6 +159,7 @@ private:
     std::string src;
     size_t i = 0;
     int depth = 0;    /* nesting of values and prims: bounded (stack) */
+    bool mArcItems = false;   /* reading references / payload / inherits / specializes: items may have offsets */
 
     struct Nest {
         Parser &p;
@@ -138,9 +183,12 @@ private:
             const char c = s[i];
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
                 ++i;
-            } else if (c == '#') {
+            } else if (c == '#' || (c == '/' && i + 1 < s.size() && s[i + 1] == '/')) {
                 while (i < s.size() && s[i] != '\n')
                     ++i;
+            } else if (c == '/' && i + 1 < s.size() && s[i + 1] == '*') {
+                const size_t e = s.find("*/", i + 2);
+                i = e == std::string::npos ? s.size() : e + 2;
             } else {
                 break;
             }
@@ -165,9 +213,10 @@ private:
         return true;
     }
 
-    static bool ident_start(char c) { return std::isalpha((unsigned char) c) || c == '_'; }
+    /* identifiers: ASCII letters, digits and '_', and UTF-8 (bytes 0x80 and up) */
+    static bool ident_start(char c) { return std::isalpha((unsigned char) c) || c == '_' || (unsigned char) c >= 0x80; }
     static bool ident_char(char c) {
-        return std::isalnum((unsigned char) c) || c == '_' || c == ':' || c == '.';
+        return std::isalnum((unsigned char) c) || c == '_' || c == ':' || c == '.' || (unsigned char) c >= 0x80;
     }
 
     /* An identifier (namespaced with ':', field suffix with '.'), "" if none */
@@ -179,6 +228,15 @@ private:
         while (i < s.size() && ident_char(s[i]))
             ++i;
         return s.substr(b, i - b);
+    }
+
+    /* The word after the next one, without consuming them */
+    std::string peek_second() {
+        const size_t save = i;
+        ident();
+        std::string w = ident();
+        i = save;
+        return w;
     }
 
     /* The next word, without consuming it */
@@ -268,11 +326,11 @@ private:
         double v = strtod(b, &e);
         if (e == b) {
             /* true / false as numbers */
-            if (s.compare(i, 4, "true") == 0) {
+            if (s.compare(i, 4, "true") == 0 || s.compare(i, 4, "True") == 0) {
                 i += 4;
                 return 1;
             }
-            if (s.compare(i, 5, "false") == 0) {
+            if (s.compare(i, 5, "false") == 0 || s.compare(i, 5, "False") == 0) {
                 i += 5;
                 return 0;
             }
@@ -322,7 +380,7 @@ private:
                 asset();
                 continue;
             }
-            if (c == '#') {
+            if (c == '#' || (c == '/' && i + 1 < s.size() && s[i + 1] == '/')) {
                 while (i < s.size() && s[i] != '\n')
                     ++i;
                 continue;
@@ -356,14 +414,16 @@ private:
         } else if (c == '<') {
             v.kind = Value::Strings;
             v.strings.push_back("<" + path() + ">");
+            if (mArcItems && peek('('))
+                skip_block();   /* layer offset of an internal reference */
         } else if (number_start()) {
             v.kind = Value::Numbers;
             v.numbers.push_back(number());
         } else if (ident_start(c)) {
             const std::string w = ident();
-            if (w == "true" || w == "false") {
+            if (w == "true" || w == "false" || w == "True" || w == "False") {
                 v.kind = Value::Numbers;
-                v.numbers.push_back(w == "true" ? 1 : 0);
+                v.numbers.push_back(w == "true" || w == "True" ? 1 : 0);
             } else {
                 v.kind = Value::Strings;
                 v.strings.push_back(w);
@@ -429,6 +489,17 @@ private:
         expect('{');
         v.kind = Value::Dictionary;
         while (!accept('}')) {
+            ws();
+            if (i < s.size() && (s[i] == '<' || s[i] == '"' || s[i] == '\'')) {
+                /* relocates = { </A>: </B> }, substitutions = { "a": "b" } */
+                const std::string key = s[i] == '<' ? "<" + path() + ">" : quoted();
+                expect(':');
+                Value e;
+                item(e);
+                v.dict[key] = e;
+                accept(',');
+                continue;
+            }
             std::string type = ident();
             if (type.empty())
                 fail("expected a dictionary entry");
@@ -464,12 +535,19 @@ private:
             v.kind = Value::Numbers;
             v.tuple = tuple;
             numbers(v.numbers);
+            /* the precision the type stores, as USD reads the text */
+            const char prec = precision(base);
+            for (double &x : v.numbers)
+                x = prec == 'h' ? as_half(x) : prec == 'f' ? (double) (float) x : x;
             return v;
         }
         if (string_type(base)) {
             Value a = any();
             a.type = type;
             a.array = v.array;
+            for (std::string &t : a.strings)
+                if (t.size() > 1 && t.front() == '<' && t.back() == '>')
+                    t = t.substr(1, t.size() - 2);
             return a;
         }
         if (base == "dictionary") {
@@ -509,10 +587,14 @@ private:
                 fail("expected a metadata key");
             expect('=');
             Value v;
-            if (key == "variants" && prim) {
+            if (peek(')') || peek(';')) {
+                /* an empty value (symmetryFunction = ) */
+            } else if (key == "variants" && prim) {
                 dictionary(v);
             } else {
+                mArcItems = key == "references" || key == "payload" || key == "inherits" || key == "specializes";
                 v = any();
+                mArcItems = false;
             }
             if (!op.empty() || key == "references" || key == "payload" || key == "inherits" ||
                 key == "specializes" || key == "apiSchemas" || key == "variantSets") {
@@ -575,6 +657,7 @@ private:
                 while (!accept('}')) {
                     const std::string name = quoted();
                     auto variant = std::unique_ptr<Prim>(new Prim());
+                    variant->specifier = Specifier::Over;   /* a variant specifies nothing */
                     variant->name = name;
                     variant->path = p.path + "{" + set + "=" + name + "}";
                     if (peek('('))
@@ -582,6 +665,8 @@ private:
                     body(*variant);
                     p.variants[set][name] = std::move(variant);
                 }
+            } else if (w == "reorder" && peek_second() != "nameChildren" && peek_second() != "properties") {
+                property(p);   /* reorder [uniform] double x.connect, reorder rel r */
             } else if (w == "reorder") {
                 ident();
                 ident();
@@ -598,27 +683,34 @@ private:
 
     void property(Prim &p) {
         std::string w = ident();
-        if (w == "prepend" || w == "append" || w == "add" || w == "delete")
+        std::string op;
+        if (w == "prepend" || w == "append" || w == "add" || w == "delete" || w == "reorder") {
+            op = w;
             w = ident();
+        }
         bool custom = false, uniform = false;
         if (w == "custom") {
             custom = true;
             w = ident();
         }
         if (w == "uniform" || w == "varying" || w == "config") {
-            uniform = w == "uniform";
+            uniform = w != "varying";   /* config: an old name of uniform */
             w = ident();
         }
         if (w == "rel") {
-            const std::string name = ident();
+            std::string name = ident();
+            /* rel r.default = <...>: an old "default target", not a target */
+            const bool defaultTarget = name.size() > 8 && name.compare(name.size() - 8, 8, ".default") == 0;
+            if (defaultTarget) {
+                name.resize(name.size() - 8);
+                op = "reorder";
+            }
             Property &prop = slot(p, name);
             prop.relationship = true;
             prop.custom = custom;
             if (accept('=')) {
                 Value v = any();
-                prop.targets.clear();
-                for (const std::string &t : v.strings)
-                    prop.targets.push_back(t.size() > 1 && t[0] == '<' ? t.substr(1, t.size() - 2) : t);
+                targets(prop, v, op, p.path);
             }
             if (peek('('))
                 metadata(prop.meta, nullptr);
@@ -662,9 +754,7 @@ private:
                 prop.value.type = type;
                 prop.meta["__samples__"] = ts;
             } else if (field == "connect") {
-                Value v = any();
-                for (const std::string &t : v.strings)
-                    prop.targets.push_back(t.size() > 1 && t[0] == '<' ? t.substr(1, t.size() - 2) : t);
+                targets(prop, any(), op, p.path);
             } else if (field == "spline") {
                 skip_block();
             } else {
@@ -673,6 +763,59 @@ private:
         }
         if (peek('('))
             metadata(prop.meta, nullptr);
+    }
+
+    /* A target path as written: absolute, or relative to the prim (Skel,
+       ../Other, Child.attr) */
+    static std::string anchored(const std::string &t, const std::string &prim) {
+        std::string path = t.size() > 1 && t[0] == '<' ? t.substr(1, t.size() - 2) : t;
+        if (path.empty() || path[0] == '/')
+            return path;
+        std::string base;   /* the prim's path, without variant selections */
+        for (size_t k = 0, depth = 0; k < prim.size(); ++k) {
+            depth += prim[k] == '{';
+            if (depth == 0)
+                base += prim[k];
+            depth -= prim[k] == '}' && depth > 0;
+        }
+        while (path.compare(0, 3, "../") == 0) {
+            const size_t s = base.rfind('/');
+            base = s == 0 || s == std::string::npos ? std::string("/") : base.substr(0, s);
+            path = path.substr(3);
+        }
+        if (path == "..") {
+            const size_t s = base.rfind('/');
+            return s == 0 || s == std::string::npos ? std::string("/") : base.substr(0, s);
+        }
+        if (path[0] == '.')
+            return base + path;   /* a property of the prim */
+        return (base == "/" ? std::string() : base) + "/" + path;
+    }
+
+    /* Relationship targets / connections of one statement, kept as Sdf
+       lists them for a layer: explicit items, else prepended then appended
+       (added, deleted and reordered items change nothing) */
+    static void targets(Property &prop, const Value &v, const std::string &op, const std::string &prim) {
+        std::vector<std::string> items;
+        for (const std::string &t : v.strings)
+            items.push_back(anchored(t, prim));
+        Value &ops = prop.targetOps;
+        ops.kind = Value::ListOp;
+        if (op.empty()) {
+            prop.targets = items;
+            ops.isExplicit = true;
+            ops.explicitItems = items;
+        } else if (op == "prepend") {
+            prop.targets.insert(prop.targets.begin(), items.begin(), items.end());
+            ops.prepended = items;
+        } else if (op == "append") {
+            prop.targets.insert(prop.targets.end(), items.begin(), items.end());
+            ops.appended = items;
+        } else if (op == "add") {
+            ops.appended.insert(ops.appended.end(), items.begin(), items.end());   /* composed, not listed */
+        } else if (op == "delete") {
+            ops.deleted = items;
+        }
     }
 
     /* The property of that name, created if needed (".timeSamples" and

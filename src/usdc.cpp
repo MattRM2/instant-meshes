@@ -373,6 +373,8 @@ void CrateFile::parse() {
         } else {
             for (uint64_t k = 0; k < n; ++k) {
                 Spec sp;
+                if (mVersion < 0x000100)
+                    pos += 4;   /* 0.0.1: 4 bytes of padding first (a GCC layout of the time) */
                 sp.path = get<uint32_t>(pos);
                 sp.fieldSet = get<uint32_t>(pos);
                 sp.type = get<uint32_t>(pos);
@@ -458,7 +460,6 @@ void CrateFile::build_paths(const std::vector<uint32_t> &pathIndexes, const std:
 void CrateFile::old_paths(uint64_t &pos) {
     struct Header { uint32_t index; uint32_t elementToken; uint8_t bits; };
     std::vector<std::pair<uint64_t, std::string>> stack;   /* (sibling position, parent) */
-    const bool v001 = mVersion < 0x000002;
     std::string parent;
     uint64_t cur = pos;
     std::vector<std::pair<uint64_t, std::string>> todo { { cur, std::string() } };
@@ -468,11 +469,12 @@ void CrateFile::old_paths(uint64_t &pos) {
         todo.pop_back();
         while (true) {
             Header h;
+            if (mVersion < 0x000100)
+                cur += 4;   /* 0.0.1: 4 bytes of padding first (a GCC layout of the time) */
             h.index = get<uint32_t>(cur);
             h.elementToken = get<uint32_t>(cur);
             h.bits = get<uint8_t>(cur);
-            if (!v001)
-                cur += 3;   /* padding of the 12-byte header */
+            cur += 3;   /* padding of the header (12 bytes, 16 in 0.0.1) */
             const bool hasChild = h.bits & 1, hasSibling = h.bits & 2, isProperty = h.bits & 4;
             if (h.index >= mPaths.size())
                 fail("invalid path index");

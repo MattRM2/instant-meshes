@@ -17,6 +17,8 @@
 using namespace usd;
 
 static std::string fmt(double x) {
+    if (std::isnan(x))
+        return "nan";   /* as Python prints it */
     if (std::abs(x) < 5e-5)
         x = 0;
     char b[64];

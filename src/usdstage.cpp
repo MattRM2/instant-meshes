@@ -315,6 +315,18 @@ private:
         mPending.push_back(&n);
         std::vector<Node> arcs;
         auto arc = [&](const Stack *stack, const std::string &src, int rank) {
+            /* a cycle: back to a site being composed (the same prim, an
+               ancestor or a descendant, in the same layer stack), as Pcp
+               reports it; the arc is ignored */
+            auto related = [](const std::string &a, const std::string &b) {
+                const std::string &s = a.size() < b.size() ? a : b, &l = a.size() < b.size() ? b : a;
+                return s == l || (l.compare(0, s.size(), s) == 0 && (s == "/" || l[s.size()] == '/'));
+            };
+            for (const Node *p : mPending)
+                if (p->stack == stack && related(p->src, src)) {
+                    warn("composition cycle at \"" + n.dst + "\": the arc to \"" + src + "\" is ignored");
+                    return false;
+                }
             Node a;
             a.stack = stack;
             a.src = a.mapSrc = src;
@@ -323,6 +335,7 @@ private:
             a.depth = depth;
             a.specs = site(stack, src);
             arcs.push_back(std::move(a));
+            return true;
         };
         /* "asset<path>" -> "path"; a bare path (inherits in .usdc) as is.
            Paths are in the namespace of the layer stack that holds them */
@@ -391,8 +404,7 @@ private:
                     }
                     prim = "/" + dp->second.str();
                 }
-                arc(stack, prim, rank);
-                if (arcs.back().specs.empty())
+                if (arc(stack, prim, rank) && arcs.back().specs.empty())
                     warn("\"" + prim + "\" not found in \"" + stack->root->filename() + "\" (referenced by \"" + n.dst + "\")");
             }
         }
@@ -436,9 +448,13 @@ private:
 
     /* Expands the arcs authored on the specs of a new prim index */
     void expand_tree(Node &n, int depth) {
+        /* the sites above count for cycles too (an inherits of an ancestor's
+           namespace: /A/Child1 -> /B, /B/Child2 -> /A...) */
+        mPending.push_back(&n);
         const size_t count = n.arcs.size();
         for (size_t k = 0; k < count; ++k)
             expand_tree(n.arcs[k], depth);
+        mPending.pop_back();
         expand(n, depth, 0);
     }
 
@@ -506,9 +522,50 @@ private:
             q.origin = from.first;
             q.owner = from.second.first;
             q.hasTimeSamples = from.first->hasTimeSamples;
-            if (targeted)
+            /* list edits, from the weakest opinion to the strongest (an
+               explicit list replaces what is weaker) */
+            bool edited = false;
+            for (const auto &e : list)
+                edited |= e.first->targetOps.kind == Value::ListOp && !e.first->targetOps.isExplicit;
+            if (edited) {
+                std::vector<std::string> result;
+                auto remove = [&](const std::string &t) {
+                    result.erase(std::remove(result.begin(), result.end(), t), result.end());
+                };
+                for (auto it = list.rbegin(); it != list.rend(); ++it) {
+                    const Value &ops = it->first->targetOps;
+                    const Node &node = *it->second.second;
+                    auto mapped = [&](const std::vector<std::string> &items) {
+                        std::vector<std::string> out;
+                        for (const std::string &t : items)
+                            out.push_back(map_path(t, node));
+                        return out;
+                    };
+                    if (ops.kind != Value::ListOp) {
+                        if (!it->first->targets.empty())
+                            result = mapped(it->first->targets);
+                        continue;
+                    }
+                    if (ops.isExplicit) {
+                        result = mapped(ops.explicitItems);
+                        continue;
+                    }
+                    for (const std::string &t : mapped(ops.deleted))
+                        remove(t);
+                    const std::vector<std::string> pre = mapped(ops.prepended), post = mapped(ops.appended);
+                    for (const std::string &t : pre)
+                        remove(t);
+                    result.insert(result.begin(), pre.begin(), pre.end());
+                    for (const std::string &t : post) {
+                        remove(t);
+                        result.push_back(t);
+                    }
+                }
+                q.targets = result;
+            } else if (targeted) {
                 for (const std::string &t : targeted->first->targets)
                     q.targets.push_back(map_path(t, *targeted->second.second));
+            }
             out.properties.push_back(std::move(q));
         }
     }

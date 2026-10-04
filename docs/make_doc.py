@@ -578,7 +578,8 @@ def build(cover_image=None):
                 "payloads, inherits, specializes and selected variants, strongest opinion first; the layers "
                 "a package holds are read in place (scene.usdz[parts/asset.usdc]). Everything is "
                 "checked against Pixar's USD library: the same scenes, in the three encodings, read and compose "
-                "value for value as USD does."),
+                "value for value as USD does. On OpenUSD's own 2,440 test files: 2,214 layers read as Pixar "
+                "reads them, 1,731 of 1,740 meshes identical, no crash (tests/check_openusd_corpus.py)."),
               Spacer(1, 3 * mm)]
     story += bullets([
         "Every <b>Mesh</b> prim defined in the file (def), placed in world space through xformOpOrder: "
@@ -622,14 +623,13 @@ def build(cover_image=None):
         "or a .usdc with another name than the input (a .usdz package would have to hold the scene too); the "
         "sublayer path is relative when both sit in the same folder.",
         "<b>.usdc</b> is written as Crate 0.8.0 (read by every USD version since 2018), <b>.usdz</b> as a "
-        "standard package; Pixar's compliance checker reports no error on them. Binary files are about 2.5x "
-        "smaller than text.",
+        "standard package; Pixar's compliance checker reports no error on them.",
         "Whole-file mode reads USD like any mesh and can write a standalone <b>.usda</b>, <b>.usdc</b> or "
         "<b>.usdz</b> stage: in meters "
         "(metersPerUnit = 1) from an OBJ, PLY or Alembic file, as Blender reads them; with the units and up "
         "axis of the input from a USD file.",
     ])
-    story += [PageBreak(), SubHeader("3.6", "USD: proxies (--proxy)"), Spacer(1, 3 * mm),
+    story += [Spacer(1, 4 * mm), SubHeader("3.6", "USD: proxies (--proxy)"), Spacer(1, 3 * mm),
               p("With <b>--proxy</b>, -m and --others keep the meshes of the scene and add their remeshed copy as "
                 "a <b>proxy</b>: the light mesh viewports show while the renderer keeps the original. This is "
                 "the USD purpose mechanism, understood by usdview, Houdini / Solaris, Maya and Blender."),

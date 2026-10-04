@@ -25,7 +25,7 @@ from reportlab.lib.enums import TA_CENTER
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "InstantMeshes_Documentation.pdf")
-VERSION = "2.3.0"
+VERSION = "2.4.0"
 PRODUCT = "Instant Meshes"
 REPO = "github.com/MattRM2/instant-meshes"
 
@@ -369,8 +369,10 @@ def build(cover_image=None):
         "<b>Alembic (.abc)</b> read and written natively: no Alembic library, no dependency, polygon meshes, "
         "transforms and instances.",
         "<b>USD (.usd, .usda, .usdc, .usdz)</b> read and written natively, without the USD library, "
-        "composition included (sublayers, references, payloads, variants); per-mesh results written as a "
-        "<b>layer</b> over the original file, which stays untouched.",
+        "composition included (sublayers, references, payloads, variants, the layers inside a .usdz); "
+        "per-mesh results written as a <b>layer</b> over the original file, which stays untouched.",
+        "<b>USD proxies</b> (--proxy): light remeshed copies for the viewports, in a proxy layer that the "
+        "scene references, as in production; materials and UVs carried over, .usdz packages included.",
         "<b>Per-mesh remeshing</b>: remesh MeshA at 75% and MeshB at 85% of their faces, keep the rest of the "
         "scene untouched, write one file (-m / --others), for <b>Alembic, OBJ and USD</b> scenes.",
         "<b>Percentage targets</b>: 75% means 75% of the original face count, in the interface and on the "
@@ -396,7 +398,8 @@ def build(cover_image=None):
                      ["InstantMeshes.exe", "The application: interface and command line"],
                      ["InstantMeshes_Documentation.pdf", "This document"],
                      ["LICENSE.txt", "Instant Meshes BSD license"],
-                     ["OFL.txt", "License of the Poppins typeface used by the interface"]],
+                     ["LICENSE_xatlas.txt", "License of xatlas (MIT), used by --uv unwrap"],
+                     ["OFL_Poppins.txt", "License of the Poppins typeface used by the interface"]],
                     [58 * mm, W - 2 * MARGIN - 58 * mm])]),
               PageBreak()]
 

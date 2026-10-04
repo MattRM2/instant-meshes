@@ -332,7 +332,7 @@ SECTIONS = [
                                     "2.6 The Outliner: a scene, mesh by mesh", "2.7 Projects (.imd)"]),
     (3, "Alembic and USD Support", ["3.1 What is read", "3.2 What is written", "3.3 Robustness",
                                     "3.4 USD: what is read", "3.5 USD: the layer written",
-                                    "3.6 USD: proxies (--proxy)"]),
+                                    "3.6 USD: proxies (--proxy)", "3.7 From an OBJ to a USD asset with its proxy"]),
     (4, "Command Line", ["4.1 Batch mode", "4.2 Options", "4.3 Examples"]),
     (5, "Per-Mesh Remeshing (Alembic, OBJ, USD)", ["5.1 Rules: -m and --others", "5.2 Planning: --list and --dry-run",
                                                  "5.3 What happens to a remeshed mesh", "5.4 OBJ scenes",
@@ -569,7 +569,8 @@ def build(cover_image=None):
                 "(<b>.usda</b>), binary Crate (<b>.usdc</b>, every version from 0.2 to the current 0.13, compressed "
                 "or not) and package (<b>.usdz</b>); a <b>.usd</b> file is recognized by its content. The file is "
                 "<b>composed</b> into a stage, as USD does: its sublayers, and for every prim its references, "
-                "payloads, inherits, specializes and selected variants, strongest opinion first. Everything is "
+                "payloads, inherits, specializes and selected variants, strongest opinion first; the layers "
+                "a package holds are read in place (scene.usdz[parts/asset.usdc]). Everything is "
                 "checked against Pixar's USD library: the same scenes, in the three encodings, read and compose "
                 "value for value as USD does."),
               Spacer(1, 3 * mm)]
@@ -620,7 +621,7 @@ def build(cover_image=None):
         "(metersPerUnit = 1) from an OBJ, PLY or Alembic file, as Blender reads them; with the units and up "
         "axis of the input from a USD file.",
     ])
-    story += [Spacer(1, 4 * mm), SubHeader("3.6", "USD: proxies (--proxy)"), Spacer(1, 3 * mm),
+    story += [PageBreak(), SubHeader("3.6", "USD: proxies (--proxy)"), Spacer(1, 3 * mm),
               p("With <b>--proxy</b>, -m and --others keep the meshes of the scene and add their remeshed copy as "
                 "a <b>proxy</b>: the light mesh viewports show while the renderer keeps the original. This is "
                 "the USD purpose mechanism, understood by usdview, Houdini / Solaris, Maya and Blender."),
@@ -642,7 +643,10 @@ def build(cover_image=None):
     story += bullets([
         "In place, the reference is the <b>only change</b> to the scene: in a .usdc file the new data is "
         "appended, every other byte stays where it was; in a .usda file the reference is written into the "
-        "text. A copy keeps the format of the scene (.usda, .usdc, or .usd); a .usdz package cannot be edited.",
+        "text. A copy keeps the format of the scene (.usda, .usdc, or .usd).",
+        "A <b>.usdz package</b> stays a package: its root layer gets the reference, the proxy layer goes "
+        "inside it (asset_proxy.usdc, next to the root layer), its other files (sublayers, textures) are kept "
+        "as they were. In place or as a copy (-o another .usdz); Pixar's compliance checker reports no error.",
         "The proxy layer is <b>&lt;output&gt;_proxy</b>, next to the output, in its format: asset_proxy.usdc. "
         "It holds the proxies and what the meshes gain (purpose, proxyPrim), and loads nothing itself. A "
         "second run writes asset_proxy2.usdc, referenced too. The reference goes on the root prim (/Asset).",
@@ -666,7 +670,8 @@ def build(cover_image=None):
         "proxies.",
     ])
     story += [Spacer(1, 3 * mm),
-              KeepTogether([p("<b>From an OBJ to a USD asset with its proxy</b>, in two commands: the first converts "
+              KeepTogether([SubHeader("3.7", "From an OBJ to a USD asset with its proxy"), Spacer(1, 3 * mm),
+                            p("Two commands: the first converts "
                               "the OBJ to USD at its own polygon count (100%: remeshed, about as many faces) with new "
                               "UVs; the second adds a 10% proxy, which takes over those UVs."),
                             Spacer(1, 2 * mm),
@@ -887,8 +892,8 @@ def build(cover_image=None):
         "read at the first frame.",
         "Remeshed meshes lose their normals (new topology), and their UVs unless --uv transfer is given.",
         "Point clouds (.aln) accept face counts, not percentages.",
-        "USD: layer offsets (time), relocates, value clips and variant fallbacks are not composed; files "
-        "inside a .usdz package other than its root layer are not opened. A mesh inside an instance cannot be "
+        "USD: layer offsets (time), relocates, value clips and variant fallbacks are not composed; packages "
+        "inside packages are not opened. A mesh inside an instance cannot be "
         "remeshed (edit its prototype asset). Per-mesh output is a .usda or .usdc layer.",
         "In the interface, a mesh that fails is kept unchanged (as with --skip-failed); processing runs one "
         "mesh at a time in the background, the viewport shows the scene as one merged mesh.",

@@ -217,8 +217,9 @@ std::string usda_add_references(const std::string &input, const std::vector<Root
         }
         if (s.substr(prim->metaStart, prim->metaEnd - prim->metaStart).find(item) != std::string::npos)
             continue;   /* already there */
+        const std::vector<UsdaText::Statement> statements = text.references(prim->metaStart, prim->metaEnd);
         const UsdaText::Statement *st = nullptr;
-        for (const auto &x : text.references(prim->metaStart, prim->metaEnd))
+        for (const auto &x : statements)
             if (x.op.empty() || x.op == "prepend")
                 st = &x;
         if (st) {
@@ -619,8 +620,8 @@ private:
 } // namespace
 
 std::vector<uint8_t> usdc_add_references(const std::string &filename, const std::vector<RootReference> &refs,
-                                         bool *changed) {
-    CrateFile c(filename);
+                                         bool *changed, uint64_t start, uint64_t size) {
+    CrateFile c(filename, start, size);
     c.parse();
     if (c.version() < 0x000400)
         c.fail("Crate version older than 0.4.0: save it again with a recent USD to add references to it");

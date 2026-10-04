@@ -129,7 +129,13 @@ InstantMeshes.exe asset.usdc -o asset_v2.usdc --proxy -m "Hero=10%" --others 3%
   dans un `.usdc` les nouvelles données sont ajoutées à la fin, tous les
   autres octets restent en place ; dans un `.usda` la référence est écrite
   dans le texte, le reste intact. Une copie garde le format de la scène
-  (`.usda`, `.usdc` ou `.usd`) ; un paquet `.usdz` ne peut pas être modifié.
+  (`.usda`, `.usdc` ou `.usd`).
+- Un paquet **`.usdz` reste un paquet** : son calque racine reçoit la
+  référence, le calque de proxies va **dedans** (`asset_proxy.usdc`, à côté
+  du calque racine), ses autres fichiers (sous-calques, textures) sont
+  gardés tels quels. Sur place ou en copie (`-o` un autre `.usdz`) ; le
+  vérificateur de conformité de Pixar ne trouve aucune erreur. Les calques
+  d'un paquet sont lus sur place (`scene.usdz[parts/asset.usdc]`).
 - Le calque de proxies est `<sortie>_proxy`, à côté de la sortie, dans son
   format (`asset_proxy.usdc`). Il contient les proxies et ce que gagnent les
   maillages (purpose, `proxyPrim`), et ne charge rien lui-même. Une deuxième

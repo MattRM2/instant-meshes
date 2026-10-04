@@ -25,6 +25,11 @@ public:
 
     /// 'start' / 'size': the file inside a .usdz package (size 0: to the end)
     CrateFile(const std::string &filename, uint64_t start = 0, uint64_t size = 0);
+    ~CrateFile();
+
+    /// Closes the files open on 'filename' (they reopen on the next read),
+    /// so that it can be replaced
+    static void release(const std::string &filename);
 
     /// Reads the bootstrap, the table of contents and every structural section
     void parse();

@@ -144,19 +144,30 @@ private:
         return layer.get();
     }
 
-    /* An asset path of a layer, as a file path (empty if it cannot be opened) */
+    /* An asset path of a layer, as a file path (empty if it cannot be
+       opened): relative to the layer, inside its package for a layer of a
+       package ("scene.usdz[parts/a.usdc]"), or a file of another package */
     std::string resolve(const std::string &asset, const Layer *from) {
         if (asset.empty())
             return std::string();
-        if (asset.find('[') != std::string::npos) {
-            warn("\"" + asset + "\" (in \"" + from->filename() + "\"): files inside packages are not read");
-            return std::string();
+        std::string package, entry;
+        if (split_package_path(asset, package, entry)) {
+            if (!from->package().empty() && !is_absolute(package)) {
+                warn("\"" + asset + "\" (in \"" + from->filename() + "\"): packages inside packages are not read");
+                return std::string();
+            }
+            return (is_absolute(package) ? normalize(package) : normalize(parent_dir(from->filename()) + package)) +
+                   "[" + normalize(entry) + "]";
         }
         if (is_absolute(asset))
             return normalize(asset);
-        if (from->format() == "usdz") {
-            warn("\"" + asset + "\" (in the package \"" + from->filename() + "\"): files inside packages are not read");
-            return std::string();
+        if (!from->package().empty()) {
+            const std::string inner = normalize(parent_dir(from->package_entry()) + asset);
+            if (inner.compare(0, 3, "../") == 0) {
+                warn("\"" + asset + "\" (in \"" + from->filename() + "\") is outside its package");
+                return std::string();
+            }
+            return normalize(from->package()) + "[" + inner + "]";
         }
         return normalize(parent_dir(from->filename()) + asset);
     }

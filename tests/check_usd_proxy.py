@@ -75,6 +75,15 @@ for asset in added:
     proxy_layer = Sdf.Layer.FindOrOpenRelativeToLayer(out_layer, asset)
     check("%s: no sublayer" % asset, proxy_layer is not None and not list(proxy_layer.subLayerPaths))
 
+if out_path.lower().endswith(".usdz"):
+    from pxr import UsdUtils
+    checker = UsdUtils.ComplianceChecker(arkit=False, skipARKitRootLayerCheck=False, rootPackageOnly=False,
+                                         skipVariants=False, verbose=False)
+    checker.CheckCompliance(out_path)
+    problems = list(checker.GetErrors()) + list(checker.GetFailedChecks())
+    check("package compliant (Pixar's checker)%s" % ("" if not problems else ": " + "; ".join(problems)),
+          not problems)
+
 src = Usd.Stage.Open(src_path)
 out = Usd.Stage.Open(out_path)
 for key in ("upAxis", "metersPerUnit"):

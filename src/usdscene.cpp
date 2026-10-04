@@ -494,6 +494,32 @@ void replace_file(const std::string &temp, const std::string &target) {
     }
 }
 
+void write_bytes(const std::string &path, const char *data, size_t size) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(data, (std::streamsize) size);
+    out.flush();
+    if (!out) {
+        out.close();
+        std::remove(path.c_str());
+        throw std::runtime_error("Unable to write \"" + path + "\" (disk full?)!");
+    }
+}
+
+std::vector<uint8_t> read_bytes(const std::string &path, uint64_t start = 0, uint64_t size = UINT64_MAX) {
+    std::ifstream in(path, std::ios::binary);
+    if (size == UINT64_MAX) {
+        in.seekg(0, std::ios::end);
+        size = (uint64_t) in.tellg() - start;
+    }
+    std::vector<uint8_t> data((size_t) size);
+    in.seekg((std::streamoff) start);
+    if (size > 0)
+        in.read((char *) data.data(), (std::streamsize) size);
+    if (!in)
+        throw std::runtime_error("Unable to read \"" + path + "\"!");
+    return data;
+}
+
 std::string quote(const std::string &s) {
     std::string out = "\"";
     for (char c : s) {
@@ -1068,8 +1094,11 @@ std::string root_of(const std::string &path) {
 /* The proxy layer of 'output': <name>_proxy next to it, with its
    extension; numbered when the scene already references a layer of that
    name (proxies made earlier) */
-std::string proxy_layer_for(const Layer &raw, const std::string &output) {
+std::string proxy_layer_for(const Layer &raw, const std::string &output, const std::string &extension = std::string(),
+                            const std::vector<UsdzEntry> &files = std::vector<UsdzEntry>()) {
     std::set<std::string> used;
+    for (const UsdzEntry &e : files)
+        used.insert(str_tolower(file_name(e.name)));
     for (const auto &c : raw.root.children)
         if (const Value *v = c->metadata("references"))
             for (const std::vector<std::string> *list : { &v->explicitItems, &v->prepended, &v->appended })
@@ -1078,7 +1107,7 @@ std::string proxy_layer_for(const Layer &raw, const std::string &output) {
     const std::string name = file_name(output);
     const size_t dot = name.rfind('.');
     const std::string stem = output.substr(0, dir_of(output).size() + (dot == std::string::npos ? name.size() : dot));
-    const std::string ext = dot == std::string::npos ? std::string() : name.substr(dot);
+    const std::string ext = !extension.empty() ? extension : dot == std::string::npos ? std::string() : name.substr(dot);
     for (int k = 1;; ++k) {
         const std::string candidate = stem + "_proxy" + (k > 1 ? std::to_string(k) : std::string()) + ext;
         if (!used.count(str_tolower(file_name(candidate))))
@@ -1115,8 +1144,14 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
     if (!problem.empty())
         throw std::runtime_error(problem);
     const Layer raw(input);   /* the scene's own layer, that references the proxies */
-    const std::string proxyFile = proxy_layer_for(raw, output);
-    const bool inPlace = same_file(output, input);
+    const bool inPlace = same_file(output, input), packaged = raw.format() == "usdz";
+    /* a package: the proxy layer goes inside it, next to its root layer */
+    const std::vector<UsdzEntry> files = packaged ? usdz_entries(input) : std::vector<UsdzEntry>();
+    const std::string rootEntry = packaged ? files.at(0).name : std::string();
+    const std::string proxyFile = proxy_layer_for(raw, output, packaged ? ".usdc" : std::string(), files);
+    const std::string proxyEntry = packaged ? dir_of(rootEntry) + file_name(proxyFile) : std::string();
+    /* the scene as the proxy layer sees it (its materials' stand-ins reference it) */
+    const std::string sceneAsset = "./" + file_name(packaged ? rootEntry : output);
 
     std::map<std::string, abc::MeshSummary> meshes;
     for (const abc::MeshSummary &m : list_meshes(layer))
@@ -1176,7 +1211,7 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
                     sc.type = "Scope";
                 ProxyNode &m = node(path);
                 m.type = "Material";
-                m.reference = "@./" + file_name(output) + "@" + item;
+                m.reference = "@" + sceneAsset + "@" + item;
                 madeHere.insert(path);
                 break;
             }
@@ -1253,9 +1288,10 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
 
     /* the proxy layer: the proxies and what the scene's prims gain (purpose,
        proxyPrim), below root prims that the scene references */
-    cout << "Writing \"" << proxyFile << "\" (" << proxies.size() << " prox" << (proxies.size() > 1 ? "ies" : "y")
-         << ") .. ";
+    cout << "Writing \"" << (packaged ? output + "[" + proxyEntry + "]" : proxyFile) << "\" (" << proxies.size()
+         << " prox" << (proxies.size() > 1 ? "ies" : "y") << ") .. ";
     cout.flush();
+    std::vector<uint8_t> proxyBytes;
     {
         const std::string temp = proxyFile + ".tmp";
         struct TempGuard {
@@ -1291,9 +1327,15 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
             }
         };
         write(root, "");
-        write_layer_file(temp, os.str(), proxyFile);
-        replace_file(temp, proxyFile);
-        guard.armed = false;
+        if (packaged) {
+            /* encoded as .usdc, for the package */
+            write_layer_file(temp, os.str(), proxyEntry);
+            proxyBytes = read_bytes(temp);
+        } else {
+            write_layer_file(temp, os.str(), proxyFile);
+            replace_file(temp, proxyFile);
+            guard.armed = false;
+        }
     }
     cout << "done." << endl;
 
@@ -1301,6 +1343,35 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
     std::vector<RootReference> refs;
     for (const std::string &name : root.order)
         refs.push_back(RootReference { name, "./" + file_name(proxyFile), "/" + name });
+    if (packaged) {
+        /* the package again: its root layer with the references, its other
+           files as they were, the proxy layer */
+        cout << "Referencing it from \"" << output << "[" << rootEntry << "]\" ("
+             << (inPlace ? std::string("the package itself") : "a copy of \"" + input + "\"") << ") .. ";
+        cout.flush();
+        const UsdzEntry &r = files.at(0);
+        std::vector<std::pair<std::string, std::vector<uint8_t>>> content;
+        const std::vector<uint8_t> head = read_bytes(input, r.start, std::min<uint64_t>(r.size, 8));
+        if (head.size() == 8 && memcmp(head.data(), "PXR-USDC", 8) == 0) {
+            content.emplace_back(r.name, usdc_add_references(input, refs, nullptr, r.start, r.size));
+        } else {
+            const std::vector<uint8_t> t = read_bytes(input, r.start, r.size);
+            const std::string edited = usda_add_references(std::string(t.begin(), t.end()), refs);
+            content.emplace_back(r.name, std::vector<uint8_t>(edited.begin(), edited.end()));
+        }
+        for (size_t k = 1; k < files.size(); ++k)
+            content.emplace_back(files[k].name, read_bytes(input, files[k].start, files[k].size));
+        content.emplace_back(proxyEntry, std::move(proxyBytes));
+        const std::vector<uint8_t> package = encode_usdz(content);
+        const std::string temp = output + ".tmp";
+        write_bytes(temp, (const char *) package.data(), package.size());
+        release_file(output);   /* the layers read from it hold it open */
+        replace_file(temp, output);
+        cout << "done. (took " << timeString(timer.value()) << ")" << endl;
+        for (const std::string &n : notes)
+            cout << "   " << n << endl;
+        return;
+    }
     cout << "Referencing it from \"" << output << "\" ("
          << (inPlace ? std::string("the scene itself") : "a copy of \"" + input + "\"") << ") .. ";
     cout.flush();
@@ -1359,18 +1430,26 @@ void write_proxies(const Layer &layer, const std::string &output, const std::vec
 }
 
 std::string proxy_layer_path(const std::string &input, const std::string &output) {
-    return proxy_layer_for(Layer(input), output);
+    const Layer raw(input);
+    if (raw.format() == "usdz") {
+        const std::vector<UsdzEntry> files = usdz_entries(input);
+        return output + "[" + dir_of(files.at(0).name) + file_name(proxy_layer_for(raw, output, ".usdc", files)) + "]";
+    }
+    return proxy_layer_for(raw, output);
 }
 
 std::string proxy_output_error(const std::string &input, const std::string &output) {
     const std::string format = file_format(input);
-    if (format == "usdz")
-        return "--proxy adds a reference to the scene: a .usdz package cannot be edited (unpack it, or convert "
-               "it to .usdc)!";
     std::string ext = file_name(output);
     ext = ext.rfind('.') == std::string::npos ? std::string() : str_tolower(ext.substr(ext.rfind('.')));
+    if (format == "usdz" && ext != ".usdz")
+        return "--proxy writes a package with its proxy layer inside: the package itself (-o " + file_name(input) +
+               ") or a copy named *.usdz!";
+    if (format == "usdz")
+        return std::string();
     if (ext == ".usdz")
-        return "--proxy writes the scene and its proxy layer next to it, as .usdc or .usda (not a .usdz package)!";
+        return "--proxy writes the scene with its format, ." + format + ": -o " + file_name(input) +
+               " (the scene itself) or a copy named *." + format + " (not a .usdz package)!";
     if (ext != ".usd" && ext != ".usda" && ext != ".usdc")
         return "--proxy writes the scene as a USD file: the scene itself (-o " + file_name(input) +
                ") or a copy of it!";

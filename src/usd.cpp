@@ -58,6 +58,86 @@ void usdz_root(const std::string &filename, std::string &name, uint64_t &start, 
         throw std::runtime_error("USD file \"" + filename + "\": zip64 .usdz packages are not supported!");
 }
 
+} // namespace
+
+std::vector<UsdzEntry> usdz_entries(const std::string &package) {
+    std::ifstream is(package, std::ios::binary);
+    if (!is)
+        throw std::runtime_error("Unable to open USD file \"" + package + "\"!");
+    is.seekg(0, std::ios::end);
+    const uint64_t fileSize = (uint64_t) is.tellg();
+    auto fail = [&](const std::string &msg) -> void {
+        throw std::runtime_error("USD file \"" + package + "\": " + msg + "!");
+    };
+    /* the end of central directory record, in the last 64 KiB */
+    const uint64_t tail = std::min<uint64_t>(fileSize, 65557);
+    std::vector<uint8_t> t((size_t) tail);
+    is.seekg((std::streamoff) (fileSize - tail));
+    is.read((char *) t.data(), (std::streamsize) tail);
+    if (!is)
+        fail("truncated .usdz package");
+    auto u16 = [](const uint8_t *p) { return (uint32_t) p[0] | ((uint32_t) p[1] << 8); };
+    auto u32 = [&](const uint8_t *p) { return u16(p) | (u16(p + 2) << 16); };
+    size_t eocd = std::string::npos;
+    for (size_t k = tail >= 22 ? tail - 22 + 1 : 0; k-- > 0;)
+        if (u32(&t[k]) == 0x06054b50) {
+            eocd = k;
+            break;
+        }
+    if (eocd == std::string::npos)
+        fail("not a .usdz package (no zip directory)");
+    const uint32_t count = u16(&t[eocd + 10]), dirSize = u32(&t[eocd + 12]), dirStart = u32(&t[eocd + 16]);
+    if (dirStart == 0xffffffffu || count == 0xffff)
+        fail("zip64 .usdz packages are not supported");
+    if ((uint64_t) dirStart + dirSize > fileSize)
+        fail("corrupted zip directory");
+    std::vector<uint8_t> dir(dirSize);
+    is.seekg((std::streamoff) dirStart);
+    is.read((char *) dir.data(), (std::streamsize) dirSize);
+    std::vector<UsdzEntry> entries;
+    size_t at = 0;
+    for (uint32_t k = 0; k < count; ++k) {
+        if (at + 46 > dir.size() || u32(&dir[at]) != 0x02014b50)
+            fail("corrupted zip directory");
+        const uint8_t *h = &dir[at];
+        if (u16(h + 10) != 0)
+            fail("compressed .usdz entries are not allowed");
+        const uint32_t nameLength = u16(h + 28), extra = u16(h + 30), comment = u16(h + 32);
+        if (at + 46 + nameLength > dir.size())
+            fail("corrupted zip directory");
+        UsdzEntry e;
+        e.name.assign((const char *) h + 46, nameLength);
+        e.size = u32(h + 20);
+        const uint32_t local = u32(h + 42);
+        uint8_t lh[30];
+        is.seekg((std::streamoff) local);
+        is.read((char *) lh, 30);
+        if (!is || u32(lh) != 0x04034b50)
+            fail("corrupted zip entry \"" + e.name + "\"");
+        e.start = (uint64_t) local + 30 + u16(lh + 26) + u16(lh + 28);
+        if (e.start + e.size > fileSize)
+            fail("truncated zip entry \"" + e.name + "\"");
+        entries.push_back(e);
+        at += 46 + nameLength + extra + comment;
+    }
+    return entries;
+}
+
+void release_file(const std::string &filename) {
+    CrateFile::release(filename);
+}
+
+bool split_package_path(const std::string &path, std::string &package, std::string &entry) {
+    const size_t open = path.find('[');
+    if (open == std::string::npos || open == 0 || path.empty() || path.back() != ']')
+        return false;
+    package = path.substr(0, open);
+    entry = path.substr(open + 1, path.size() - open - 2);
+    return !entry.empty();
+}
+
+namespace {
+
 std::string extension(const std::string &name) {
     const size_t dot = name.rfind('.');
     return dot == std::string::npos ? std::string() : str_tolower(name.substr(dot + 1));
@@ -216,20 +296,44 @@ private:
 
 Layer::Layer(const std::string &filename) : mFilename(filename), d(new Impl()) {
     char magic[8] = { 0 };
-    {
+    uint64_t start = 0, size = 0;
+    std::string inner, file = filename;
+    if (split_package_path(filename, mPackage, mEntry)) {
+        /* a layer inside a package */
+        file = mPackage;
+        bool found = false;
+        for (const UsdzEntry &e : usdz_entries(mPackage))
+            if (e.name == mEntry) {
+                start = e.start;
+                size = e.size;
+                found = true;
+            }
+        if (!found)
+            throw std::runtime_error("USD file \"" + filename + "\": no such file in the package!");
+        std::ifstream is(file, std::ios::binary);
+        is.seekg((std::streamoff) start);
+        is.read(magic, 8);
+        if (memcmp(magic, "PK\x03\x04", 4) == 0)
+            throw std::runtime_error("USD file \"" + filename + "\": packages inside packages are not read!");
+        if (memcmp(magic, "PXR-USDC", 8) != 0 && memcmp(magic, "#usda", 5) != 0)
+            throw std::runtime_error("USD file \"" + filename + "\": not a USD layer!");
+        mFormat = memcmp(magic, "PXR-USDC", 8) == 0 ? "usdc" : "usda";
+    } else {
         std::ifstream is(filename, std::ios::binary);
         if (!is)
             throw std::runtime_error("Unable to open USD file \"" + filename + "\"!");
         is.read(magic, 8);
     }
-    uint64_t start = 0, size = 0;
-    std::string inner;
-    if (memcmp(magic, "PK\x03\x04", 4) == 0) {
+    if (!mPackage.empty()) {
+        /* format and range known */
+    } else if (memcmp(magic, "PK\x03\x04", 4) == 0) {
         mFormat = "usdz";
         usdz_root(filename, inner, start, size);
         const std::string ext = extension(inner);
         if (ext != "usdc" && ext != "usda" && ext != "usd")
             throw std::runtime_error("USD file \"" + filename + "\": the package does not start with a layer!");
+        mPackage = filename;
+        mEntry = inner;
         std::ifstream is(filename, std::ios::binary);
         is.seekg((std::streamoff) start);
         is.read(magic, 8);
@@ -243,11 +347,11 @@ Layer::Layer(const std::string &filename) : mFilename(filename), d(new Impl()) {
 
     root.path = "/";
     if (memcmp(magic, "PXR-USDC", 8) == 0) {
-        d->crate.reset(new CrateFile(filename, start, size));
+        d->crate.reset(new CrateFile(file, start, size));
         d->crate->parse();
         CrateBuilder(*d->crate, *d, root, meta).build();
     } else if (memcmp(magic, "#usda", 5) == 0) {
-        parse_usda(read_text(filename, start, size), filename, meta, root);
+        parse_usda(read_text(file, start, size), filename, meta, root);
     } else {
         throw std::runtime_error("USD file \"" + filename + "\": unknown layer format in the package!");
     }

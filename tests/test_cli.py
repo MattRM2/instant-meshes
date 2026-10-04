@@ -634,7 +634,38 @@ def test_usd_proxies(exe, tmp):
         check(code != 0 and expect in log and "Optimizing" not in log, "--proxy -o %s refused" % out)
     code, log = run(exe, os.path.join(DATA, "usd_scene.usdz"), "-o", os.path.join(tmp, "z.usdc"), "--proxy",
                     "--others", "40%")
-    check(code != 0 and "cannot be edited" in log, "--proxy refused on a .usdz package")
+    check(code != 0 and "proxy layer inside" in log and "Optimizing" not in log, "a package gives a package")
+
+    # .usdz: the proxy layer inside the package, its other files as they were
+    import zipfile
+
+    def entries(path):
+        with zipfile.ZipFile(path) as z:
+            return [(i.filename, z.read(i.filename), i.header_offset) for i in z.infolist()]
+
+    for name, root in (("usd_package.usdz", "scene.usda"), ("usd_package_c.usdz", "scene.usdc")):
+        package = os.path.join(tmp, name)
+        shutil.copy(os.path.join(DATA, name), package)
+        before = entries(package)
+        code, log = run(exe, package, "-o", package, "-d", "--proxy", "--others", "40%")
+        after = entries(package)
+        layer = name.replace(".usdz", "_proxy.usdc")
+        names = [e[0] for e in after]
+        kept = dict((e[0], e[1]) for e in before)
+        with open(package, "rb") as f:
+            data = f.read()
+        aligned = all((e[2] + 30 + int.from_bytes(data[e[2] + 26:e[2] + 28], "little") +
+                       int.from_bytes(data[e[2] + 28:e[2] + 30], "little")) % 64 == 0 for e in after)
+        check(code == 0 and names == [root, "parts/asset.usdc", "textures/checker.png", layer] and
+              all(e[1] == kept[e[0]] for e in after[1:3]) and after[0][1] != kept[root] and aligned and
+              "the package itself" in log, "%s: the proxy layer inside, the other files kept, 64-byte aligned" % name)
+        code, meshes = list_meshes(exe, package)
+        check(code == 0 and "/World/geo/proxy/Body" in meshes and "/World/geo/render/Body" in meshes,
+              "%s: its proxies composed (layers read inside the package)" % name)
+    copy = os.path.join(tmp, "package_copy.usdz")
+    code, log = run(exe, os.path.join(DATA, "usd_package_c.usdz"), "-o", copy, "-d", "--proxy", "-m", "Body=40%")
+    check(code == 0 and os.path.exists(copy) and [e[0] for e in entries(copy)][-1] == "package_copy_proxy.usdc",
+          "a copy of a package")
     code, log = run(exe, os.path.join(DATA, "scene_ab.abc"), "-o", os.path.join(tmp, "x.abc"), "--proxy",
                     "--others", "50%")
     check(code != 0 and "--proxy adds proxies" in log, "--proxy refused on Alembic")

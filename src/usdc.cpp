@@ -17,6 +17,8 @@
 #include "usdc.h"
 #include <fstream>
 #include <cstring>
+#include <mutex>
+#include <set>
 
 namespace usd {
 
@@ -143,8 +145,46 @@ std::vector<Int> decode_ints(const std::vector<uint8_t> &data, size_t count) {
 /*  File access                                                              */
 /* ------------------------------------------------------------------------- */
 
+/* Every open Crate file, for release() */
+static std::mutex openLock;
+static std::set<CrateFile *> &open_files() {
+    static std::set<CrateFile *> files;
+    return files;
+}
+
+CrateFile::~CrateFile() {
+    std::lock_guard<std::mutex> lock(openLock);
+    open_files().erase(this);
+}
+
+/* A file name compared whatever its spelling: absolute, '/', lower case */
+static std::string file_key(const std::string &path) {
+    std::string p = path;
+#if defined(_WIN32)
+    char buf[4096];
+    if (_fullpath(buf, path.c_str(), sizeof buf))
+        p = buf;
+#endif
+    for (char &c : p)
+        if (c == '\\')
+            c = '/';
+    return str_tolower(p);
+}
+
+void CrateFile::release(const std::string &filename) {
+    const std::string key = file_key(filename);
+    std::lock_guard<std::mutex> lock(openLock);
+    for (CrateFile *c : open_files())
+        if (c->mStream.is_open() && file_key(c->mFilename) == key)
+            c->mStream.close();
+}
+
 CrateFile::CrateFile(const std::string &filename, uint64_t start, uint64_t size)
     : mFilename(filename), mStart(start), mSize(size) {
+    {
+        std::lock_guard<std::mutex> lock(openLock);
+        open_files().insert(this);
+    }
     mStream.open(filename, std::ios::binary);
     if (!mStream)
         throw std::runtime_error("Unable to open USD file \"" + filename + "\"!");
@@ -159,6 +199,8 @@ void CrateFile::read(uint64_t pos, uint64_t size, void *out) {
         fail("read past the end of the file");
     if (size == 0)
         return;
+    if (!mStream.is_open())   /* released (see release()) */
+        mStream.open(mFilename, std::ios::binary);
     mStream.clear();
     mStream.seekg((std::streamoff) (mStart + pos));
     mStream.read((char *) out, (std::streamsize) size);

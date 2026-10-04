@@ -95,15 +95,21 @@ struct Prim {
 class Layer {
 public:
     /// Reads a .usda, .usdc or .usdz file (the format is detected from the
-    /// content: a .usd file may be text or binary); throws on any error
+    /// content: a .usd file may be text or binary), or a layer inside a
+    /// package, "scene.usdz[parts/asset.usdc]" (USD's notation); throws on
+    /// any error
     explicit Layer(const std::string &filename);
     /// An empty layer named 'filename' (a composed stage, see open_stage())
     Layer(const std::string &filename, const std::string &format);
     ~Layer();
 
     const std::string &filename() const { return mFilename; }
-    /// "usda", "usdc" or "usdz"
+    /// "usda", "usdc" or "usdz" (the root layer of a package)
     const std::string &format() const { return mFormat; }
+    /// A layer of a package (its root layer included): the package file and
+    /// the layer's path inside it; empty otherwise
+    const std::string &package() const { return mPackage; }
+    const std::string &package_entry() const { return mEntry; }
 
     std::map<std::string, Value> meta;        ///< upAxis, metersPerUnit, defaultPrim, subLayers...
     Prim root;                                ///< the pseudo-root, path "/"
@@ -123,9 +129,28 @@ public:
     struct Impl;
 
 private:
-    std::string mFilename, mFormat;
+    std::string mFilename, mFormat, mPackage, mEntry;
     std::unique_ptr<Impl> d;
 };
+
+/// A file of a .usdz package: its name and where its bytes are (stored,
+/// never compressed)
+struct UsdzEntry {
+    std::string name;
+    uint64_t start = 0, size = 0;
+};
+
+/// The files of a .usdz package, in order (the root layer first); throws if
+/// it is not one
+std::vector<UsdzEntry> usdz_entries(const std::string &package);
+
+/// Closes what the layers hold open on 'filename' (they reopen it when
+/// they read again), so that it can be replaced
+void release_file(const std::string &filename);
+
+/// "scene.usdz[parts/a.usdc]" -> "scene.usdz" and "parts/a.usdc"; false if
+/// the path does not name a file inside a package
+bool split_package_path(const std::string &path, std::string &package, std::string &entry);
 
 /// Reads a .usda layer from text ('source' names it in error messages)
 void parse_usda(const std::string &text, const std::string &source,

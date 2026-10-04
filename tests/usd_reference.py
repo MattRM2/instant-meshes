@@ -14,6 +14,9 @@ library (the pxr module that ships with Blender 4.x / 5.x).
     blender -b --factory-startup --python tests/usd_reference.py -- looks <dir>
         writes usd_looks.usda: materials outside the root prim of the meshes
         (/materials, as Houdini Solaris makes them), for --proxy
+    blender -b --factory-startup --python tests/usd_reference.py -- package <dir>
+        writes usd_package.usdz (root layer .usda) and usd_package_c.usdz
+        (.usdc): the asset referenced from parts/, a texture, for --proxy
     blender -b --factory-startup --python tests/usd_reference.py -- refs <dir>
         writes usd_refs.usdc: root prims with prepended, explicit or no
         references (the in-place edits of usdedit.h)
@@ -359,6 +362,52 @@ def make_looks(path):
     stage.GetRootLayer().Save()
 
 
+def png_2x2(path):
+    """A 2x2 checker, written by hand (no image library needed)"""
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+
+    raw = b"\x00\xff\xff\xff\x00\x00\x00" + b"\x00\x00\x00\x00\xff\xff\xff"
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)) +
+                chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def make_package(out):
+    import shutil
+    import tempfile
+    work = tempfile.mkdtemp()
+    os.makedirs(os.path.join(work, "parts"))
+    os.makedirs(os.path.join(work, "textures"))
+    asset = os.path.join(work, "parts", "asset.usda")
+    make_asset(asset)
+    Sdf.Layer.FindOrOpen(asset).Export(os.path.join(work, "parts", "asset.usdc"))
+    png_2x2(os.path.join(work, "textures", "checker.png"))
+    for name, ext in (("usd_package", ".usda"), ("usd_package_c", ".usdc")):
+        root = os.path.join(work, "scene" + ext)
+        stage = Usd.Stage.CreateNew(root)
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+        UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+        world = UsdGeom.Xform.Define(stage, "/World")
+        stage.SetDefaultPrim(world.GetPrim())
+        world.GetPrim().GetReferences().AddReference("./parts/asset.usdc", "/Asset")
+        mat = UsdShade.Material.Define(stage, "/World/looks/checker")
+        tex = UsdShade.Shader.Define(stage, "/World/looks/checker/texture")
+        tex.CreateIdAttr("UsdUVTexture")
+        tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set("./textures/checker.png")
+        surface = UsdShade.Shader.Define(stage, "/World/looks/checker/surface")
+        surface.CreateIdAttr("UsdPreviewSurface")
+        surface.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+            tex.ConnectableAPI(), "rgb")
+        mat.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
+        stage.GetRootLayer().Save()
+        UsdUtils.CreateNewUsdzPackage(Sdf.AssetPath(root), os.path.join(out, name + ".usdz"))
+    shutil.rmtree(work, ignore_errors=True)
+
+
 def make_refs(path):
     layer = Sdf.Layer.CreateNew(path)
     for name, how in (("Prepended", "prepend"), ("Explicit", "explicit"), ("Plain", None)):
@@ -543,6 +592,9 @@ elif args[0] == "dump_stage":
 elif args[0] == "looks":
     make_looks(os.path.join(os.path.abspath(args[1]), "usd_looks.usda"))
     print("[OK] usd_looks.usda in", args[1])
+elif args[0] == "package":
+    make_package(os.path.abspath(args[1]))
+    print("[OK] usd_package.usdz, usd_package_c.usdz in", args[1])
 elif args[0] == "refs":
     make_refs(os.path.join(os.path.abspath(args[1]), "usd_refs.usdc"))
     print("[OK] usd_refs.usdc in", args[1])

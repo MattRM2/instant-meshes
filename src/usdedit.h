@@ -34,6 +34,6 @@ std::string usda_add_references(const std::string &text, const std::vector<RootR
 /// references added: the original bytes, then what is appended to them
 /// (the table of contents offset, bytes 16-23, is updated in the result)
 std::vector<uint8_t> usdc_add_references(const std::string &filename, const std::vector<RootReference> &refs,
-                                         bool *changed = nullptr);
+                                         bool *changed = nullptr, uint64_t start = 0, uint64_t size = 0);
 
 } // namespace usd

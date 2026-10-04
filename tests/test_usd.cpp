@@ -404,6 +404,29 @@ static void test_edit() {
     std::remove(crate.c_str());
 }
 
+static void test_package() {
+    std::cout << "usd: the layers of a .usdz package, read in place" << std::endl;
+    const std::string package = data_path("usd_package.usdz");
+    std::vector<UsdzEntry> files;
+    CHECK(error_of([&] { files = usdz_entries(package); }) == "");
+    CHECK(files.size() == 3 && files[0].name == "scene.usda" && files[1].name == "parts/asset.usdc" &&
+          files[2].name == "textures/checker.png" && files[2].size == 73);
+    std::string pkg, entry;
+    CHECK(split_package_path("a/b.usdz[parts/c.usdc]", pkg, entry) && pkg == "a/b.usdz" && entry == "parts/c.usdc");
+    CHECK(!split_package_path("a/b.usdc", pkg, entry) && !split_package_path("[x]", pkg, entry));
+    std::unique_ptr<Layer> inner;
+    CHECK(error_of([&] { inner.reset(new Layer(package + "[parts/asset.usdc]")); }) == "");
+    CHECK(inner && inner->format() == "usdc" && inner->package_entry() == "parts/asset.usdc" &&
+          inner->prim("/Asset/geo/render/Body"));
+    CHECK(error_of([&] { Layer(package + "[parts/missing.usdc]"); }).find("no such file") != std::string::npos);
+    std::shared_ptr<const Layer> stage;
+    CHECK(error_of([&] { stage = open_stage(package); }) == "");
+    const Prim *body = stage ? stage->prim("/World/geo/render/Body") : nullptr;
+    const Property *points = body ? body->property("points") : nullptr;
+    CHECK(points && stage->value(*points).size() == 266);   /* read from parts/asset.usdc, inside */
+    CHECK(error_of([&] { release_file(package); }) == "" && stage->value(*points).size() == 266);
+}
+
 void test_usd(int fuzz_scale) {
     test_read();
     test_world();
@@ -411,5 +434,6 @@ void test_usd(int fuzz_scale) {
     test_write();
     test_proxy_paths();
     test_edit();
+    test_package();
     test_fuzz(fuzz_scale);
 }

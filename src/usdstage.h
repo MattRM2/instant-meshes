@@ -13,8 +13,8 @@
     as read.
 
     Not composed: layer offsets and scales (time), relocates, variant
-    fallbacks, value clips, payloads left unloaded; a package (.usdz) cannot
-    open the files it contains, only its root layer.
+    fallbacks, value clips, payloads left unloaded, packages inside packages.
+    The layers of a .usdz package are read in place ("scene.usdz[a.usdc]").
 */
 
 #pragma once

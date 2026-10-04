@@ -1129,6 +1129,10 @@ Vector3f compat_uv(const Vector3f &o, const Vector3f &ref, const Vector3f &q, co
 }
 
 bool Viewer::keyboardEvent(int key, int scancode, int event, int modifiers) {
+    /* the focused widget first (a text box: Backspace, Delete, Enter,
+       arrows), then the shortcuts of the application */
+    if (Screen::keyboardEvent(key, scancode, event, modifiers))
+        return true;
     if (event == GLFW_PRESS) {
         if (key == GLFW_KEY_ESCAPE && mMenuBar.close())
             return true;

@@ -390,13 +390,14 @@ def build(cover_image=None):
                      "Run <b>InstantMeshes.exe</b>. Nothing to install: the executable is self-contained.",
                      "Optional: add the folder to your <b>PATH</b> to call <b>InstantMeshes</b> from any "
                      "terminal or script."]),
-              Spacer(1, 4 * mm), SubHeader("1.3", "Files in the release"), Spacer(1, 3 * mm),
+              Spacer(1, 4 * mm),
+              KeepTogether([SubHeader("1.3", "Files in the release"), Spacer(1, 3 * mm),
               table([["File", "Role"],
                      ["InstantMeshes.exe", "The application: interface and command line"],
                      ["InstantMeshes_Documentation.pdf", "This document"],
                      ["LICENSE.txt", "Instant Meshes BSD license"],
                      ["OFL.txt", "License of the Poppins typeface used by the interface"]],
-                    [58 * mm, W - 2 * MARGIN - 58 * mm]),
+                    [58 * mm, W - 2 * MARGIN - 58 * mm])]),
               PageBreak()]
 
     # ---------------- 2 interface

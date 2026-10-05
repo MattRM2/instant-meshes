@@ -23,6 +23,8 @@ import sys
 from pxr import Gf, Usd, UsdGeom
 
 args = sys.argv[sys.argv.index("--") + 1:]
+# "@file": the mesh paths listed in a file, one per line (scenes of thousands of meshes)
+args = [l.strip() for a in args for l in (open(a[1:], encoding="utf-8") if a.startswith("@") else [a]) if l.strip()]
 src_path, out_path, mode, targets = args[0], args[1], args[2], args[3:]
 failed = 0
 

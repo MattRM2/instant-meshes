@@ -529,8 +529,13 @@ void extract_faces(std::vector<std::vector<TaggedLink> > &adj, MatrixXf &O,
         bool success = false;
         result.clear();
         for (;;) {
+            /* a hole (no target size): its walk may enter a loop that never
+               comes back to 'initial'; holes of 7 and more corners are not
+               filled anyway, so a long walk stops (it grew until the memory
+               ran out) */
             if (adj[cur][curIdx].used() ||
-                (targetSize > 0 && result.size() + 1 > targetSize))
+                (targetSize > 0 && result.size() + 1 > targetSize) ||
+                (targetSize == 0 && result.size() >= 64))
                 break;
 
             result.push_back(std::make_pair(cur, curIdx));
@@ -873,6 +878,7 @@ void extract_faces(std::vector<std::vector<TaggedLink> > &adj, MatrixXf &O,
        the quad-dominant mode (a, b, c, c) is kept */
     {
         uint32_t kept = 0, dropped = 0;
+        std::vector<uint32_t> newIndex(nF, INVALID);
         for (uint32_t f = 0; f < nF; ++f) {
             const uint32_t n = posy == 4 && F(2, f) == F(3, f) ? 3 : (uint32_t) F.rows();
             bool repeated = false;
@@ -885,11 +891,22 @@ void extract_faces(std::vector<std::vector<TaggedLink> > &adj, MatrixXf &O,
             }
             if (kept != f)
                 F.col(kept) = F.col(f);
-            ++kept;
+            newIndex[f] = kept++;
         }
         if (dropped > 0) {
             nF = kept;
             F.conservativeResize(posy, nF);
+            /* the polygons of the quad-dominant mode list their faces: renumbered */
+            for (auto &group : irregular_faces) {
+                std::vector<uint32_t> faces;
+                for (uint32_t f : group)
+                    if (f < newIndex.size() && newIndex[f] != INVALID)
+                        faces.push_back(newIndex[f]);
+                group.swap(faces);
+            }
+            irregular_faces.erase(std::remove_if(irregular_faces.begin(), irregular_faces.end(),
+                                                 [](const std::vector<uint32_t> &g) { return g.empty(); }),
+                                  irregular_faces.end());
             cout << "Removed " << dropped << " degenerate face" << (dropped > 1 ? "s" : "")
                  << " (a vertex used twice)" << endl;
         }

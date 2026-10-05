@@ -25,6 +25,8 @@ import numpy as np
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
 args = sys.argv[sys.argv.index("--") + 1:]
+# "@file": the mesh paths listed in a file, one per line (scenes of thousands of meshes)
+args = [l.strip() for a in args for l in (open(a[1:], encoding="utf-8") if a.startswith("@") else [a]) if l.strip()]
 tol = float(next((a[6:] for a in args if a.startswith("--tol=")), 0.01))
 args = [a for a in args if not a.startswith("--tol=")]
 src_path, out_path, targets = args[0], args[1], set(args[2:])

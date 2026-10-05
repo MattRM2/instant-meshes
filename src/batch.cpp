@@ -31,6 +31,8 @@
 #include "uvtransfer.h"
 #include "uvunwrap.h"
 #include <iomanip>
+#include <cmath>
+#include <limits>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -169,9 +171,10 @@ static void print_settings(const RemeshParams &p) {
 /*  Remeshing                                                                */
 /* ------------------------------------------------------------------------- */
 
-void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
-            const RemeshParams &params, MatrixXu &F_extr, MatrixXf &O_extr,
-            MatrixXf &Nf_extr, RemeshReport *report) {
+/* One remeshing at the given target (see remesh()) */
+static void remesh_once(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
+                        const RemeshParams &params, MatrixXu &F_extr, MatrixXf &O_extr,
+                        MatrixXf &Nf_extr, RemeshReport *report) {
     const int rosy = params.rosy, posy = params.posy;
     Float scale = params.scale, face_percent = params.face_percent;
     int face_count = params.face_count, vertex_count = params.vertex_count;
@@ -397,6 +400,64 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
                 cout << ", " << s.tooFar << " too far from it, left in place";
             cout << ". (took " << timeString(timer.reset()) << ")" << endl;
         }
+    }
+}
+
+/* A percentage target: when the result misses it widely (an object thinner
+   than the edge length, whose sides the extraction merges: boxes, bags,
+   panels), the remeshing runs again: the target scaled by the gap, then,
+   once an attempt fell short and another went over, between the two (the
+   face count jumps when the sides separate); at most 5 attempts, the one
+   nearest to the target is kept */
+void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
+            const RemeshParams &params, MatrixXu &F_extr, MatrixXf &O_extr,
+            MatrixXf &Nf_extr, RemeshReport *report) {
+    if (!(params.face_percent > 0) || F.size() == 0 || polygons == 0) {
+        remesh_once(F, V, N, polygons, params, F_extr, O_extr, Nf_extr, report);
+        return;
+    }
+    const double target = polygons * (double) params.face_percent / 100.0;
+    const MatrixXu F0 = F;
+    const MatrixXf V0 = V, N0 = N;
+    RemeshParams p = params;
+    double bestError = std::numeric_limits<double>::infinity();
+    double under = -1, over = -1;   /* percentages that gave too few / too many faces */
+    const int attempts = 5;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        MatrixXu Fi = attempt == 0 ? std::move(F) : F0, Fo;
+        MatrixXf Vi = attempt == 0 ? std::move(V) : V0, Ni = attempt == 0 ? std::move(N) : N0, Oo, Nfo;
+        RemeshReport r;
+        remesh_once(Fi, Vi, Ni, polygons, p, Fo, Oo, Nfo, &r);
+        const double got = (double) Fo.cols(), ratio = got / target;
+        const double error = std::abs(std::log(std::max(ratio, 1e-9)));
+        if (error < bestError) {
+            bestError = error;
+            F_extr = std::move(Fo);
+            O_extr = std::move(Oo);
+            Nf_extr = std::move(Nfo);
+            if (report)
+                *report = r;
+        }
+        if (ratio >= 0.7 && ratio <= 1.45)
+            break;
+        if (attempt == attempts - 1 || got <= 0) {
+            cout << "Face target: " << (uint64_t) F_extr.cols() << " faces for ~" << (uint64_t) std::round(target)
+                 << " asked (" << (int) std::round(100.0 * F_extr.cols() / target) << "%), the nearest of "
+                 << attempts << " attempts." << endl;
+            break;
+        }
+        if (ratio < 1)
+            under = std::max(under, (double) p.face_percent);
+        else
+            over = over < 0 ? (double) p.face_percent : std::min(over, (double) p.face_percent);
+        /* the next target: between a short and a long attempt, else scaled by the gap (bounded) */
+        if (under > 0 && over > 0)
+            p.face_percent = (Float) std::sqrt(under * over);
+        else
+            p.face_percent = (Float) (p.face_percent * std::min(4.0, std::max(0.25, 1.0 / ratio)));
+        cout << "Face target missed: " << (uint64_t) got << " faces for ~" << (uint64_t) std::round(target)
+             << " asked (" << (int) std::round(100.0 * ratio) << "%: thin parts merged?), again at "
+             << p.face_percent << "% .." << endl;
     }
 }
 

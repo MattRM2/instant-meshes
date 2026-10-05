@@ -747,6 +747,45 @@ def test_usd_instances(exe, tmp):
     check(code == 0 and "instanced meshes skipped" in log, "whole-file mode: instanced meshes skipped (said)")
 
 
+def test_thin_objects(exe, tmp):
+    print("thin objects: the face target kept, no crash (Kitchen Set boxes and bags)")
+    # a closed box 30 x 20 x 2: at a low target its edge length exceeds its thickness
+    path = os.path.join(tmp, "thinbox.obj")
+    V, F = [], []
+
+    def grid(origin, du, dv, nu, nv, flip):
+        base = len(V)
+        for j in range(nv + 1):
+            for i in range(nu + 1):
+                V.append([origin[k] + du[k] * i / nu + dv[k] * j / nv for k in range(3)])
+        for j in range(nv):
+            for i in range(nu):
+                a = base + j * (nu + 1) + i
+                q = [a, a + 1, a + nu + 2, a + nu + 1]
+                F.append(q[::-1] if flip else q)
+    X, Y, Z = 30.0, 20.0, 2.0
+    grid([0, 0, 0], [X, 0, 0], [0, Y, 0], 30, 20, True)
+    grid([0, 0, Z], [X, 0, 0], [0, Y, 0], 30, 20, False)
+    grid([0, 0, 0], [X, 0, 0], [0, 0, Z], 30, 1, False)
+    grid([0, Y, 0], [X, 0, 0], [0, 0, Z], 30, 1, True)
+    grid([0, 0, 0], [0, Y, 0], [0, 0, Z], 20, 1, True)
+    grid([X, 0, 0], [0, Y, 0], [0, 0, Z], 20, 1, False)
+    with open(path, "w") as f:
+        for v in V:
+            f.write("v %g %g %g\n" % tuple(v))
+        for q in F:
+            f.write("f " + " ".join(str(i + 1) for i in q) + "\n")
+    out = os.path.join(tmp, "thinbox_out.obj")
+    code, log = run(exe, path, "-o", out, "-d", "-f", "5%")
+    faces = sum(1 for l in open(out) if l.startswith("f ")) if os.path.exists(out) else 0
+    target = len(F) * 0.05
+    check(code == 0 and 0.7 <= faces / target <= 1.45 and "Face target missed" in log,
+          "a thin box at 5%%: %d faces for ~%d (corrected)" % (faces, target))
+    for args in (["-D", "-f", "5%"], ["-D", "-f", "50"], ["-f", "400"], ["-r", "6", "-p", "6", "-f", "5%"]):
+        code, log = run(exe, path, "-o", out, "-d", *args)
+        check(code == 0 and os.path.exists(out), "a thin box, %s: no crash" % " ".join(args))
+
+
 def test_usd_composition(exe, tmp):
     print("USD composition: sublayers, references, payloads, variants, inherits, specializes")
     import shutil
@@ -918,6 +957,7 @@ def main():
         test_usd_scenes(exe, tmp)
         test_usd_proxies(exe, tmp)
         test_usd_instances(exe, tmp)
+        test_thin_objects(exe, tmp)
         test_usd_composition(exe, tmp)
         test_usd_binary(exe, tmp)
         test_projects(exe, tmp)

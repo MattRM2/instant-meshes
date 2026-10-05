@@ -17,6 +17,8 @@ import numpy as np
 from pxr import Gf, Usd, UsdGeom
 
 args = sys.argv[sys.argv.index("--") + 1:]
+# "@file": the mesh paths listed in a file, one per line (scenes of thousands of meshes)
+args = [l.strip() for a in args for l in (open(a[1:], encoding="utf-8") if a.startswith("@") else [a]) if l.strip()]
 src_path, out_path, replaced = args[0], args[1], set(args[2:])
 failed = 0
 

@@ -351,13 +351,26 @@ private:
             if (!path_of(item.first).empty())
                 arc(n.stack, path_of(item.first), RankInherit);
 
-        /* variants: every set of the specs, its selection from the whole index */
+        /* variants: every set of the specs, its selection from the whole
+           index; the sets in the order of their declaration (variantSets),
+           the strongest first */
+        std::vector<std::string> order;
         std::set<std::string> sets;
+        for (const auto &item : list_items(n, { "variantSets", "variantSetNames" }))
+            if (sets.insert(item.first).second)
+                order.push_back(item.first);
         for (const Spec &s : n.specs)
-            for (const auto &vs : s.prim->variants) {
-                if (!sets.insert(vs.first).second)
+            for (const auto &vs : s.prim->variants)
+                if (sets.insert(vs.first).second)
+                    order.push_back(vs.first);
+        for (const std::string &set : order) {
+            {
+                bool authored = false;
+                for (const Spec &s : n.specs)
+                    authored |= s.prim->variants.count(set) > 0;
+                if (!authored)
                     continue;
-                const std::string sel = selection(vs.first);
+                const std::string sel = selection(set);
                 if (sel.empty())
                     continue;
                 Node v;
@@ -369,7 +382,7 @@ private:
                 v.rank = RankVariant;
                 v.depth = depth;
                 for (const Spec &t : n.specs) {
-                    auto it = t.prim->variants.find(vs.first);
+                    auto it = t.prim->variants.find(set);
                     if (it == t.prim->variants.end())
                         continue;
                     auto jt = it->second.find(sel);
@@ -378,6 +391,7 @@ private:
                 }
                 arcs.push_back(std::move(v));
             }
+        }
 
         for (int rank : { (int) RankReference, (int) RankPayload }) {
             const auto items = rank == RankReference ? list_items(n, { "references" })

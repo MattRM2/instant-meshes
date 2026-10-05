@@ -3,14 +3,14 @@ check_usd_instances.py -- Pixar's USD opens a scene whose instanced meshes
 Instant Meshes remeshed (-m / --others, or --proxy), and checks that the
 instancing survived.
 
-    blender -b --factory-startup --python tests/check_usd_instances.py -- <input> <output> <replace|proxy> <mesh path>...
+    blender -b --factory-startup --python tests/check_usd_instances.py -- <input> <output> <replace|proxy> [--tol=0.1] <mesh path>...
 
 Each given mesh is one appearance of an instanced mesh (a native instance's
 mesh, or a PointInstancer prototype). Its group: every appearance of the same
 prototype mesh, outside nested instances. For each member of a group:
 
   replace: its faces changed, the same count on every member; its world
-           bounds still match the input's (within 10% of its size);
+           bounds still match the input's (within 10% of its size, --tol);
   proxy:   it has a proxyPrim to a Mesh with purpose proxy, fewer faces,
            the same count on every member, within the same bounds.
 
@@ -25,6 +25,8 @@ from pxr import Gf, Usd, UsdGeom
 args = sys.argv[sys.argv.index("--") + 1:]
 # "@file": the mesh paths listed in a file, one per line (scenes of thousands of meshes)
 args = [l.strip() for a in args for l in (open(a[1:], encoding="utf-8") if a.startswith("@") else [a]) if l.strip()]
+tol = float(next((a[6:] for a in args if a.startswith("--tol=")), 0.1))
+args = [a for a in args if not a.startswith("--tol=")]
 src_path, out_path, mode, targets = args[0], args[1], args[2], args[3:]
 failed = 0
 
@@ -115,7 +117,7 @@ for key, group in groups.items():
         counts.add(faces(shown))
         lo1, hi1 = bounds(shown)
         err = max(max(abs(x - y) for x, y in zip(lo0, lo1)), max(abs(x - y) for x, y in zip(hi0, hi1)))
-        check("%s: in place (bounds off by %.3g of %.3g)" % (path, err, size), err <= 0.1 * size)
+        check("%s: in place (bounds off by %.3g of %.3g)" % (path, err, size), err <= tol * size)
         root = instance_root(b)
         if root is not None:
             check("%s: still an instance" % root.GetPath(), root.IsInstance())

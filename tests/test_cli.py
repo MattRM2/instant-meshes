@@ -779,8 +779,9 @@ def test_thin_objects(exe, tmp):
     code, log = run(exe, path, "-o", out, "-d", "-f", "5%")
     faces = sum(1 for l in open(out) if l.startswith("f ")) if os.path.exists(out) else 0
     target = len(F) * 0.05
-    check(code == 0 and 0.7 <= faces / target <= 1.45 and "Face target missed" in log,
-          "a thin box at 5%%: %d faces for ~%d (corrected)" % (faces, target))
+    # the shape first: the box stays whole, even with more faces than asked
+    check(code == 0 and 0.7 <= faces / target <= 3 and "Shape kept" in log and "could not be kept" not in log,
+          "a thin box at 5%%: %d faces for ~%d, its shape kept" % (faces, target))
     for args in (["-D", "-f", "5%"], ["-D", "-f", "50"], ["-f", "400"], ["-r", "6", "-p", "6", "-f", "5%"]):
         code, log = run(exe, path, "-o", out, "-d", *args)
         check(code == 0 and os.path.exists(out), "a thin box, %s: no crash" % " ".join(args))

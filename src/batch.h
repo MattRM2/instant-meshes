@@ -64,6 +64,10 @@ extern bool rule_matches(const std::string &pattern, const std::string &path);
 struct RemeshReport {
     uint64_t triangles = 0;    ///< input triangles
     uint64_t subdivided = 0;   ///< after the subdivision of a too coarse input (= triangles if none)
+    /// The shape could not be kept with fewer faces than the input has
+    /// (thin parts): the input is better left as it is
+    bool shapeNeedsInput = false;
+    double lost = 0;           ///< share of the input surface the result lost
 };
 
 /// Remeshes a loaded mesh or point cloud (F, V, N are consumed);

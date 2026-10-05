@@ -90,6 +90,9 @@ public:
     /// target (variants that change only materials) takes its result, moved
     /// to its place; false if there is none
     bool reuse(ProjectObject &o, const FaceTarget &t);
+    /// A result whose shape needed more faces than the input has: the
+    /// object is kept as it is (Skipped, and why); false otherwise
+    static bool keep_input(ProjectObject &o, const RemeshReport &r);
 
     /// The remeshing of one mesh, the project untouched (a worker thread
     /// computes while the interface reads the project)

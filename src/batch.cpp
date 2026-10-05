@@ -33,6 +33,8 @@
 #include <iomanip>
 #include <cmath>
 #include <limits>
+#include <array>
+#include <unordered_map>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -403,62 +405,239 @@ static void remesh_once(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons
     }
 }
 
-/* A percentage target: when the result misses it widely (an object thinner
-   than the edge length, whose sides the extraction merges: boxes, bags,
-   panels), the remeshing runs again: the target scaled by the gap, then,
-   once an attempt fell short and another went over, between the two (the
-   face count jumps when the sides separate); at most 5 attempts, the one
-   nearest to the target is kept */
+/* Squared distance from p to the triangle (a, b, c) (Ericson, Real-Time
+   Collision Detection 5.1.5) */
+static Float point_triangle_dist2(const Vector3f &p, const Vector3f &a, const Vector3f &b, const Vector3f &c) {
+    const Vector3f ab = b - a, ac = c - a, ap = p - a;
+    const Float d1 = ab.dot(ap), d2 = ac.dot(ap);
+    if (d1 <= 0 && d2 <= 0)
+        return ap.squaredNorm();
+    const Vector3f bp = p - b;
+    const Float d3 = ab.dot(bp), d4 = ac.dot(bp);
+    if (d3 >= 0 && d4 <= d3)
+        return bp.squaredNorm();
+    const Float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0)
+        return (p - (a + ab * (d1 / (d1 - d3)))).squaredNorm();
+    const Vector3f cp = p - c;
+    const Float d5 = ab.dot(cp), d6 = ac.dot(cp);
+    if (d6 >= 0 && d5 <= d6)
+        return cp.squaredNorm();
+    const Float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0)
+        return (p - (a + ac * (d2 / (d2 - d6)))).squaredNorm();
+    const Float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0)
+        return (p - (b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6))))).squaredNorm();
+    const Float denom = 1 / (va + vb + vc);
+    return (p - (a + ab * (vb * denom) + ac * (vc * denom))).squaredNorm();
+}
+
+/* The share of the input surface (by area) farther from the result than
+   about two of its edges (an edge of the extraction, before the quads are
+   subdivided): parts the remeshing lost (thin tubes, frames, wires whose
+   sides merged). Samples: the triangles' centres and corners */
+static double lost_surface(const MatrixXu &F0, const MatrixXf &V0, const MatrixXu &F, const MatrixXf &O) {
+    if (F.cols() == 0 || O.cols() == 0)
+        return 1.0;
+    /* the result's triangles ((a, b, c, c): a triangle among quads) */
+    std::vector<std::array<uint32_t, 3>> tris;
+    double edges = 0;
+    size_t nEdges = 0;
+    for (std::ptrdiff_t f = 0; f < F.cols(); ++f) {
+        const int n = F.rows() == 4 && F(2, f) == F(3, f) ? 3 : (int) F.rows();
+        for (int k = 1; k + 1 < n; ++k)
+            tris.push_back({ F(0, f), F(k, f), F(k + 1, f) });
+        for (int k = 0; k < n; ++k) {
+            edges += (O.col(F(k, f)) - O.col(F((k + 1) % n, f))).norm();
+            ++nEdges;
+        }
+    }
+    const Float tol = (Float) (2.0 * edges / std::max<size_t>(nEdges, 1));
+    if (!(tol > 0))
+        return 0.0;
+    /* a grid of cells of 'tol': a sample is covered by a triangle of its 27 neighbouring cells */
+    const Vector3f lo = O.rowwise().minCoeff();
+    auto cell = [&](const Vector3f &q) {
+        const Vector3f c = (q - lo) / tol;
+        return Eigen::Vector3i((int) std::floor(c.x()), (int) std::floor(c.y()), (int) std::floor(c.z()));
+    };
+    auto key = [](int x, int y, int z) {
+        return ((int64_t) (x & 0x1fffff) << 42) | ((int64_t) (y & 0x1fffff) << 21) | (int64_t) (z & 0x1fffff);
+    };
+    const Float tol2 = tol * tol;
+    std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+    for (uint32_t t = 0; t < (uint32_t) tris.size(); ++t) {
+        Vector3f bmin = O.col(tris[t][0]), bmax = bmin;
+        for (int k = 1; k < 3; ++k) {
+            bmin = bmin.cwiseMin(O.col(tris[t][k]));
+            bmax = bmax.cwiseMax(O.col(tris[t][k]));
+        }
+        const Eigen::Vector3i c0 = cell(bmin), c1 = cell(bmax);
+        const Eigen::Vector3i span = c1 - c0 + Eigen::Vector3i::Ones();
+        if ((int64_t) span.x() * span.y() * span.z() > 4096)
+            continue;   /* a sliver much longer than the edges: skipped */
+        for (int x = c0.x(); x <= c1.x(); ++x)
+            for (int y = c0.y(); y <= c1.y(); ++y)
+                for (int z = c0.z(); z <= c1.z(); ++z)
+                    grid[key(x, y, z)].push_back(t);
+    }
+    auto covered = [&](const Vector3f &q) {
+        const Eigen::Vector3i c = cell(q);
+        for (int x = c.x() - 1; x <= c.x() + 1; ++x)
+            for (int y = c.y() - 1; y <= c.y() + 1; ++y)
+                for (int z = c.z() - 1; z <= c.z() + 1; ++z) {
+                    auto it = grid.find(key(x, y, z));
+                    if (it == grid.end())
+                        continue;
+                    for (uint32_t t : it->second)
+                        if (point_triangle_dist2(q, O.col(tris[t][0]), O.col(tris[t][1]), O.col(tris[t][2])) <= tol2)
+                            return true;
+                }
+        return false;
+    };
+    /* at most ~100k input triangles sampled */
+    const std::ptrdiff_t step = std::max<std::ptrdiff_t>(1, F0.cols() / 100000);
+    double total = 0, lost = 0;
+    for (std::ptrdiff_t f = 0; f < F0.cols(); f += step) {
+        const Vector3f a = V0.col(F0(0, f)), b = V0.col(F0(1, f)), c = V0.col(F0(2, f));
+        const double area = 0.5 * (b - a).cross(c - a).norm();
+        if (!(area > 0))
+            continue;
+        total += area;
+        int away = 0;
+        for (const Vector3f &q : { Vector3f((a + b + c) / 3), a, b, c })
+            away += !covered(q);
+        lost += area * away / 4.0;
+    }
+    return total > 0 ? lost / total : 0.0;
+}
+
+/* The shape first: when the result lost parts of the input (more than 2%
+   of its surface farther than about an edge: thin tubes, frames, wires
+   whose sides merged), the remeshing runs again finer (twice the faces), and
+   a density that lost parts is never gone back under. A percentage target
+   missed widely (an object thinner than the edge length) runs again too:
+   scaled by the gap, then between a short and a long attempt (the count
+   jumps when the sides separate). At most 5 attempts; kept: among those
+   that cover the input, the nearest to the target, else the one that lost
+   the least */
 void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
             const RemeshParams &params, MatrixXu &F_extr, MatrixXf &O_extr,
             MatrixXf &Nf_extr, RemeshReport *report) {
-    if (!(params.face_percent > 0) || F.size() == 0 || polygons == 0) {
+    if (F.size() == 0) {   /* a point cloud */
         remesh_once(F, V, N, polygons, params, F_extr, O_extr, Nf_extr, report);
         return;
     }
-    const double target = polygons * (double) params.face_percent / 100.0;
+    const bool percent = params.face_percent > 0 && polygons > 0;
+    const double target = percent ? polygons * (double) params.face_percent / 100.0 : 0;
     const MatrixXu F0 = F;
     const MatrixXf V0 = V, N0 = N;
-    RemeshParams p = params;
-    double bestError = std::numeric_limits<double>::infinity();
-    double under = -1, over = -1;   /* percentages that gave too few / too many faces */
+    /* the density of an attempt: 'k' times the asked one, in the mode asked */
+    auto with_density = [&](double k) {
+        RemeshParams p = params;
+        if (percent)
+            p.face_percent = (Float) (params.face_percent * k);
+        else if (params.scale > 0)
+            p.scale = (Float) (params.scale / std::sqrt(k));
+        else if (params.face_count > 0)
+            p.face_count = std::max(1, (int) std::round(params.face_count * k));
+        else
+            p.vertex_count = std::max(1, (int) std::round((params.vertex_count > 0 ? params.vertex_count
+                                                                                  : V0.cols() / 16) * k));
+        return p;
+    };
+    struct Best { bool covers = false; double error = 0, lost = 0, k = 0; } best;
+    bool have = false;
+    double k = 1, floorK = 0, under = -1, over = -1;
+    /* the shape is not sought past the input's own face count: there the
+       input is the better mesh */
+    const double maxK = percent ? std::max(1.0, 100.0 / params.face_percent) : 16.0;
     const int attempts = 5;
     for (int attempt = 0; attempt < attempts; ++attempt) {
         MatrixXu Fi = attempt == 0 ? std::move(F) : F0, Fo;
         MatrixXf Vi = attempt == 0 ? std::move(V) : V0, Ni = attempt == 0 ? std::move(N) : N0, Oo, Nfo;
         RemeshReport r;
-        remesh_once(Fi, Vi, Ni, polygons, p, Fo, Oo, Nfo, &r);
-        const double got = (double) Fo.cols(), ratio = got / target;
+        if (attempt == 0) {
+            remesh_once(Fi, Vi, Ni, polygons, with_density(k), Fo, Oo, Nfo, &r);
+        } else {
+            /* a later attempt that fails leaves the best one so far */
+            try {
+                remesh_once(Fi, Vi, Ni, polygons, with_density(k), Fo, Oo, Nfo, &r);
+            } catch (const std::exception &e) {
+                cout << "Attempt at " << std::setprecision(2) << k << std::setprecision(6)
+                     << "x the asked density failed (" << e.what() << "): the best one so far is kept." << endl;
+                break;
+            }
+        }
+        const double lost = lost_surface(F0, V0, Fo, Oo);
+        const bool covers = lost <= 0.02;
+        const double got = (double) Fo.cols(), ratio = percent ? got / target : 1.0;
         const double error = std::abs(std::log(std::max(ratio, 1e-9)));
-        if (error < bestError) {
-            bestError = error;
+        const bool better = !have || (covers && !best.covers) ||
+                            (covers == best.covers && (covers ? error < best.error : lost < best.lost));
+        if (better) {
+            have = true;
+            best.covers = covers;
+            best.error = error;
+            best.lost = lost;
+            best.k = k;
             F_extr = std::move(Fo);
             O_extr = std::move(Oo);
             Nf_extr = std::move(Nfo);
             if (report)
                 *report = r;
         }
-        if (ratio >= 0.7 && ratio <= 1.45)
+        const bool countOk = !percent || (ratio >= 0.7 && ratio <= 1.45);
+        if ((covers && countOk) || attempt == attempts - 1 || got <= 0)
             break;
-        if (attempt == attempts - 1 || got <= 0) {
-            cout << "Face target: " << (uint64_t) F_extr.cols() << " faces for ~" << (uint64_t) std::round(target)
-                 << " asked (" << (int) std::round(100.0 * F_extr.cols() / target) << "%), the nearest of "
-                 << attempts << " attempts." << endl;
-            break;
+        double next;
+        if (!covers) {
+            floorK = std::max(floorK, k);
+            if (k >= maxK)
+                break;   /* even as dense as the input */
+            next = std::min(maxK, over > k ? std::sqrt(k * over) : k * 2);
+            cout << "Shape: " << (int) std::round(100 * lost) << "% of the input surface lost (thin parts merged), "
+                 << "again with " << (over > k ? "more" : "twice the") << " faces .." << endl;
+        } else {
+            if (ratio < 1)
+                under = std::max(under, k);
+            else
+                over = over < 0 ? k : std::min(over, k);
+            next = under > 0 && over > 0 ? std::sqrt(under * over) : k * std::min(4.0, std::max(0.25, 1.0 / ratio));
+            if (next <= floorK)
+                next = std::sqrt(floorK * k);   /* never back under a density that lost parts */
+            cout << "Face target missed: " << (uint64_t) got << " faces for ~" << (uint64_t) std::round(target)
+                 << " asked (" << (int) std::round(100.0 * ratio) << "%), again at "
+                 << (Float) (params.face_percent * next) << "% .." << endl;
         }
-        if (ratio < 1)
-            under = std::max(under, (double) p.face_percent);
-        else
-            over = over < 0 ? (double) p.face_percent : std::min(over, (double) p.face_percent);
-        /* the next target: between a short and a long attempt, else scaled by the gap (bounded) */
-        if (under > 0 && over > 0)
-            p.face_percent = (Float) std::sqrt(under * over);
-        else
-            p.face_percent = (Float) (p.face_percent * std::min(4.0, std::max(0.25, 1.0 / ratio)));
-        cout << "Face target missed: " << (uint64_t) got << " faces for ~" << (uint64_t) std::round(target)
-             << " asked (" << (int) std::round(100.0 * ratio) << "%: thin parts merged?), again at "
-             << p.face_percent << "% .." << endl;
+        k = next;
     }
+    /* the shape first: a result that lost parts is not used where the
+       input can stay (per mesh, the caller keeps the input); nor one that
+       needs as many faces as the input has */
+    const bool lighterAsked = percent ? params.face_percent < 100
+                                      : params.face_count > 0 && (uint64_t) params.face_count < polygons;
+    const bool heavier = lighterAsked && polygons > 0 && (uint64_t) F_extr.cols() >= polygons;
+    if ((!best.covers || heavier) && report) {
+        report->shapeNeedsInput = true;
+        report->lost = best.lost;
+    }
+    if (best.covers && heavier)
+        cout << "Shape: kept only with " << (uint64_t) F_extr.cols() << " faces, as many as the input ("
+             << polygons << "): the input is the lighter mesh." << endl;
+    if (!best.covers)
+        cout << "Shape: " << (int) std::round(100 * best.lost) << "% of the input surface lost, even at "
+             << std::setprecision(2) << best.k << std::setprecision(6) << "x the asked density (parts thinner "
+             << "than the edges, or a mesh already lighter than any remeshing of it)." << endl;
+    else if (best.k > 1.0001)
+        cout << "Shape kept: " << (uint64_t) F_extr.cols() << " faces, " << std::setprecision(2) << best.k
+             << std::setprecision(6) << "x the asked density"
+             << (percent ? " (~" + std::to_string((uint64_t) std::round(target)) + " faces asked)" : std::string())
+             << "." << endl;
+    else if (percent && best.error > std::log(1.45))
+        cout << "Face target: " << (uint64_t) F_extr.cols() << " faces for ~" << (uint64_t) std::round(target)
+             << " asked, the nearest of the attempts." << endl;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -694,7 +873,7 @@ static void run_project(Project &project, const std::string &label, const std::s
     if (progress)
         print_progress(0, 0, todo, 0, "");
 
-    std::vector<std::string> skipped, subdivided;
+    std::vector<std::string> skipped, subdivided, kept;
     for (ProjectObject &o : project.objects) {
         const FaceTarget t = project.target_of(o);
         if (!t.valid() || o.state == ObjectState::Done)
@@ -703,6 +882,8 @@ static void run_project(Project &project, const std::string &label, const std::s
         const size_t skippedBefore = skipped.size();
         try {
             const RemeshReport report = project.process(o);
+            if (o.state == ObjectState::Skipped)
+                kept.push_back(o.mesh.path + ": " + o.message);
             if (report.subdivided > report.triangles)
                 subdivided.push_back(o.mesh.path + ": " + std::to_string(report.triangles) + " -> " +
                                      std::to_string(report.subdivided) + " triangles");
@@ -728,6 +909,13 @@ static void run_project(Project &project, const std::string &label, const std::s
         cout << "Input subdivided before remeshing (the heaviest to compute), " << subdivided.size()
              << " of " << todo << " meshes:" << endl;
         for (const std::string &s : subdivided)
+            cout << "   " << s << endl;
+        cout << endl;
+    }
+    if (!kept.empty()) {
+        cout << "Kept as they are, " << kept.size() << " of " << todo
+             << " meshes (the shape first: remeshed, they lost parts):" << endl;
+        for (const std::string &s : kept)
             cout << "   " << s << endl;
         cout << endl;
     }

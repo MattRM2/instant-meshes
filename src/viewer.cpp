@@ -4707,7 +4707,8 @@ void Viewer::processChecked() {
                 }
                 ObjectResult r = project->compute(path, w.second, params);
                 std::lock_guard<std::mutex> lock(mProjectLock);
-                project->store(project->objects[(size_t) w.first], r.F, r.V, r.uvs);
+                if (!Project::keep_input(project->objects[(size_t) w.first], r.report))
+                    project->store(project->objects[(size_t) w.first], r.F, r.V, r.uvs);
             } catch (const std::exception &e) {
                 std::lock_guard<std::mutex> lock(mProjectLock);
                 ProjectObject &o = project->objects[(size_t) w.first];

@@ -204,6 +204,15 @@ subdivisée avant le remaillage (le plus coûteux) est signalé dans le log.
 Précision de `-f N%` : environ ±3 % sur des maillages réels, moins précis en
 dessous de quelques centaines de polygones.
 
+**La forme d'abord** : après chaque remaillage, la surface d'origine est
+comparée au résultat. S'il a perdu des parties (tubes, fils, cadres, panneaux
+plus fins que les arêtes, dont les faces ont fusionné), le maillage est
+refait avec deux fois plus de faces, jusqu'à 5 essais, quitte à dépasser
+l'objectif (le log le dit). Un maillage qui ne garde sa forme qu'avec autant
+de faces qu'il en a (props low-poly, panneaux fins) est **gardé tel quel** et
+listé en fin de passe ; pas de proxy pour lui. Mesuré sur le Kitchen Set de
+Pixar : 842 proxies sur 859 sans partie manquante.
+
 ### Interface : Outliner et projets (`.imd`)
 
 - **Menu File** : New, Open (scènes `.abc` `.obj` `.usd*`, projets `.imd`, maillages), Open recent, Save,

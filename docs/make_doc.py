@@ -444,9 +444,11 @@ def build(cover_image=None):
         "quarter, the subdivision brings it back to the target.",
     ])
     story += [Spacer(1, 3 * mm),
-              callout("Accuracy", "On real meshes the result lands within about \u00b13% of the target. Very small "
-                                  "meshes (a few hundred faces) can deviate more, since each closed object needs a "
-                                  "minimum number of faces."),
+              callout("Accuracy, and the shape first", "On real meshes the result lands within about \u00b13% of "
+                                  "the target. Parts thinner than the edges (tubes, wires, frames, panels) can merge "
+                                  "and vanish: per mesh, the result is checked against the input, and a mesh that lost "
+                                  "parts is remeshed again with more faces (5 attempts at most). A mesh that keeps its "
+                                  "shape only with as many faces as it has is kept as it is."),
               PageBreak(),
               SubHeader("2.3", "Flow line colors"), Spacer(1, 3 * mm),
               p("Once the orientation field is solved, flow lines show how the edges of the output will run. "
@@ -793,6 +795,15 @@ def build(cover_image=None):
                                             "fails (e.g. no faces for a tiny target), nothing is written, unless "
                                             "<b>--skip-failed</b> is given: the failed meshes are then copied "
                                             "unchanged, listed at the end, and the file is written."),
+              Spacer(1, 3 * mm),
+              callout("The shape first", "After each remeshing, the input's surface is checked against the "
+                      "result: more than 2% of it farther than about an edge means lost parts (tubes, wires, "
+                      "frames, panels thinner than the edges, whose sides merged). The mesh is then remeshed again "
+                      "with twice the faces, never back under a density that lost parts; a percentage missed widely "
+                      "is corrected the same way. At most 5 attempts: the one nearest to the target among those "
+                      "that keep the shape is used, even above the target (the log says so). A mesh that keeps its "
+                      "shape only with as many faces as it has (low-poly props, thin panels) is <b>kept as it is</b>: "
+                      "listed at the end of the run, no proxy for it."),
               Spacer(1, 5 * mm), SubHeader("5.4", "OBJ scenes"), Spacer(1, 3 * mm),
               codeblock(['InstantMeshes.exe scene.obj --list',
                          'InstantMeshes.exe scene.obj -o scene_retopo.obj -m "MeshA=50%" --others 80%'])]

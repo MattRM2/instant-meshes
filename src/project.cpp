@@ -549,6 +549,18 @@ void Project::store(ProjectObject &o, const MatrixXu &F, const MatrixXf &V, cons
     o.message.clear();
 }
 
+bool Project::keep_input(ProjectObject &o, const RemeshReport &r) {
+    if (!r.shapeNeedsInput)
+        return false;
+    o.state = ObjectState::Skipped;
+    o.result = Spool::Fetch();
+    o.message = r.lost > 0.02
+              ? "kept as it is: remeshed, it lost " + std::to_string((int) std::round(100 * r.lost)) +
+                "% of its surface (thin parts, or already lighter than any remeshing)"
+              : std::string("kept as it is: its shape needs as many faces as it has");
+    return true;
+}
+
 bool Project::reuse(ProjectObject &o, const FaceTarget &t) {
     if (o.mesh.geometry == 0)
         return false;
@@ -583,7 +595,8 @@ RemeshReport Project::process(ProjectObject &o) {
             return RemeshReport();
         }
         ObjectResult r = remesh_object(scene(), o.mesh.path, t, options.params);
-        store(o, r.F, r.V, r.uvs);
+        if (!keep_input(o, r.report))
+            store(o, r.F, r.V, r.uvs);
         return r.report;
     } catch (const std::exception &e) {
         o.state = ObjectState::Failed;

@@ -20,4 +20,5 @@ datasets
 *.vcxproj
 *.filters
 *.sdf
-*.sln__pycache__/
+*.sln
+__pycache__/

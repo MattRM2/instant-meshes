@@ -396,17 +396,44 @@ void OutlinerView::draw(NVGcontext *ctx) {
     nvgText(ctx, stateX - 8, y0 + HeaderHeight * 0.5f, "Target", nullptr);
     title("State", (float) (stateX + 4), NVG_ALIGN_LEFT, 3);
 
-    /* scroll bar */
-    if (bar) {
-        const float track = (float) (h - HeaderHeight - 4);
-        const float size = std::max(20.f, track * h / content);
-        const float at = (track - size) * mScroll / std::max(1, content - h);
+    /* scroll bar: lighter when hovered or dragged */
+    float at, size;
+    if (bar && thumb(at, size)) {
         nvgBeginPath(ctx);
         nvgRoundedRect(ctx, x0 + w - Scrollbar - 2, y0 + HeaderHeight + 2 + at, Scrollbar, size, 3);
-        nvgFillColor(ctx, Color(110, 110, 110, 200));
+        nvgFillColor(ctx, mThumbGrab >= 0 ? Color(251, 146, 60, 220) : Color(110, 110, 110, 200));
         nvgFill(ctx);
     }
     nvgRestore(ctx);
+}
+
+bool OutlinerView::thumb(float &at, float &size) const {
+    const int content = HeaderHeight + (int) mRows.size() * RowHeight, h = height();
+    if (content <= h)
+        return false;
+    const float track = (float) (h - HeaderHeight - 4);
+    size = std::max(20.f, track * h / content);
+    at = (track - size) * mScroll / std::max(1, content - h);
+    return true;
+}
+
+/* The thumb follows the pointer ('y' from the top of the widget), held
+   where it was grabbed */
+void OutlinerView::dragThumb(int y) {
+    float at, size;
+    if (!thumb(at, size))
+        return;
+    const int content = HeaderHeight + (int) mRows.size() * RowHeight, h = height();
+    const float track = (float) (h - HeaderHeight - 4);
+    const float top = (float) (y - HeaderHeight - 2 - mThumbGrab);
+    mScroll = (int) std::round(top / std::max(1.f, track - size) * (content - h));
+    clampScroll();
+}
+
+bool OutlinerView::mouseDragEvent(const Vector2i &p, const Vector2i &, int, int) {
+    if (mThumbGrab >= 0)
+        dragThumb(p.y() - mPos.y());
+    return true;
 }
 
 bool OutlinerView::scrollEvent(const Vector2i &, const Eigen::Vector2f &rel) {
@@ -421,8 +448,20 @@ bool OutlinerView::mouseMotionEvent(const Vector2i &p, const Vector2i &, int, in
 }
 
 bool OutlinerView::mouseButtonEvent(const Vector2i &p, int button, bool down, int modifiers) {
+    if (button == GLFW_MOUSE_BUTTON_1 && !down)
+        mThumbGrab = -1;
     if (!down || button != GLFW_MOUSE_BUTTON_1 || !mProject)
         return true;
+    /* the scroll bar: the thumb is dragged; a click on the track brings
+       the thumb there (centred), then drags it */
+    float at, size;
+    const int bx = p.x() - mPos.x(), by = p.y() - mPos.y();
+    if (by >= HeaderHeight && bx >= width() - Scrollbar - 4 && thumb(at, size)) {
+        const float top = (float) (by - HeaderHeight - 2);
+        mThumbGrab = top >= at && top <= at + size ? (int) (top - at) : (int) (size / 2);
+        dragThumb(by);
+        return true;
+    }
     std::unique_lock<std::mutex> guard;
     if (mLock)
         guard = std::unique_lock<std::mutex>(*mLock);

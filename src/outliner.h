@@ -44,6 +44,7 @@ public:
     void draw(NVGcontext *ctx) override;
     bool mouseButtonEvent(const Eigen::Vector2i &p, int button, bool down, int modifiers) override;
     bool mouseMotionEvent(const Eigen::Vector2i &p, const Eigen::Vector2i &rel, int button, int modifiers) override;
+    bool mouseDragEvent(const Eigen::Vector2i &p, const Eigen::Vector2i &rel, int button, int modifiers) override;
     bool scrollEvent(const Eigen::Vector2i &p, const Eigen::Vector2f &rel) override;
 
 private:
@@ -59,6 +60,9 @@ private:
     void collect(int node, std::vector<int> &objects) const;
     int rowAt(const Eigen::Vector2i &p) const;
     void clampScroll();
+    /// The scroll bar's thumb (top, size, in pixels from the top of the track); false: no bar
+    bool thumb(float &at, float &size) const;
+    void dragThumb(int y);
 
     Project *mProject = nullptr;
     std::mutex *mLock = nullptr;
@@ -69,6 +73,7 @@ private:
     int mSort = 0;                            /* 0 scene order, 1 name, 2 faces, 3 state */
     bool mSortDesc = false;
     int mScroll = 0, mHover = -1, mAnchor = -1;
+    int mThumbGrab = -1;                      /* dragging the scroll bar: where the thumb was grabbed */
     double mLastClick = 0;
     int mLastClickRow = -1;
 };

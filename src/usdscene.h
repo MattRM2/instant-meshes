@@ -26,6 +26,11 @@ std::vector<abc::MeshSummary> list_meshes(const Layer &layer);
 void load_mesh(const Layer &layer, const std::string &path, MatrixXu &F, MatrixXf &V,
                uint64_t *polygons = nullptr, std::vector<UVSet> *uvs = nullptr);
 
+/// The points of every mesh that is not instanced (world space), in one
+/// pass: the meshes load_all() merges
+void mesh_points(const Layer &layer,
+                 const std::function<void(const std::string &path, const std::vector<Vector3f> &points)> &f);
+
 /// Every mesh that is not instanced, merged (whole-file mode); a UV set is
 /// kept if every mesh has it
 void load_all(const Layer &layer, MatrixXu &F, MatrixXf &V, uint64_t *polygons = nullptr,

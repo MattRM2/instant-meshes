@@ -188,6 +188,16 @@ protected:
     std::pair<Vector3f, Vector3f> singularityPositionAndNormal(uint32_t v) const;
     bool toolActive() const;
 
+    /* Viewport selection, navigation */
+    void pickObject(const Vector2i &p, int modifiers);
+    bool faceObjects();
+    void refreshHighlight();
+    void uploadHighlight();
+    void frameSelection();
+    void showPreferences();
+    void loadPreferences();
+    void savePreferences() const;
+
 protected:
     struct CameraParameters {
         Arcball arcball;
@@ -233,6 +243,17 @@ protected:
     CameraParameters mCameraSnapshots[12];
     Vector2i mTranslateStart;
     bool mTranslate, mDrag;
+    /* Navigation (Preferences): Instant Meshes (left drag orbits), Maya, Blender */
+    enum Navigation { NavigationClassic = 0, NavigationMaya = 1, NavigationBlender = 2 };
+    int mNavigation = NavigationClassic;
+    int mOrbitButton = -1, mPanButton = -1, mZoomButton = -1;
+    Vector2i mZoomStart, mClickStart;
+    float mZoomStartValue = 1.0f;
+    bool mClickPending = false;        /* a left press that has not moved: a click selects */
+    /* Whole scene view: the mesh of each face, the selected ones highlighted */
+    std::vector<int> mFaceObject;
+    bool mHighlightStale = true;
+    uint32_t mHighlightFaces = 0;
     std::map<uint32_t, uint32_t> mOrientationSingularities;
     std::map<uint32_t, Vector2i> mPositionSingularities;
     bool mContinueWithPositions;
@@ -250,7 +271,7 @@ protected:
     SerializableGLShader mPositionFieldShader;
     SerializableGLShader mPositionSingularityShader;
     SerializableGLShader mOrientationSingularityShader;
-    SerializableGLShader mFlowLineShader, mStrokeShader;
+    SerializableGLShader mFlowLineShader, mStrokeShader, mHighlightShader;
     SerializableGLShader mOutputMeshShader;
     SerializableGLShader mOutputMeshWireframeShader;
     bool mNeedsRepaint;

@@ -35,6 +35,8 @@ public:
     /// Selected meshes (object indices)
     const std::set<int> &selection() const { return mSelected; }
     void setSelection(const std::set<int> &s);
+    /// The row of a mesh shown: its groups expanded, scrolled to it
+    void reveal(int object);
 
     std::function<void(int object)> openCallback;   ///< double click on a mesh
     std::function<void()> changeCallback;           ///< check boxes or selection changed

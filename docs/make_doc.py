@@ -489,16 +489,28 @@ def build(cover_image=None):
     story += [SubHeader("2.5", "Menus and shortcuts"), Spacer(1, 3 * mm),
               table([["Menu", "Entries"],
                      ["File", "New (Ctrl+N), Open... (Ctrl+O), Open recent, Save (Ctrl+S), Save as... "
-                              "(Ctrl+Shift+S), Import legacy state..., Export mesh..., Write scene..., Open .imd "
-                              "files with Instant Meshes, Quit (Ctrl+Q)"],
+                              "(Ctrl+Shift+S), Import legacy state..., Export mesh..., Write scene..., "
+                              "Preferences..., Open .imd files with Instant Meshes, Quit (Ctrl+Q)"],
                      ["Scene", "Process checked meshes, Cancel processing, Open selected mesh, Show the whole "
-                               "scene, Use the viewport result, Copy the command line, Show the Outliner"],
+                               "scene, Use the viewport result, Frame the selection (F), Copy the command line, "
+                               "Show the Outliner"],
                      ["Help", "About"]],
                     [24 * mm, W - 2 * MARGIN - 24 * mm]),
               Spacer(1, 2 * mm),
               p("A <b>*</b> in the window title marks unsaved changes: New, Open and Quit ask before losing them, "
                 "the window's close button too."),
-              Spacer(1, 4 * mm), SubHeader("2.6", "The Outliner: a scene, mesh by mesh"), Spacer(1, 3 * mm),
+              Spacer(1, 2 * mm),
+              table([["Navigation", "Orbit", "Pan", "Zoom"],
+                     ["Instant Meshes", "left drag", "right drag, Shift + left drag", "wheel"],
+                     ["Maya", "Alt + left drag", "Alt + middle drag", "Alt + right drag, wheel"],
+                     ["Blender", "middle drag", "Shift + middle drag", "Ctrl + middle drag, wheel"]],
+                    [30 * mm, 36 * mm, 50 * mm, W - 2 * MARGIN - 116 * mm]),
+              Spacer(1, 2 * mm),
+              p("<b>File > Preferences</b> picks the navigation (Instant Meshes by default, kept for the next "
+                "sessions). In all three, a <b>left click</b> on a mesh selects it in the Outliner, which scrolls "
+                "to its row, and the viewport shows it in orange; Shift or Ctrl adds or removes it, a click in "
+                "the void clears the selection. <b>F</b> (or numpad . ) frames the selection, or the whole mesh."),
+              PageBreak(), SubHeader("2.6", "The Outliner: a scene, mesh by mesh"), Spacer(1, 3 * mm),
               Table([[outliner, [
                   p("Opening a scene lists its meshes on the right, as a tree of their paths. The viewport shows "
                     "the whole scene; a <b>double click</b> on a mesh opens it alone, with the interactive tools."),

@@ -32,6 +32,8 @@
 #include <nanovg_gl.h>
 #include <fstream>
 #include <tuple>
+#include <unordered_map>
+#include <memory>
 #if defined(_WIN32)
 #  include <direct.h>
 #endif
@@ -187,6 +189,10 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
         (const char *)shader_flowline_frag);
 
     mStrokeShader.init("stroke_shader",
+        (const char *)shader_flowline_vert,
+        (const char *)shader_flowline_frag);
+
+    mHighlightShader.init("highlight_shader",
         (const char *)shader_flowline_vert,
         (const char *)shader_flowline_frag);
 
@@ -756,6 +762,7 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     });
 
     mAboutBtn = about;
+    loadPreferences();
     buildOutliner();
     buildMenus();
     performLayout(ctx);
@@ -795,6 +802,7 @@ Viewer::~Viewer() {
     mPositionSingularityShader.free();
     mFlowLineShader.free();
     mStrokeShader.free();
+    mHighlightShader.free();
     mOutputMeshWireframeShader.free();
     mOutputMeshShader.free();
     mFBO.free();
@@ -1198,6 +1206,10 @@ bool Viewer::keyboardEvent(int key, int scancode, int event, int modifiers) {
                     glfwSetWindowShouldClose(mGLFWWindow, GL_TRUE);
                 return true;
             }
+        }
+        if (modifiers == 0 && (key == 'F' || key == GLFW_KEY_KP_DECIMAL)) {
+            frameSelection();
+            return true;
         }
 #if DEV_MODE
         if (key == GLFW_KEY_SPACE && mRes.levels() > 0) {
@@ -3157,6 +3169,30 @@ void Viewer::drawOverlay() {
     Eigen::Matrix4f model, view, proj;
     computeCameraMatrices(model, view, proj);
 
+    if (mHighlightStale) {
+        mHighlightStale = false;
+        uploadHighlight();
+    }
+    if (mHighlightFaces > 0) {
+        /* the selected meshes, orange over the surface */
+        mHighlightShader.bind();
+        mHighlightShader.setUniform("mvp", Eigen::Matrix4f(proj * view * model));
+        mHighlightShader.setUniform("alpha", 0.35f);
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LEQUAL);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(-2.0f, -2.0f);
+        glEnable(GL_CULL_FACE);   /* as the meshes: only the faces turned to the camera */
+        glCullFace(GL_BACK);
+        glFrontFace(GL_CCW);
+        mHighlightShader.drawIndexed(GL_TRIANGLES, 0, mHighlightFaces);
+        glDisable(GL_CULL_FACE);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glDisable(GL_BLEND);
+    }
+
     if (mLayers[BrushStrokes]->checked() || toolActive()) {
         mStrokeShader.bind();
         mStrokeShader.setUniform("mvp", Eigen::Matrix4f(proj * view * model));
@@ -3260,6 +3296,8 @@ bool Viewer::mouseMotionEvent(const Vector2i &p, const Vector2i &rel,
                               int button, int modifiers) {
     if (mMenuBar.mouseMotion(p))
         return true;
+    if (mClickPending && (p - mClickStart).cwiseAbs().maxCoeff() > 4)
+        mClickPending = false;
     if (mDrag && toolActive()) {
         mScreenCurve.push_back(p);
         return true;
@@ -3276,6 +3314,11 @@ bool Viewer::mouseMotionEvent(const Vector2i &p, const Vector2i &rel,
             Eigen::Vector3f pos0 = unproject(Eigen::Vector3f(mTranslateStart.x(), mSize.y() - mTranslateStart.y(), zval), view * model, proj, mSize);
             mCamera.modelTranslation = mCamera.modelTranslation_start + (pos1-pos0);
             repaint();
+        } else if (mZoomButton >= 0) {
+            /* right or up: closer */
+            const Vector2i d = p - mZoomStart;
+            mCamera.zoom = std::max(0.1f, mZoomStartValue * std::exp((float) (d.x() - d.y()) * 0.005f));
+            repaint();
         }
     }
     return true;
@@ -3284,8 +3327,10 @@ bool Viewer::mouseMotionEvent(const Vector2i &p, const Vector2i &rel,
 bool Viewer::mouseButtonEvent(const Vector2i &p, int button, bool down, int modifiers) {
     if (mMenuBar.mouseButton(p, button, down))
         return true;
+    const bool alt = (modifiers & GLFW_MOD_ALT) != 0;
+    const bool mayaNavigates = mNavigation == NavigationMaya && alt;
     if (!Screen::mouseButtonEvent(p, button, down, modifiers)) {
-        if (toolActive()) {
+        if (toolActive() && button == GLFW_MOUSE_BUTTON_1 && !mayaNavigates) {
             bool drag = down && button == GLFW_MOUSE_BUTTON_1;
             if (drag == mDrag)
                 return false;
@@ -3373,22 +3418,141 @@ bool Viewer::mouseButtonEvent(const Vector2i &p, int button, bool down, int modi
                     }
                 }
             }
-        } else if (button == GLFW_MOUSE_BUTTON_1 && modifiers == 0) {
-            mCamera.arcball.button(p, down);
-        } else if (button == GLFW_MOUSE_BUTTON_2 ||
-                   (button == GLFW_MOUSE_BUTTON_1 && modifiers == GLFW_MOD_SHIFT)) {
-            mCamera.modelTranslation_start = mCamera.modelTranslation;
-            mTranslate = true;
-            mTranslateStart = p;
+        } else if (down) {
+            /* what a drag does, per the navigation of the Preferences:
+               1 orbit, 2 pan, 3 zoom */
+            const bool shift = (modifiers & GLFW_MOD_SHIFT) != 0, ctrl = (modifiers & GLFW_MOD_CONTROL) != 0;
+            const bool left = button == GLFW_MOUSE_BUTTON_1, middle = button == GLFW_MOUSE_BUTTON_3,
+                       right = button == GLFW_MOUSE_BUTTON_2;
+            int action = 0;
+            if (mNavigation == NavigationMaya)
+                action = alt ? (left ? 1 : middle ? 2 : right ? 3 : 0) : middle ? 2 : 0;
+            else if (mNavigation == NavigationBlender)
+                action = middle ? (shift ? 2 : ctrl ? 3 : 1) : 0;
+            else
+                action = left ? (modifiers == 0 ? 1 : modifiers == GLFW_MOD_SHIFT ? 2 : 0) : (right || middle) ? 2 : 0;
+            if (left && !mayaNavigates) {
+                mClickPending = true;
+                mClickStart = p;
+            }
+            if (action == 1) {
+                mCamera.arcball.button(p, true);
+                mOrbitButton = button;
+            } else if (action == 2) {
+                mCamera.modelTranslation_start = mCamera.modelTranslation;
+                mTranslate = true;
+                mTranslateStart = p;
+                mPanButton = button;
+            } else if (action == 3) {
+                mZoomButton = button;
+                mZoomStart = p;
+                mZoomStartValue = mCamera.zoom;
+            }
         }
     }
-    if (button == GLFW_MOUSE_BUTTON_1 && !down)
-        mCamera.arcball.button(p, false);
     if (!down) {
+        if (button == GLFW_MOUSE_BUTTON_1 && mClickPending) {
+            mClickPending = false;
+            if (!toolActive())
+                pickObject(p, modifiers);
+        }
+        if (button == mOrbitButton) {
+            mCamera.arcball.button(p, false);
+            mOrbitButton = -1;
+        }
+        if (button == mPanButton) {
+            mTranslate = false;
+            mPanButton = -1;
+        }
+        if (button == mZoomButton)
+            mZoomButton = -1;
         mDrag = false;
-        mTranslate = false;
     }
     return true;
+}
+
+/* A left click in the viewport: the mesh under the cursor selected in the
+   Outliner, its row shown (Shift or Ctrl: added, or removed when it was);
+   a click in the void clears the selection */
+void Viewer::pickObject(const Vector2i &p, int modifiers) {
+    if (!mProject || !mOutliner || !mBVH || mRes.F().size() == 0)
+        return;
+    Eigen::Matrix4f model, view, proj;
+    computeCameraMatrices(model, view, proj);
+    const Eigen::Vector3f a = unproject(Eigen::Vector3f(p.x(), mSize.y() - p.y(), 0.0f), view * model, proj, mSize);
+    const Eigen::Vector3f b = unproject(Eigen::Vector3f(p.x(), mSize.y() - p.y(), 1.0f), view * model, proj, mSize);
+    const Vector3f dir = (b - a).normalized();
+    const MatrixXu &F = mRes.F();
+    const MatrixXf &V = mRes.V();
+    /* the first face turned to the camera: the viewport does not draw the
+       others (a ceiling seen from above) */
+    uint32_t f;
+    Float t, from = 0;
+    Vector2f uv;
+    bool hit = false;
+    for (int k = 0; k < 256 && !hit; ++k) {
+        if (!mBVH->rayIntersect(Ray(a, dir, from, std::numeric_limits<Float>::infinity()), f, t, &uv))
+            break;
+        const Vector3f p0 = V.col(F(0, f)), n = (Vector3f(V.col(F(1, f))) - p0).cross(Vector3f(V.col(F(2, f))) - p0);
+        hit = n.dot(dir) < 0;
+        from = t + mMeshStats.mAverageEdgeLength * 1e-4f;
+    }
+    int object = -1;
+    if (hit) {
+        if (mOpenObject >= 0)
+            object = mOpenObject;
+        else if (faceObjects() && f < mFaceObject.size())
+            object = mFaceObject[f];
+    }
+    const bool toggle = (modifiers & (GLFW_MOD_SHIFT | GLFW_MOD_CONTROL)) != 0;
+    if (object < 0 && toggle)
+        return;
+    std::set<int> selection;
+    if (toggle)
+        selection = mOutliner->selection();
+    if (object >= 0) {
+        if (toggle && selection.count(object))
+            selection.erase(object);
+        else
+            selection.insert(object);
+    }
+    mOutliner->setSelection(selection);
+    if (object >= 0 && selection.count(object))
+        mOutliner->reveal(object);
+    refreshOutliner();
+    refreshHighlight();
+}
+
+/* F: the camera on the selected meshes (whole scene view), else on the
+   whole mesh */
+void Viewer::frameSelection() {
+    const MatrixXf &V = mRes.V();
+    const MatrixXu &F = mRes.F();
+    if (V.size() == 0)
+        return;
+    Eigen::Vector3f lo = Eigen::Vector3f::Constant(std::numeric_limits<float>::infinity()), hi = -lo;
+    if (mOutliner && mOpenObject < 0 && !mOutliner->selection().empty() && faceObjects()) {
+        const std::set<int> &selection = mOutliner->selection();
+        for (std::ptrdiff_t f = 0; f < F.cols(); ++f) {
+            if (!selection.count(mFaceObject[(size_t) f]))
+                continue;
+            for (int r = 0; r < F.rows(); ++r) {
+                lo = lo.cwiseMin(V.col(F(r, f)).cast<float>());
+                hi = hi.cwiseMax(V.col(F(r, f)).cast<float>());
+            }
+        }
+    }
+    float margin = 0.8f;   /* a selected mesh: some room around it */
+    if (!(lo.x() <= hi.x())) {
+        lo = mMeshStats.mAABB.min.cast<float>();
+        hi = mMeshStats.mAABB.max.cast<float>();
+        margin = 1.0f;
+    }
+    const float whole = (mMeshStats.mAABB.max - mMeshStats.mAABB.min).cast<float>().maxCoeff();
+    const float extent = std::max((hi - lo).maxCoeff(), whole * 1e-5f);
+    mCamera.modelTranslation = -(lo + hi) * 0.5f;
+    mCamera.zoom = std::max(0.1f, margin * whole / extent);
+    repaint();
 }
 
 void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
@@ -3681,6 +3845,8 @@ void Viewer::loadMesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons, 
 
     mCamera.modelTranslation = -mMeshStats.mWeightedCenter.cast<float>();
     mCamera.modelZoom = 3.0f / (mMeshStats.mAABB.max - mMeshStats.mAABB.min).cwiseAbs().maxCoeff();
+    mFaceObject.clear();
+    mHighlightStale = true;
     mProgressWindow->setVisible(false);
     mProcessEvents = true;
 }
@@ -3820,6 +3986,7 @@ void Viewer::buildMenus() {
                        [this] { return mF_extracted.size() > 0 && !busy(); }),
         MenuItem::item("Write scene...", "", [this] { writeScene(); }, hasResult),
         MenuItem::line(),
+        MenuItem::item("Preferences...", "", [this] { showPreferences(); }),
         MenuItem::item("Open .imd files with Instant Meshes", "", [this] {
             std::string error;
             if (register_imd_files(error))
@@ -3846,6 +4013,8 @@ void Viewer::buildMenus() {
                        [this] { return mProject && mOpenObject >= 0 && !busy(); }),
         MenuItem::item("Use the viewport result", "", [this] { useViewportResult(); },
                        [this] { return mProject && mF_extracted.size() > 0 && !busy(); }),
+        MenuItem::item("Frame the selection", "F", [this] { frameSelection(); },
+                       [this] { return mRes.V().size() > 0; }),
         MenuItem::line(),
         MenuItem::item("Copy the command line", "", [this] {
             glfwSetClipboardString(mGLFWWindow, commandLine().c_str());
@@ -3889,7 +4058,7 @@ void Viewer::buildOutliner() {
     mOutliner = new OutlinerView(win);
     mOutliner->setFixedSize(Vector2i(inner, 200));
     mOutliner->openCallback = [&](int i) { openObject(i); };
-    mOutliner->changeCallback = [&] { setDirty(); refreshOutliner(); };
+    mOutliner->changeCallback = [&] { setDirty(); refreshOutliner(); refreshHighlight(); };
 
     section(win, "Selected meshes");
     Widget *row = new Widget(win);
@@ -4216,18 +4385,84 @@ bool Viewer::dropEvent(const std::vector<std::string> &filenames) {
 }
 
 /* Recent files, per user */
-static std::string recent_path() {
+/* A file of the user's settings: %APPDATA%\InstantMeshes\<name>.txt, or
+   ~/.instantmeshes_<name> */
+static std::string settings_path(const std::string &name) {
 #if defined(_WIN32)
     const char *base = getenv("APPDATA");
     if (!base)
         return std::string();
     const std::string dir = std::string(base) + "\\InstantMeshes";
     _mkdir(dir.c_str());
-    return dir + "\\recent.txt";
+    return dir + "\\" + name + ".txt";
 #else
     const char *home = getenv("HOME");
-    return home ? std::string(home) + "/.instantmeshes_recent" : std::string();
+    return home ? std::string(home) + "/.instantmeshes_" + name : std::string();
 #endif
+}
+
+static std::string recent_path() {
+    return settings_path("recent");
+}
+
+static const char *NavigationNames[] = { "instant meshes", "maya", "blender" };
+
+static std::string navigation_help(int navigation) {
+    const std::string select = "Select: left click (Shift or Ctrl: add or remove; in the void: none)\n";
+    if (navigation == 1)
+        return "Orbit: Alt + left drag\nPan: Alt + middle drag\nZoom: Alt + right drag, or the wheel\n" + select +
+               "Frame the selection: F";
+    if (navigation == 2)
+        return "Orbit: middle drag\nPan: Shift + middle drag\nZoom: Ctrl + middle drag, or the wheel\n" + select +
+               "Frame the selection: F or numpad .";
+    return "Orbit: left drag\nPan: right drag, or Shift + left drag\nZoom: the wheel\n" + select +
+           "Frame the selection: F";
+}
+
+void Viewer::loadPreferences() {
+    std::ifstream in(settings_path("preferences"));
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        const std::string key = line.substr(0, eq), value = str_tolower(line.substr(eq + 1));
+        if (key == "navigation")
+            for (int i = 0; i < 3; ++i)
+                if (value == NavigationNames[i])
+                    mNavigation = i;
+    }
+}
+
+void Viewer::savePreferences() const {
+    std::ofstream out(settings_path("preferences"), std::ios::trunc);
+    out << "navigation=" << NavigationNames[mNavigation] << "\n";
+}
+
+void Viewer::showPreferences() {
+    Window *win = new Window(this, "Preferences");
+    win->setModal(true);
+    win->setLayout(new GroupLayout(15, 6, 14, 20));
+    section(win, "Viewport navigation");
+    DropDown *box = new DropDown(win, { "Instant Meshes", "Maya", "Blender" });
+    box->setFixedWidth(420);
+    box->setSelectedIndex(mNavigation);
+    Label *help = new Label(win, navigation_help(mNavigation));
+    help->setFixedWidth(420);
+    box->setCallback([this, help](int index) {
+        mNavigation = index;
+        mOrbitButton = mPanButton = mZoomButton = -1;
+        help->setCaption(navigation_help(index));
+        savePreferences();
+        performLayout(mNVGContext);
+    });
+    Button *close = new Button(win, "Close");
+    close->setCallback([win] { win->dispose(); });
+    performLayout(mNVGContext);
+    win->center();
+    win->requestFocus();
 }
 
 std::vector<std::string> Viewer::recentFiles() const {
@@ -4280,6 +4515,8 @@ void Viewer::openFile(const std::string &name) {
         } else {
             mProject.reset();
             mOutliner->setProject(nullptr, &mProjectLock);
+        mHighlightStale = true;
+            mHighlightStale = true;
             mProjectFile.clear();
             mOpenObject = -1;
             mDirty = false;
@@ -4307,6 +4544,7 @@ void Viewer::openScene(const std::string &filename) {
     mProjectFile.clear();
     mOpenObject = -1;
     mOutliner->setProject(mProject.get(), &mProjectLock);
+    mHighlightStale = true;
     guiToOptions();
     loadInput(filename, std::numeric_limits<Float>::infinity(), -1, -1, -1, mOptimizer.rosy(), mOptimizer.posy());
     addRecent(filename);
@@ -4342,6 +4580,7 @@ void Viewer::openProject(const std::string &imd, const std::string &source) {
     mProjectFile = imd;
     mOpenObject = -1;
     mOutliner->setProject(mProject.get(), &mProjectLock);
+    mHighlightStale = true;
     const RemeshParams &p = mProject->options.params;
     loadInput(mProject->source, std::numeric_limits<Float>::infinity(), -1, -1, -1, p.rosy, p.posy);
     optionsToGui();
@@ -4384,6 +4623,7 @@ void Viewer::newProject() {
     auto go = [this] {
         mProject.reset();
         mOutliner->setProject(nullptr, &mProjectLock);
+        mHighlightStale = true;
         mProjectFile.clear();
         mOpenObject = -1;
         mDirty = false;
@@ -4821,43 +5061,47 @@ void Viewer::openWholeScene() {
     refreshOutliner();
 }
 
-/* The mesh extracted from the whole scene (all meshes merged), split back
-   into the meshes it came from: every face goes to the mesh of the input
-   vertex nearest to its centre (a grid over the input vertices) */
-void Viewer::splitViewportResult() {
-    struct Point { Vector3f p; int object; };
-    std::vector<Point> points;
-    std::vector<int> objects;
-    Vector3f lo = Vector3f::Constant(std::numeric_limits<Float>::infinity()), hi = -lo;
-    for (size_t i = 0; i < mProject->objects.size(); ++i) {
-        const ProjectObject &o = mProject->objects[i];
-        if (mProject->unfit(o))
-            continue;
-        MatrixXu F;
-        MatrixXf V;
-        mProject->scene().load(o.mesh.path, F, V);
-        for (std::ptrdiff_t k = 0; k < V.cols(); ++k) {
-            points.push_back(Point { V.col(k), (int) i });
-            lo = lo.cwiseMin(V.col(k));
-            hi = hi.cwiseMax(V.col(k));
+namespace {
+
+/* The points of the meshes of a project that can be remeshed (world space),
+   with their object index; one pass over the scene */
+void for_each_mesh(Project &project, const std::function<void(int, const std::vector<Vector3f> &)> &f) {
+    std::map<std::string, int> index;
+    for (size_t i = 0; i < project.objects.size(); ++i)
+        if (!project.unfit(project.objects[i]))
+            index[project.objects[i].mesh.path] = (int) i;
+    project.scene().mesh_points([&](const std::string &path, const std::vector<Vector3f> &points) {
+        auto it = index.find(path);
+        if (it != index.end())
+            f(it->second, points);
+    });
+}
+
+/* The mesh of a scene nearest to a point: a grid over the input vertices
+   of its meshes (the whole scene view merges them) */
+class NearestObject {
+public:
+    explicit NearestObject(Project &project) {
+        for_each_mesh(project, [&](int object, const std::vector<Vector3f> &V) {
+            for (const Vector3f &p : V) {
+                points.push_back(Point { p, object });
+                lo = lo.cwiseMin(p);
+                hi = hi.cwiseMax(p);
+            }
+            ++meshes;
+        });
+        if (points.empty())
+            throw std::runtime_error("the scene has no mesh that can be remeshed");
+        cell = std::max((hi - lo).maxCoeff() / std::cbrt((Float) points.size()) * 2, (Float) 1e-6f);
+        for (uint32_t k = 0; k < (uint32_t) points.size(); ++k) {
+            const Eigen::Vector3i c = key(points[k].p);
+            grid[std::make_tuple(c.x(), c.y(), c.z())].push_back(k);
         }
-        objects.push_back((int) i);
+        const Eigen::Vector3i maxCell = key(hi);
+        maxRing = std::max({ maxCell.x(), maxCell.y(), maxCell.z() }) + 1;
     }
-    if (points.empty())
-        throw std::runtime_error("the scene has no mesh that can be remeshed");
-    const Float cell = std::max((hi - lo).maxCoeff() / std::cbrt((Float) points.size()) * 2, (Float) 1e-6f);
-    auto key = [&](const Vector3f &p) {
-        const Vector3f q = (p - lo) / cell;
-        return Eigen::Vector3i((int) std::floor(q.x()), (int) std::floor(q.y()), (int) std::floor(q.z()));
-    };
-    std::map<std::tuple<int, int, int>, std::vector<uint32_t>> grid;
-    for (uint32_t k = 0; k < (uint32_t) points.size(); ++k) {
-        const Eigen::Vector3i c = key(points[k].p);
-        grid[std::make_tuple(c.x(), c.y(), c.z())].push_back(k);
-    }
-    const Eigen::Vector3i maxCell = key(hi);
-    const int maxRing = std::max({ maxCell.x(), maxCell.y(), maxCell.z() }) + 1;
-    auto nearest = [&](const Vector3f &p) {
+
+    int operator()(const Vector3f &p) const {
         const Eigen::Vector3i c = key(p);
         Float best = std::numeric_limits<Float>::infinity();
         int object = points[0].object;
@@ -4883,7 +5127,156 @@ void Viewer::splitViewportResult() {
                 break;
         }
         return object;
+    }
+
+    size_t meshes = 0;
+
+private:
+    Eigen::Vector3i key(const Vector3f &p) const {
+        const Vector3f q = (p - lo) / cell;
+        return Eigen::Vector3i((int) std::floor(q.x()), (int) std::floor(q.y()), (int) std::floor(q.z()));
+    }
+
+    struct Point { Vector3f p; int object; };
+    std::vector<Point> points;
+    Vector3f lo = Vector3f::Constant(std::numeric_limits<Float>::infinity()), hi = -lo;
+    Float cell = 1;
+    int maxRing = 0;
+    std::map<std::tuple<int, int, int>, std::vector<uint32_t>> grid;
+};
+
+} // namespace
+
+/* The whole scene view merges the meshes: the mesh of each face, per
+   connected part (the mesh whose points are exactly at a few of its
+   vertices, by majority: the merge keeps the positions bit for bit).
+   Built at the first need, until another mesh is loaded */
+bool Viewer::faceObjects() {
+    const MatrixXu &F = mRes.F();
+    const MatrixXf &V = mRes.V();
+    if (F.size() == 0)
+        return false;
+    if (mFaceObject.size() == (size_t) F.cols())
+        return true;
+    if (!mProject || busy() || mOpenObject >= 0 || mFilename != mProject->source)
+        return false;
+    struct Hash {
+        size_t operator()(const Vector3f &p) const {
+            const std::hash<float> h;
+            return h(p.x()) ^ (h(p.y()) * 31) ^ (h(p.z()) * 1009);
+        }
     };
+    struct Equal {
+        bool operator()(const Vector3f &a, const Vector3f &b) const { return a == b; }
+    };
+    std::unordered_map<Vector3f, std::vector<int>, Hash, Equal> owners;
+    std::map<int, size_t> pointsOf;
+    try {
+        for_each_mesh(*mProject, [&](int object, const std::vector<Vector3f> &points) {
+            pointsOf[object] += points.size();
+            for (const Vector3f &p : points) {
+                std::vector<int> &o = owners[p];
+                if (o.empty() || o.back() != object)
+                    o.push_back(object);
+            }
+        });
+    } catch (const std::exception &e) {
+        cout << "Selection: " << e.what() << endl;
+        return false;
+    }
+    std::vector<uint32_t> parent((size_t) V.cols());
+    for (uint32_t v = 0; v < (uint32_t) parent.size(); ++v)
+        parent[v] = v;
+    auto root = [&](uint32_t v) {
+        while (parent[v] != v)
+            v = parent[v] = parent[parent[v]];
+        return v;
+    };
+    for (std::ptrdiff_t f = 0; f < F.cols(); ++f)
+        for (int r = 1; r < F.rows(); ++r) {
+            const uint32_t a = root(F(0, f)), b = root(F(r, f));
+            if (a != b)
+                parent[std::max(a, b)] = std::min(a, b);
+        }
+    /* the vertices of each part found among the points vote (a mesh may
+       share a few positions with another: corners of a plane on a floor) */
+    std::unordered_map<uint32_t, size_t> found;
+    std::unordered_map<uint32_t, std::map<int, int>> votes;
+    for (uint32_t v = 0; v < (uint32_t) V.cols(); ++v) {
+        auto it = owners.find(V.col(v));
+        if (it == owners.end())
+            continue;   /* added by the subdivision */
+        const uint32_t r = root(v);
+        ++found[r];
+        for (int object : it->second)
+            ++votes[r][object];
+    }
+    std::unordered_map<uint32_t, int> objectOf;
+    for (const auto &kv : votes) {
+        /* the most votes; a tie: the mesh whose point count is nearest */
+        const double n = (double) found[kv.first];
+        int best = -1, count = 0;
+        for (const auto &v : kv.second)
+            if (v.second > count || (v.second == count && std::abs((double) pointsOf[v.first] - n) <
+                                                          std::abs((double) pointsOf[best] - n))) {
+                best = v.first;
+                count = v.second;
+            }
+        objectOf[kv.first] = best;
+    }
+    mFaceObject.resize((size_t) F.cols());
+    for (std::ptrdiff_t f = 0; f < F.cols(); ++f) {
+        auto it = objectOf.find(root(F(0, f)));
+        mFaceObject[(size_t) f] = it == objectOf.end() ? -1 : it->second;
+    }
+    return true;
+}
+
+void Viewer::refreshHighlight() {
+    mHighlightStale = true;
+    repaint();
+}
+
+/* The faces of the meshes selected in the Outliner, whole scene view only
+   (a mesh opened alone is the viewport) */
+void Viewer::uploadHighlight() {
+    mHighlightFaces = 0;
+    if (!mProject || !mOutliner || mOpenObject >= 0 || mOutliner->selection().empty() || !faceObjects())
+        return;
+    const MatrixXu &F = mRes.F();
+    const MatrixXf &V = mRes.V(), &N = mRes.N();
+    const std::set<int> &selection = mOutliner->selection();
+    std::vector<uint32_t> faces;
+    for (std::ptrdiff_t f = 0; f < F.cols(); ++f)
+        if (selection.count(mFaceObject[(size_t) f]))
+            faces.push_back((uint32_t) f);
+    if (faces.empty())
+        return;
+    /* slightly off the surface, along the normals */
+    const Float lift = mMeshStats.mAverageEdgeLength * 0.05f;
+    const bool normals = N.cols() == V.cols();
+    MatrixXu indices(3, (std::ptrdiff_t) faces.size());
+    MatrixXf position(3, (std::ptrdiff_t) faces.size() * 3);
+    MatrixXu8 color(4, (std::ptrdiff_t) faces.size() * 3);
+    for (size_t i = 0; i < faces.size(); ++i)
+        for (int k = 0; k < 3; ++k) {
+            const uint32_t v = F(k, faces[i]), j = (uint32_t) (3 * i + (size_t) k);
+            position.col(j) = normals ? Vector3f(V.col(v) + N.col(v) * lift) : Vector3f(V.col(v));
+            color.col(j) << (uint8_t) 0xFB, (uint8_t) 0x92, (uint8_t) 0x3C, (uint8_t) 0xFF;
+            indices(k, (std::ptrdiff_t) i) = j;
+        }
+    mHighlightShader.bind();
+    mHighlightShader.uploadAttrib("position", position);
+    mHighlightShader.uploadAttrib("color", color);
+    mHighlightShader.uploadIndices(indices);
+    mHighlightFaces = (uint32_t) faces.size();
+}
+
+/* The mesh extracted from the whole scene (all meshes merged), split back
+   into the meshes it came from: every face goes to the mesh of the input
+   vertex nearest to its centre (a grid over the input vertices) */
+void Viewer::splitViewportResult() {
+    const NearestObject nearest(*mProject);
 
     /* faces per mesh, then each mesh with its own vertices */
     std::map<int, std::vector<std::ptrdiff_t>> facesOf;
@@ -4918,7 +5311,7 @@ void Viewer::splitViewportResult() {
         o.message = "split from the whole scene extracted in the viewport";
     }
     mBatchLabel->setCaption("Whole scene result split into " + std::to_string(facesOf.size()) + " of " +
-                            std::to_string(objects.size()) + " meshes: they are done (Write scene)");
+                            std::to_string(nearest.meshes) + " meshes: they are done (Write scene)");
 }
 
 void Viewer::useViewportResult() {

@@ -216,8 +216,18 @@ Pixar : 842 proxies sur 859 sans partie manquante.
 ### Interface : Outliner et projets (`.imd`)
 
 - **Menu File** : New, Open (scènes `.abc` `.obj` `.usd*`, projets `.imd`, maillages), Open recent, Save,
-  Save as, Import legacy state, Export mesh, Write scene, Quit, avec Ctrl+N / O / S / Maj+S / Q. Un
-  fichier lâché sur la fenêtre s'ouvre aussi.
+  Save as, Import legacy state, Export mesh, Write scene, Preferences, Quit, avec
+  Ctrl+N / O / S / Maj+S / Q. Un fichier lâché sur la fenêtre s'ouvre aussi.
+- **Vue 3D** : un **clic gauche** sur un maillage le sélectionne dans l'Outliner (qui défile
+  jusqu'à sa ligne) et le montre en orange ; Maj ou Ctrl l'ajoute ou le retire, un clic dans le
+  vide vide la sélection. **F** (ou `.` du pavé numérique) cadre la sélection.
+  **File > Preferences** choisit la navigation, gardée d'une session à l'autre :
+
+  | Navigation | Orbite | Panoramique | Zoom |
+  |---|---|---|---|
+  | Instant Meshes (défaut) | glisser gauche | glisser droit, Maj + glisser gauche | molette |
+  | Maya | Alt + glisser gauche | Alt + glisser milieu | Alt + glisser droit, molette |
+  | Blender | glisser milieu | Maj + glisser milieu | Ctrl + glisser milieu, molette |
 - **Outliner** (à droite) : les maillages de la scène en arborescence. Cases à cocher, sélection,
   tri, filtre (`Rock`, `*Rock*`, `Props/*`). Double-clic : le maillage s'ouvre seul dans la vue.
   Par maillage : faces, cible propre (comme `-m`, en orange) ou par défaut (`--others`), état

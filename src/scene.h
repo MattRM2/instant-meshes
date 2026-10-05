@@ -7,6 +7,7 @@
 #pragma once
 
 #include "abc.h"
+#include <functional>
 #include <memory>
 
 /// A polygon mesh of a scene: its path (Alembic object path, "/name" for
@@ -35,6 +36,11 @@ public:
     /// sets per triangle corner
     virtual void load(const std::string &path, MatrixXu &F, MatrixXf &V,
                       uint64_t *polygons = nullptr, std::vector<UVSet> *uvs = nullptr) = 0;
+
+    /// The points of every mesh (world space, as load() gives them), in
+    /// one pass when the format allows; the meshes that fail are left out
+    virtual void mesh_points(
+        const std::function<void(const std::string &path, const std::vector<Vector3f> &points)> &f);
 
     /// Writes the scene to 'output' (same format) with the given meshes
     /// replaced, everything else copied; 'output' may be the file itself

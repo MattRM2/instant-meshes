@@ -94,6 +94,36 @@ void OutlinerView::setSelection(const std::set<int> &s) {
     mSelected = s;
 }
 
+void OutlinerView::reveal(int object) {
+    int node = -1;
+    for (size_t k = 1; k < mNodes.size(); ++k)
+        if (mNodes[k].object == object) {
+            node = (int) k;
+            break;
+        }
+    if (node < 0)
+        return;
+    bool expanded = false;
+    for (int p = mNodes[(size_t) node].parent; p > 0; p = mNodes[(size_t) p].parent)
+        if (!mNodes[(size_t) p].expanded) {
+            mNodes[(size_t) p].expanded = true;
+            expanded = true;
+        }
+    if (expanded)
+        layoutRows();
+    for (size_t r = 0; r < mRows.size(); ++r) {
+        if (mRows[r].first != node)
+            continue;
+        /* out of view: centred */
+        const int top = (int) r * RowHeight, view = height() - HeaderHeight;
+        if (top < mScroll || top + RowHeight > mScroll + view)
+            mScroll = top - (view - RowHeight) / 2;
+        clampScroll();
+        mAnchor = (int) r;
+        break;
+    }
+}
+
 void OutlinerView::refresh() {
     layoutRows();
 }

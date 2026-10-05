@@ -88,6 +88,11 @@ public:
         usd::load_mesh(*mStage, path, F, V, polygons, uvs);
     }
 
+    void mesh_points(
+        const std::function<void(const std::string &path, const std::vector<Vector3f> &points)> &f) override {
+        usd::mesh_points(*mStage, f);
+    }
+
     void write(const std::string &output, const std::vector<SceneReplacement> &replacements) override {
         usd::write_overlay(*mStage, output, replacements);
     }
@@ -109,6 +114,23 @@ private:
 };
 
 } // namespace
+
+void SceneFile::mesh_points(
+    const std::function<void(const std::string &path, const std::vector<Vector3f> &points)> &f) {
+    for (const SceneMesh &m : meshes()) {
+        MatrixXu F;
+        MatrixXf V;
+        try {
+            load(m.path, F, V);
+        } catch (const std::exception &) {
+            continue;
+        }
+        std::vector<Vector3f> points((size_t) V.cols());
+        for (std::ptrdiff_t k = 0; k < V.cols(); ++k)
+            points[(size_t) k] = V.col(k);
+        f(m.path, points);
+    }
+}
 
 bool SceneFile::supported(const std::string &filename) {
     const std::string ext = extension_of(filename);

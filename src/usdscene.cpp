@@ -537,6 +537,19 @@ void load_mesh(const Layer &layer, const std::string &path, MatrixXu &F, MatrixX
         *polygons = c.sizes.size();
 }
 
+void mesh_points(const Layer &layer,
+                 const std::function<void(const std::string &path, const std::vector<Vector3f> &points)> &f) {
+    Walker w { layer, nullptr, nullptr };
+    w.onMesh = [&](const Prim &p, const Mat4 &world, const Instancing &inst, const std::string &) {
+        if (inst.instanced())
+            return;
+        Collector c { layer };
+        c.add(p, world);
+        f(p.path, c.positions);
+    };
+    w.run();
+}
+
 void load_all(const Layer &layer, MatrixXu &F, MatrixXf &V, uint64_t *polygons, std::vector<UVSet> *uvs) {
     Collector c { layer };
     c.wantUVs = uvs != nullptr;

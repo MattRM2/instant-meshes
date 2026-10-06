@@ -513,7 +513,7 @@ static double lost_surface(const MatrixXu &F0, const MatrixXf &V0, const MatrixX
     return total > 0 ? lost / total : 0.0;
 }
 
-/* The shape first: when the result lost parts of the input (more than 2%
+/* --keep-shape, the shape first: when the result lost parts of the input (more than 2%
    of its surface farther than about an edge: thin tubes, frames, wires
    whose sides merged), the remeshing runs again finer (twice the faces), and
    a density that lost parts is never gone back under. A percentage target
@@ -521,7 +521,7 @@ static double lost_surface(const MatrixXu &F0, const MatrixXf &V0, const MatrixX
    scaled by the gap, then between a short and a long attempt (the count
    jumps when the sides separate). At most 5 attempts; kept: among those
    that cover the input, the nearest to the target, else the one that lost
-   the least */
+   the least. Without --keep-shape, only the percentage target is corrected */
 void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
             const RemeshParams &params, MatrixXu &F_extr, MatrixXf &O_extr,
             MatrixXf &Nf_extr, RemeshReport *report) {
@@ -553,6 +553,7 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
     /* the shape is not sought past the input's own face count: there the
        input is the better mesh */
     const double maxK = percent ? std::max(1.0, 100.0 / params.face_percent) : 16.0;
+    const bool shape = params.keep_shape;
     const int attempts = 5;
     for (int attempt = 0; attempt < attempts; ++attempt) {
         MatrixXu Fi = attempt == 0 ? std::move(F) : F0, Fo;
@@ -570,7 +571,7 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
                 break;
             }
         }
-        const double lost = lost_surface(F0, V0, Fo, Oo);
+        const double lost = shape ? lost_surface(F0, V0, Fo, Oo) : 0.0;
         const bool covers = lost <= 0.02;
         const double got = (double) Fo.cols(), ratio = percent ? got / target : 1.0;
         const double error = std::abs(std::log(std::max(ratio, 1e-9)));
@@ -619,18 +620,18 @@ void remesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons,
     const bool lighterAsked = percent ? params.face_percent < 100
                                       : params.face_count > 0 && (uint64_t) params.face_count < polygons;
     const bool heavier = lighterAsked && polygons > 0 && (uint64_t) F_extr.cols() >= polygons;
-    if ((!best.covers || heavier) && report) {
+    if (shape && (!best.covers || heavier) && report) {
         report->shapeNeedsInput = true;
         report->lost = best.lost;
     }
-    if (best.covers && heavier)
+    if (shape && best.covers && heavier)
         cout << "Shape: kept only with " << (uint64_t) F_extr.cols() << " faces, as many as the input ("
              << polygons << "): the input is the lighter mesh." << endl;
     if (!best.covers)
         cout << "Shape: " << (int) std::round(100 * best.lost) << "% of the input surface lost, even at "
              << std::setprecision(2) << best.k << std::setprecision(6) << "x the asked density (parts thinner "
              << "than the edges, or a mesh already lighter than any remeshing of it)." << endl;
-    else if (best.k > 1.0001)
+    else if (shape && best.k > 1.0001)
         cout << "Shape kept: " << (uint64_t) F_extr.cols() << " faces, " << std::setprecision(2) << best.k
              << std::setprecision(6) << "x the asked density"
              << (percent ? " (~" + std::to_string((uint64_t) std::round(target)) + " faces asked)" : std::string())

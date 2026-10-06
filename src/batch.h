@@ -28,6 +28,7 @@ struct RemeshParams {
     int smooth_iter = 2, knn_points = 10;
     bool pure_quad = true, deterministic = false;
     bool keep_border = false;  ///< snap the open border back onto the input's (implies align_to_boundaries)
+    bool keep_shape = false;   ///< --keep-shape: remesh again finer a result that lost parts (up to 5 attempts)
     enum UVMode { UVNone, UVTransfer, UVUnwrap } uv = UVNone;   ///< --uv
 };
 

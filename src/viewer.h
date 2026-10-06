@@ -335,6 +335,7 @@ protected:
     TextBox *mFilterBox = nullptr, *mObjectTargetBox = nullptr, *mOthersBox = nullptr;
     ComboBox *mUVBox = nullptr, *mExportUVBox = nullptr;
     CheckBox *mKeepBorderBox = nullptr, *mProxyBox = nullptr, *mSkipFailedBox = nullptr, *mDeterministicBox = nullptr;
+    CheckBox *mKeepShapeBox = nullptr;
     Button *mProcessBtn = nullptr, *mCancelBtn = nullptr, *mUseResultBtn = nullptr, *mWriteSceneBtn = nullptr;
     Button *mOpenObjectBtn = nullptr, *mWholeSceneBtn = nullptr, *mShowResultBtn = nullptr;
     ProgressBar *mBatchBar = nullptr;

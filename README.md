@@ -50,6 +50,7 @@ InstantMeshes.exe scene.abc -o scene_retopo.abc -f 75%
 | `--dry-run` | Affiche le plan de `-m` / `--others` sans rien calculer ni écrire |
 | `--uv transfer` | Transfère toutes les cartes UV de l'original sur le maillage remaillé, îlot par îlot (aucune face étirée sur une couture), en fichier entier comme en mode par objet ; sortie `.obj`, `.abc` ou USD (`--uv none` par défaut) |
 | `--uv unwrap` | Nouvelles UV pour le maillage remaillé (xatlas, intégré) : îlots aplatis avec peu de déformation et rangés dans le carré [0, 1], polygones jamais coupés, aucun îlot en miroir ni recouvrement ; une carte `UVMap` |
+| `--keep-shape` | La forme d'abord : un résultat qui a perdu des parties fines (tubes, fils, panneaux) est refait plus dense, jusqu'à 5 essais ; en mode par maillage, un maillage qui a besoin de toutes ses faces est gardé tel quel. Plus lent, d'où l'option |
 | `--keep-border` | Replace le bord libre remaillé exactement sur le bord d'origine (coins et courbes compris) : des objets qui se touchent, comme des plaques de sol, restent jointifs après un remaillage séparé. Implique `-b` ; sortie `.obj`, `.abc` ou USD |
 | `--progress` | Affiche un bloc de progression bien visible (3 lignes) avant le premier maillage et après chaque maillage traité : pourcentage pondéré par les faces d'entrée, barre, maillages faits / total, temps écoulé et temps restant estimé |
 | `--skip-failed` | Un maillage impossible à remailler (ex. aucune face pour une cible trop petite) est recopié intact au lieu de tout arrêter ; la liste des maillages sautés est affichée à la fin |
@@ -204,8 +205,8 @@ subdivisée avant le remaillage (le plus coûteux) est signalé dans le log.
 Précision de `-f N%` : environ ±3 % sur des maillages réels, moins précis en
 dessous de quelques centaines de polygones.
 
-**La forme d'abord** : après chaque remaillage, la surface d'origine est
-comparée au résultat. S'il a perdu des parties (tubes, fils, cadres, panneaux
+**La forme d'abord (`--keep-shape`, désactivé par défaut, car plus lent)** :
+après chaque remaillage, la surface d'origine est comparée au résultat. S'il a perdu des parties (tubes, fils, cadres, panneaux
 plus fins que les arêtes, dont les faces ont fusionné), le maillage est
 refait avec deux fois plus de faces, jusqu'à 5 essais, quitte à dépasser
 l'objectif (le log le dit). Un maillage qui ne garde sa forme qu'avec autant

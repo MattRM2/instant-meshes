@@ -4137,9 +4137,9 @@ void Viewer::buildOutliner() {
         setDirty();
     });
 
-    Widget *checks1 = new Widget(win), *checks2 = new Widget(win);
-    checks1->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
-    checks2->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    Widget *checks1 = new Widget(win), *checks2 = new Widget(win), *checks3 = new Widget(win);
+    for (Widget *row : { checks1, checks2, checks3 })
+        row->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
     mKeepBorderBox = new CheckBox(checks1, "Keep border", [&](bool) { setDirty(); });
     mKeepBorderBox->setTooltip("--keep-border: objects touching along their borders stay closed");
     mProxyBox = new CheckBox(checks1, "USD proxies", [&](bool) { setDirty(); refreshOutliner(); });
@@ -4150,7 +4150,10 @@ void Viewer::buildOutliner() {
     mDeterministicBox->setChecked(mDeterministic);
     mSkipFailedBox = new CheckBox(checks2, "Skip failed", [&](bool) { setDirty(); });
     mSkipFailedBox->setTooltip("--skip-failed, for the command line: here a mesh that fails is kept unchanged");
-    for (Widget *row : { checks1, checks2 })
+    mKeepShapeBox = new CheckBox(checks3, "Keep shape", [&](bool) { setDirty(); });
+    mKeepShapeBox->setTooltip("--keep-shape: a mesh that lost thin parts is remeshed again finer (up to 5 "
+                              "attempts, slower); one that needs all its faces is kept as it is");
+    for (Widget *row : { checks1, checks2, checks3 })
         for (Widget *c : row->children())
             c->setFixedSize(Vector2i(inner / 2 - 2, 22));
 
@@ -4770,6 +4773,7 @@ RemeshParams Viewer::guiParams() const {
     p.pure_quad = mPureQuadBox->checked();
     p.deterministic = mDeterministicBox->checked();
     p.keep_border = mKeepBorderBox->checked();
+    p.keep_shape = mKeepShapeBox->checked();
     p.uv = (RemeshParams::UVMode) mUVBox->selectedIndex();
     return p;
 }
@@ -4796,6 +4800,7 @@ void Viewer::optionsToGui() {
     mSmoothSlider->setValue(o.params.smooth_iter / 10.f);
     mDeterministicBox->setChecked(o.params.deterministic);
     mKeepBorderBox->setChecked(o.params.keep_border);
+    mKeepShapeBox->setChecked(o.params.keep_shape);
     mUVBox->setSelectedIndex((int) o.params.uv);
     mExportUVBox->setSelectedIndex((int) o.params.uv);
     mProxyBox->setChecked(o.proxy);
@@ -4831,6 +4836,8 @@ std::string Viewer::commandLine() const {
         cmd += " -d";
     if (p.keep_border)
         cmd += " --keep-border";
+    if (p.keep_shape)
+        cmd += " --keep-shape";
     if (p.uv != RemeshParams::UVNone)
         cmd += std::string(" --uv ") + (p.uv == RemeshParams::UVTransfer ? "transfer" : "unwrap");
     if (mProxyBox->checked())

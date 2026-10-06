@@ -776,12 +776,16 @@ def test_thin_objects(exe, tmp):
         for q in F:
             f.write("f " + " ".join(str(i + 1) for i in q) + "\n")
     out = os.path.join(tmp, "thinbox_out.obj")
-    code, log = run(exe, path, "-o", out, "-d", "-f", "5%")
+    code, log = run(exe, path, "-o", out, "-d", "-f", "5%", "--keep-shape")
     faces = sum(1 for l in open(out) if l.startswith("f ")) if os.path.exists(out) else 0
     target = len(F) * 0.05
-    # the shape first: the box stays whole, even with more faces than asked
+    # --keep-shape: the box stays whole, even with more faces than asked
     check(code == 0 and 0.7 <= faces / target <= 3 and "Shape kept" in log and "could not be kept" not in log,
-          "a thin box at 5%%: %d faces for ~%d, its shape kept" % (faces, target))
+          "--keep-shape, a thin box at 5%%: %d faces for ~%d, its shape kept" % (faces, target))
+    # without it, as before: no shape check, no attempt for the shape
+    code, log = run(exe, path, "-o", out, "-d", "-f", "5%")
+    check(code == 0 and os.path.exists(out) and "Shape" not in log and "lost" not in log,
+          "a thin box at 5%, no --keep-shape: no shape check")
     for args in (["-D", "-f", "5%"], ["-D", "-f", "50"], ["-f", "400"], ["-r", "6", "-p", "6", "-f", "5%"]):
         code, log = run(exe, path, "-o", out, "-d", *args)
         check(code == 0 and os.path.exists(out), "a thin box, %s: no crash" % " ".join(args))

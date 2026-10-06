@@ -420,6 +420,7 @@ std::map<std::string, std::string> options_text(const ProjectOptions &o) {
     kv["pure_quad"] = p.pure_quad ? "1" : "0";
     kv["deterministic"] = p.deterministic ? "1" : "0";
     kv["keep_border"] = p.keep_border ? "1" : "0";
+    kv["keep_shape"] = p.keep_shape ? "1" : "0";
     kv["uv"] = uv_name(p.uv);
     kv["others"] = target_text(o.others);
     kv["proxy"] = o.proxy ? "1" : "0";
@@ -444,6 +445,7 @@ void parse_options(const std::map<std::string, std::string> &kv, ProjectOptions 
     p.pure_quad = get("pure_quad", "1") == "1";
     p.deterministic = get("deterministic", "0") == "1";
     p.keep_border = get("keep_border", "0") == "1";
+    p.keep_shape = get("keep_shape", "0") == "1";
     p.uv = parse_uv_mode(get("uv", "none"));
     o.others = parse_target(get("others", ""));
     o.proxy = get("proxy", "0") == "1";

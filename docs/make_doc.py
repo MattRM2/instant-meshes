@@ -446,9 +446,10 @@ def build(cover_image=None):
     story += [Spacer(1, 3 * mm),
               callout("Accuracy, and the shape first", "On real meshes the result lands within about \u00b13% of "
                                   "the target. Parts thinner than the edges (tubes, wires, frames, panels) can merge "
-                                  "and vanish: per mesh, the result is checked against the input, and a mesh that lost "
-                                  "parts is remeshed again with more faces (5 attempts at most). A mesh that keeps its "
-                                  "shape only with as many faces as it has is kept as it is."),
+                                  "and vanish. With <b>--keep-shape</b>, the result is checked against the input, and "
+                                  "a mesh that lost parts is remeshed again with more faces (5 attempts at most, so "
+                                  "slower); a mesh that keeps its shape only with as many faces as it has is kept as it "
+                                  "is (5.3)."),
               PageBreak(),
               SubHeader("2.3", "Flow line colors"), Spacer(1, 3 * mm),
               p("Once the orientation field is solved, flow lines show how the edges of the output will run. "
@@ -521,7 +522,8 @@ def build(cover_image=None):
                   "<b>Set target</b> gives the selected meshes their own target (like -m), in orange; the "
                   "others take the <b>Default target</b> (--others), muted. Clear goes back to it.",
                   "<b>Scene</b> settings are those of the command line: UVs, keep border, USD proxies, "
-                  "deterministic, skip failed; Remesh as, configuration and smoothing come from the left panel.",
+                  "deterministic, skip failed, keep shape; Remesh as, configuration and smoothing come from the "
+                  "left panel.",
                   "<b>Process checked</b> remeshes in the background (progress bar, Cancel); each mesh turns "
                   "<font color='#4ADE80'>done</font>, <font color='#F87171'>failed</font> (the scene keeps it "
                   "unchanged) or <font color='#FACC15'>stale</font> (its target or the scene changed).",
@@ -723,6 +725,7 @@ def build(cover_image=None):
                      ["-r / -p <n>", "Orientation / position symmetry: 4/4 quads (default), 6/6 triangles"],
                      ["-c, --crease <deg>", "Keep creases sharper than this angle"],
                      ["-b, --boundaries / --keep-border", "Align to open borders / also put them back exactly on the input's (5.5)"],
+                     ["--keep-shape", "Remesh again finer a result that lost thin parts, up to 5 attempts (5.3)"],
                      ["-S, --smooth <n>", "Smoothing iterations (default 2)"],
                      ["-d / -t <n>", "Same result on every run (slower) / number of threads"],
                      ["--uv <mode>", "UVs of the output: none (default), transfer or unwrap (section 6)"],
@@ -808,7 +811,9 @@ def build(cover_image=None):
                                             "<b>--skip-failed</b> is given: the failed meshes are then copied "
                                             "unchanged, listed at the end, and the file is written."),
               Spacer(1, 3 * mm),
-              callout("The shape first", "After each remeshing, the input's surface is checked against the "
+              callout("The shape first: --keep-shape", "Off by default, as the attempts take time. With "
+                      "<b>--keep-shape</b> (Keep shape in the Outliner), after each remeshing the input's surface is "
+                      "checked against the "
                       "result: more than 2% of it farther than about an edge means lost parts (tubes, wires, "
                       "frames, panels thinner than the edges, whose sides merged). The mesh is then remeshed again "
                       "with twice the faces, never back under a density that lost parts; a percentage missed widely "

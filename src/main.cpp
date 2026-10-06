@@ -35,7 +35,8 @@ int main(int argc, char **argv) {
     std::string batchOutput;
     std::vector<MeshRule> meshRules;
     FaceTarget others;
-    bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false, progress = false;
+    bool listMeshes = false, dryRun = false, skipFailed = false, keepBorder = false, keepShape = false,
+         progress = false;
     bool proxy = false, uvGiven = false;
     std::string saveImd;
     int listSort = 0, listTop = 0;
@@ -195,6 +196,8 @@ int main(int argc, char **argv) {
                 proxy = true;
             } else if (strcmp("--keep-border", argv[i]) == 0) {
                 keepBorder = true;
+            } else if (strcmp("--keep-shape", argv[i]) == 0) {
+                keepShape = true;
             } else if (strcmp("--compat", argv[i]) == 0 || strcmp("-C", argv[i]) == 0) {
                 compat = true;
 #if defined(__APPLE__)
@@ -360,6 +363,9 @@ int main(int argc, char **argv) {
         cout << "   -b, --boundaries          Align to boundaries (only applies when the mesh is not closed)" << endl;
         cout << "       --keep-border         Snap the open border back onto the input border (implies -b):" << endl;
         cout << "                             objects touching along their borders stay closed (.obj/.abc/.usd)" << endl;
+        cout << "       --keep-shape          The shape first: a result that lost parts (thin tubes, wires," << endl;
+        cout << "                             panels) is remeshed again finer, up to 5 attempts; per mesh, one" << endl;
+        cout << "                             that needs as many faces as it has is kept as it is (slower)" << endl;
         cout << "       --uv <mode>           UVs of the output (.obj/.abc/.usd): none (default), transfer" << endl;
         cout << "                             (from the input, island by island) or unwrap (new" << endl;
         cout << "                             UVs, xatlas)" << endl;
@@ -424,6 +430,7 @@ int main(int argc, char **argv) {
     params.pure_quad = !dominant;
     params.deterministic = deterministic;
     params.keep_border = keepBorder;
+    params.keep_shape = keepShape;
     params.uv = uvMode;
     /* proxies keep the look of the original: its UVs, unless --uv says otherwise */
     if (proxy && !uvGiven)

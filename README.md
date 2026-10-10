@@ -271,7 +271,7 @@ recent projects is available [here](https://www.foundry.com/trends/design-visual
 
 ## Screenshot
 
-![Instant Meshes 2.4: the Matt Dark interface and the Outliner](docs/cover.png)
+![Instant Meshes 2.5: the Matt Dark interface and the Outliner](docs/cover.png)
 
 ## Pre-compiled binaries
 

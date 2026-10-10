@@ -24,6 +24,7 @@
 #include "gui_serializer.h"
 #include "version.h"
 #include "association.h"
+#include "border.h"
 #include <nanogui/theme.h>
 #include <resources.h>
 #include <pcg32.h>
@@ -1839,6 +1840,21 @@ void Viewer::extractMesh() {
                   mF_extracted, posy, mRes.scale(), creaseOut, true,
                   mPureQuadBox->checked(), mBVH, smooth_iterations);
 
+    /* Keep border (Outliner), as --keep-border */
+    if (mKeepBorderBox && mKeepBorderBox->checked() && mRes.F().size() > 0) {
+        if (mInputBorder.empty()) {
+            cout << "Keep border: the input has no open border." << endl;
+        } else {
+            const BorderSnapStats s = snap_to_border(mInputBorder, mRes.scale(), mF_extracted, mV_extracted,
+                                                     mNf_extracted);
+            cout << "Keep border: " << s.snapped << " of " << s.borderVertices
+                 << " border vertices snapped onto the input border, " << s.inserted << " input corners added";
+            if (s.tooFar > 0)
+                cout << ", " << s.tooFar << " too far from it, left in place";
+            cout << "." << endl;
+        }
+    }
+
     cout << "Extraction is done. (total time: " << timeString(timer.value()) << ")" << endl;
     uploadOutputMesh();
 }
@@ -3111,7 +3127,7 @@ void Viewer::refreshStrokes() {
     const VectorXu &E2E = mRes.E2E();
 
     mRes.clearConstraints();
-    if (mAlignToBoundariesBox->checked()) {
+    if (mAlignToBoundariesBox->checked() || (mKeepBorderBox && mKeepBorderBox->checked())) {
         for (uint32_t i=0; i<3*F.cols(); ++i) {
             if (E2E[i] == INVALID) {
                 uint32_t i0 = F(i%3, i/3);
@@ -3687,6 +3703,7 @@ void Viewer::loadMesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons, 
     cout << "   Face count           = " << face_count << endl;
     cout << "   Edge length          = " << scale << endl;
 
+    mInputBorder = pointcloud ? BorderCurves() : extract_border(F, V);
     if (!pointcloud) {
         /* Subdivide the mesh if necessary */
         if (mMeshStats.mMaximumEdgeLength*2 > scale || mMeshStats.mMaximumEdgeLength > mMeshStats.mAverageEdgeLength * 2) {
@@ -4146,12 +4163,21 @@ void Viewer::buildOutliner() {
     Widget *checks1 = new Widget(win), *checks2 = new Widget(win), *checks3 = new Widget(win);
     for (Widget *row : { checks1, checks2, checks3 })
         row->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
-    mKeepBorderBox = new CheckBox(checks1, "Keep border", [&](bool) { setDirty(); });
-    mKeepBorderBox->setTooltip("--keep-border: objects touching along their borders stay closed");
+    mKeepBorderBox = new CheckBox(checks1, "Keep border", [&](bool) {
+        setDirty();
+        if (mKeepBorderBox->checked())
+            mAlignToBoundariesBox->setChecked(true);   /* implied, as -b */
+        refreshStrokes();
+    });
+    mKeepBorderBox->setTooltip("--keep-border: objects touching along their borders stay closed; in the "
+                               "viewport too (Extract mesh), with the alignment to boundaries");
     mProxyBox = new CheckBox(checks1, "USD proxies", [&](bool) { setDirty(); refreshOutliner(); });
     mProxyBox->setTooltip("--proxy: keep the meshes, add the new ones as their proxies, in a proxy layer "
                           "that the scene references (USD scenes)");
-    mDeterministicBox = new CheckBox(checks2, "Deterministic", [&](bool) { setDirty(); });
+    mDeterministicBox = new CheckBox(checks2, "Deterministic", [&](bool checked) {
+        setDirty();
+        mDeterministic = checked;   /* the viewport too, from the next mesh opened */
+    });
     mDeterministicBox->setTooltip("-d: the same result on every run (slower)");
     mDeterministicBox->setChecked(mDeterministic);
     mSkipFailedBox = new CheckBox(checks2, "Skip failed", [&](bool) { setDirty(); });
@@ -4805,6 +4831,7 @@ void Viewer::optionsToGui() {
     mSmoothBox->setValue(std::to_string(o.params.smooth_iter));
     mSmoothSlider->setValue(o.params.smooth_iter / 10.f);
     mDeterministicBox->setChecked(o.params.deterministic);
+    mDeterministic = o.params.deterministic;
     mKeepBorderBox->setChecked(o.params.keep_border);
     mKeepShapeBox->setChecked(o.params.keep_shape);
     mUVBox->setSelectedIndex((int) o.params.uv);

@@ -523,7 +523,7 @@ def build(cover_image=None):
                   "others take the <b>Default target</b> (--others), muted. Clear goes back to it.",
                   "<b>Scene</b> settings are those of the command line: UVs, keep border, USD proxies, "
                   "deterministic, skip failed, keep shape; Remesh as, configuration and smoothing come from the "
-                  "left panel.",
+                  "left panel. Keep border and Deterministic apply to Extract mesh too.",
                   "<b>Process checked</b> remeshes in the background (progress bar, Cancel); each mesh turns "
                   "<font color='#4ADE80'>done</font>, <font color='#F87171'>failed</font> (the scene keeps it "
                   "unchanged) or <font color='#FACC15'>stale</font> (its target or the scene changed).",

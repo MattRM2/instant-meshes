@@ -23,6 +23,7 @@
 #include "menubar.h"
 #include "outliner.h"
 #include "project.h"
+#include "border.h"
 #include <atomic>
 #include <mutex>
 #include <set>
@@ -232,6 +233,10 @@ protected:
     /* Painting tools */
     std::vector<Vector2i> mScreenCurve;
     std::vector<std::pair<uint32_t, std::vector<CurvePoint>>> mStrokes;
+
+    /* Keep border in the viewport: the open border of the input, before
+       its subdivision */
+    BorderCurves mInputBorder;
 
     /* Extraction result */
     MatrixXu mF_extracted;

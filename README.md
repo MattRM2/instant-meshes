@@ -232,7 +232,9 @@ Pixar : 842 proxies sur 859 sans partie manquante.
 - **Outliner** (à droite) : les maillages de la scène en arborescence. Cases à cocher, sélection,
   tri, filtre (`Rock`, `*Rock*`, `Props/*`). Double-clic : le maillage s'ouvre seul dans la vue.
   Par maillage : faces, cible propre (comme `-m`, en orange) ou par défaut (`--others`), état
-  (done, failed, stale).
+  (done, failed, stale). Les réglages Scene valent aussi pour le travail à la main dans la vue :
+  Keep border (qui coche Align to boundaries) et Deterministic à l'extraction, USD proxies à
+  l'écriture de la scène.
 - **Process checked** remaille les maillages cochés en tâche de fond (barre de progression,
   annulation). **Use viewport result** garde un maillage retouché à la main. Le bandeau en haut
   de la vue indique ce qu'elle montre : `WHOLE SCENE` (scène entière, tous les maillages fusionnés)

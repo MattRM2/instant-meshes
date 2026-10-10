@@ -339,7 +339,7 @@ SECTIONS = [
                                                  "5.5 Touching objects: --keep-border",
                                                  "5.6 Following a long run: --progress",
                                                  "5.7 Instanced meshes: remeshed once, for every instance"]),
-    (6, "UVs", ["6.1 Transfer: --uv transfer", "6.2 Unwrap: --uv unwrap"]),
+    (6, "UVs", ["6.1 Transfer: --uv transfer", "6.2 Unwrap: --uv unwrap", "6.3 The UV checker"]),
     (7, "Reference", ["7.1 Accuracy of the targets", "7.2 Limitations", "7.3 Credits and licenses"]),
 ]
 
@@ -946,6 +946,20 @@ def build(cover_image=None):
         "Cost grows with the face count: about 0.5 s for 6k faces, 4 s for 30k, 11 s for 60k. Unwrap the "
         "light meshes (proxies, game assets); transfer the UVs of the heavy ones.",
     ]))]
+    checkerImage = Image(os.path.join(HERE, "uv_checker.png"))
+    checkerImage.drawWidth = 120 * mm
+    checkerImage.drawHeight = checkerImage.drawWidth * 470 / 790
+    story += [Spacer(1, 4 * mm), KeepTogether([SubHeader("6.3", "The UV checker"), Spacer(1, 3 * mm),
+              p("<b>Advanced > UV checker</b> puts a texture on the UVs in the viewport, to compare the high "
+                "and the low: <b>On the input mesh</b> (its UVs, greyed when it has none) and <b>On the output "
+                "mesh</b> (the UVs of Export mesh > UVs; None picks transfer when the input has UVs, else "
+                "unwrap). <b>Tiling</b> x1 to x16 repeats it; <b>Load image...</b> takes another texture "
+                "(PNG, JPEG, TGA, BMP), <b>Checker</b> comes back to the built-in grid. \ switches between "
+                "the input and the output."),
+              Spacer(1, 3 * mm), checkerImage,
+              Paragraph("The input's UVs (left) and the output's, transferred (right): the same cells at the "
+                        "same places.",
+                        ParagraphStyle("cap3", parent=body, fontSize=8, textColor=MUTED, alignment=TA_CENTER))])]
     story += [PageBreak()]
 
     # ---------------- 7 reference

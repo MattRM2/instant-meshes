@@ -219,6 +219,9 @@ Pixar : 842 proxies sur 859 sans partie manquante.
 - **Menu File** : New, Open (scènes `.abc` `.obj` `.usd*`, projets `.imd`, maillages), Open recent, Save,
   Save as, Import legacy state, Export mesh, Write scene, Preferences, Quit, avec
   Ctrl+N / O / S / Maj+S / Q. Un fichier lâché sur la fenêtre s'ouvre aussi.
+- **Damier UV** (Advanced > UV checker) : une texture sur les UV de l'original (s'il en a, sinon
+  l'option est grisée) et du résultat (celles d'Export mesh > UVs), pour comparer le high et le low ;
+  tiling x1 à x16, **Load image...** pour une autre texture, `\` passe de l'un à l'autre.
 - **Vue 3D** : un **clic gauche** sur un maillage le sélectionne dans l'Outliner (qui défile
   jusqu'à sa ligne) et le montre en orange ; Maj ou Ctrl l'ajoute ou le retire, un clic dans le
   vide vide la sélection. **F** (ou `.` du pavé numérique) cadre la sélection.

@@ -125,6 +125,7 @@ set(PNG_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/sing_dir.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/sing_pos.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/instantmeshes.png
+  ${CMAKE_CURRENT_SOURCE_DIR}/resources/UVChecker.png
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts/Poppins-Regular.ttf
   ${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts/Poppins-SemiBold.ttf)
 file(GLOB FRAG_FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/*.frag")

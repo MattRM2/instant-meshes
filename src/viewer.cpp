@@ -201,6 +201,10 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
         (const char *)shader_quadmesh_vert,
         (const char *)shader_quadmesh_frag);
 
+    mInputUVShader.init("input_uv_shader",
+        (const char *)shader_quadmesh_vert,
+        (const char *)shader_quadmesh_frag);
+
     mOutputMeshWireframeShader.init("output_mesh_wireframe_shader",
         (const char *)shader_lines_vert,
         (const char *)shader_lines_frag);
@@ -350,6 +354,50 @@ Viewer::Viewer(bool fullscreen, bool deterministic)
     mLayers[OutputMeshWireframe] = new CheckBox(advancedPopup, "Output mesh wireframe", layerCB);
     for (int i=0; i<LayerCount; ++i)
         mLayers[i]->setId("layer_" + std::to_string(i));
+
+    /* UV checker: a texture on the UVs of the input (when it has some) and
+       of the output (those of Export mesh > UVs), to compare them */
+    new Label(advancedPopup, "UV checker", "sans-bold");
+    mInputUVBox = new CheckBox(advancedPopup, "On the input mesh (its UVs)", [&](bool) {
+        mInputUVStale = true;
+        repaint();
+    });
+    mOutputUVBox = new CheckBox(advancedPopup, "On the output mesh", [&](bool checked) {
+        if (checked && mF_extracted.size() > 0)
+            uploadOutputMesh();   /* its UVs computed if needed */
+        repaint();
+    });
+    mOutputUVBox->setTooltip("The UVs of Export mesh > UVs (transfer or unwrap; None picks transfer when "
+                             "the input has UVs, else unwrap)");
+    Widget *tilingPanel = new Widget(advancedPopup);
+    tilingPanel->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 4));
+    new Label(tilingPanel, "Tiling");
+    const int tilings[5] = { 1, 2, 4, 8, 16 };
+    for (int i = 0; i < 5; ++i) {
+        Button *b = new Button(tilingPanel, "x" + std::to_string(tilings[i]));
+        b->setFlags(Button::RadioButton);
+        b->setFixedSize(Vector2i(38, 24));
+        b->setPushed(i == 0);
+        const float t = (float) tilings[i];
+        b->setCallback([&, t] {
+            mUVTiling = t;
+            repaint();
+        });
+        mTilingBtn[i] = b;
+    }
+    Widget *imagePanel = new Widget(advancedPopup);
+    imagePanel->setLayout(new BoxLayout(Orientation::Horizontal, Alignment::Middle, 0, 6));
+    Button *loadImageBtn = new Button(imagePanel, "Load image...", ENTYPO_ICON_PICTURE);
+    loadImageBtn->setCallback([&] {
+        const std::string file = nanogui::file_dialog(
+            { {"png", "PNG"}, {"jpg", "JPEG"}, {"jpeg", "JPEG"}, {"tga", "Targa"}, {"bmp", "Bitmap"} }, false);
+        if (!file.empty())
+            loadUVImage(file);
+    });
+    Button *checkerBtn = new Button(imagePanel, "Checker");
+    checkerBtn->setTooltip("Back to the UV checker of Instant Meshes");
+    checkerBtn->setCallback([&] { loadUVImage(""); });
+    refreshUVChecker();
 
     mInputInfoLabel = new Label(window, "No mesh loaded");
     mInputInfoLabel->setColor(Color(163, 163, 163, 255));
@@ -804,6 +852,7 @@ Viewer::~Viewer() {
     mFlowLineShader.free();
     mStrokeShader.free();
     mHighlightShader.free();
+    mInputUVShader.free();
     mOutputMeshWireframeShader.free();
     mOutputMeshShader.free();
     mFBO.free();
@@ -1856,6 +1905,7 @@ void Viewer::extractMesh() {
     }
 
     cout << "Extraction is done. (total time: " << timeString(timer.value()) << ")" << endl;
+    mUVExtracted.resize(2, 0);
     uploadOutputMesh();
 }
 
@@ -1890,9 +1940,45 @@ void Viewer::uploadOutputMesh() {
         }
     }
 
+    /* UV checker: the output's UVs per corner (an irregular column, an
+       edge (a, b) of a larger polygon, takes the UVs of a and b, and their
+       mean over the polygon at its centre) */
+    if (mOutputUVBox && mOutputUVBox->checked() && mUVExtracted.cols() != mF_extracted.size())
+        computeOutputUVs();
+    MatrixXf T_gpu = MatrixXf::Zero(2, mF_extracted.cols() * posy);
+    if (mUVExtracted.cols() == mF_extracted.size()) {
+        std::map<std::pair<uint32_t, uint32_t>, Vector2f> cornerUV;   /* (centre, vertex) */
+        std::map<uint32_t, std::pair<Vector2f, int>> centreUV;
+        for (uint32_t i = 0; i < (uint32_t) mF_extracted.cols(); ++i)
+            if (posy == 4 && mF_extracted(2, i) == mF_extracted(3, i) && mF_extracted(1, i) != mF_extracted(2, i)) {
+                const Vector2f uv = mUVExtracted.col(i * posy);
+                cornerUV[std::make_pair(mF_extracted(2, i), mF_extracted(0, i))] = uv;
+                auto &c = centreUV[mF_extracted(2, i)];
+                c.first += uv;
+                c.second += 1;
+            }
+        for (uint32_t i = 0; i < (uint32_t) mF_extracted.cols(); ++i) {
+            const bool irregular = posy == 4 && mF_extracted(2, i) == mF_extracted(3, i) &&
+                                   mF_extracted(1, i) != mF_extracted(2, i) && centreUV.count(mF_extracted(2, i));
+            for (int j = 0; j < posy; ++j) {
+                Vector2f uv = mUVExtracted.col(i * posy + j);
+                if (irregular && j == 1) {
+                    auto it = cornerUV.find(std::make_pair(mF_extracted(2, i), mF_extracted(1, i)));
+                    if (it != cornerUV.end())
+                        uv = it->second;
+                } else if (irregular && j >= 2) {
+                    const auto &c = centreUV[mF_extracted(2, i)];
+                    uv = c.first / (Float) c.second;
+                }
+                T_gpu.col(i * posy + j) = uv;
+            }
+        }
+    }
+
     mOutputMeshShader.bind();
     mOutputMeshShader.uploadAttrib("position", O_gpu);
     mOutputMeshShader.uploadAttrib("normal", N_gpu);
+    mOutputMeshShader.uploadAttrib("texcoord", T_gpu);
     mOutputMeshShader.uploadIndices(F_gpu);
     mOutputMeshFaces = F_gpu.cols();
     mOutputMeshLines = outputMeshWireframe.cols();
@@ -2806,8 +2892,29 @@ void Viewer::drawContents() {
 
     bool pointcloud = mRes.F().size() == 0 && mRes.V().size() > 0;
 
+    /* UV checker on the input: its triangles as loaded, with their UVs */
+    if (mInputUVStale) {
+        mInputUVStale = false;
+        uploadInputUVs();
+    }
+    const bool inputUVs = mInputUVBox && mInputUVBox->checked() && mInputUVFaces > 0 && !pointcloud;
+
     std::function<void(uint32_t, uint32_t)> drawFunctor[LayerCount];
     drawFunctor[InputMesh] = [&](uint32_t offset, uint32_t count) {
+        if (inputUVs) {
+            mInputUVShader.bind();
+            mInputUVShader.setUniform("model", model);
+            mInputUVShader.setUniform("view", view);
+            mInputUVShader.setUniform("proj", proj);
+            mInputUVShader.setUniform("light_position", Vector3f(0.0f, 0.3f, 5.0f));
+            bindUVImage(mInputUVShader);
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(1.0, 1.0);
+            mInputUVShader.drawIndexed(GL_TRIANGLES, offset, count);
+            glDisable(GL_POLYGON_OFFSET_FILL);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            return;
+        }
         glDepthFunc(overpaint ? GL_EQUAL : GL_LEQUAL);
         SerializableGLShader *shader = nullptr;
         if (mOptimizer.posy() == 4) {
@@ -2923,10 +3030,18 @@ void Viewer::drawContents() {
         mOutputMeshShader.setUniform("view", view);
         mOutputMeshShader.setUniform("proj", proj);
         mOutputMeshShader.setUniform("light_position", Vector3f(0.0f, 0.3f, 5.0f));
+        const bool outputUVs = mOutputUVBox && mOutputUVBox->checked() &&
+                               mUVExtracted.cols() == mF_extracted.size();
+        if (outputUVs)
+            bindUVImage(mOutputMeshShader);
+        else
+            mOutputMeshShader.setUniform("textured", 0.0f);
         glEnable(GL_POLYGON_OFFSET_FILL);
         glPolygonOffset(1.0, 1.0);
         mOutputMeshShader.drawIndexed(GL_TRIANGLES, offset, count);
         glDisable(GL_POLYGON_OFFSET_FILL);
+        if (outputUVs)
+            glBindTexture(GL_TEXTURE_2D, 0);
     };
 
     drawFunctor[OutputMeshWireframe] = [&](uint32_t offset, uint32_t count) {
@@ -2990,7 +3105,7 @@ void Viewer::drawContents() {
 
     uint32_t drawAmount[LayerCount], blockSize[LayerCount];
     bool checked[LayerCount];
-    drawAmount[InputMesh] = !pointcloud ? mRes.F().cols() : mRes.V().cols();
+    drawAmount[InputMesh] = inputUVs ? mInputUVFaces : !pointcloud ? mRes.F().cols() : mRes.V().cols();
     drawAmount[InputMeshWireframe] = mRes.F().cols();
     drawAmount[OrientationField] = mRes.size();
     drawAmount[FlowLines] = mFlowLineFaces;
@@ -3617,7 +3732,8 @@ void Viewer::loadInput(std::string filename, Float creaseAngle, Float scale,
     glfwMakeContextCurrent(nullptr);
 
     try {
-        load_mesh_or_pointcloud(filename, F, V, N, mProgress, &polygons, nullptr, &mUnits);
+        mPendingUVs.clear();
+        load_mesh_or_pointcloud(filename, F, V, N, mProgress, &polygons, &mPendingUVs, &mUnits);
     } catch (const std::exception &e) {
         new MessageDialog(this, MessageDialog::Type::Warning, "Error", e.what());
         glfwMakeContextCurrent(mGLFWWindow);
@@ -3634,6 +3750,20 @@ void Viewer::loadMesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons, 
                       Float creaseAngle, Float scale, int face_count, int vertex_count, int rosy, int posy,
                       int knn_points) {
     /* the caller released the GL context and stopped the events */
+    /* UV checker: the input as loaded, when it has UVs (callers set
+       mPendingUVs just before) */
+    mInputUVs = std::move(mPendingUVs);
+    mPendingUVs.clear();
+    if (!mInputUVs.empty() && F.size() > 0) {
+        mInputF0 = F;
+        mInputV0 = V;
+    } else {
+        mInputUVs.clear();
+        mInputF0.resize(3, 0);
+        mInputV0.resize(3, 0);
+    }
+    mInputUVStale = true;
+    mUVExtracted.resize(2, 0);
     MatrixXu F_gpu;
     MatrixXf V_gpu, N_gpu;
     VectorXf A;
@@ -3870,6 +4000,7 @@ void Viewer::loadMesh(MatrixXu &F, MatrixXf &V, MatrixXf &N, uint64_t polygons, 
     mCamera.modelZoom = 3.0f / (mMeshStats.mAABB.max - mMeshStats.mAABB.min).cwiseAbs().maxCoeff();
     mFaceObject.clear();
     mHighlightStale = true;
+    refreshUVChecker();
     mProgressWindow->setVisible(false);
     mProcessEvents = true;
 }
@@ -4319,6 +4450,8 @@ void Viewer::showResults() {
     try {
         std::vector<MatrixXu> Fs;
         std::vector<MatrixXf> Vs;
+        std::vector<MatrixXf> UVs;   /* each result's first UV set, per corner */
+        bool allUVs = true;
         int rows = 3;
         size_t faces = 0, vertices = 0;
         for (const Spool::Fetch &f : fetches) {
@@ -4326,12 +4459,17 @@ void Viewer::showResults() {
             MatrixXf V;
             std::vector<CornerUVs> uvs;
             f(F, V, uvs);
+            if (!uvs.empty() && uvs[0].corners.cols() == F.size())
+                UVs.push_back(uvs[0].corners);
+            else
+                allUVs = false;
             rows = std::max(rows, (int) F.rows());
             faces += (size_t) F.cols();
             vertices += (size_t) V.cols();
             Fs.push_back(std::move(F));
             Vs.push_back(std::move(V));
         }
+        mUVExtracted.resize(2, 0);   /* none stored: computed if the checker needs them */
         /* one mesh: triangles among quads become (a, b, c, c) */
         mF_extracted.resize(rows, (std::ptrdiff_t) faces);
         mV_extracted.resize(3, (std::ptrdiff_t) vertices);
@@ -4342,6 +4480,14 @@ void Viewer::showResults() {
                     mF_extracted(r, (std::ptrdiff_t) f0 + i) =
                         (uint32_t) v0 + Fs[k](std::min(r, (int) Fs[k].rows() - 1), i);
             mV_extracted.block(0, (std::ptrdiff_t) v0, 3, Vs[k].cols()) = Vs[k];
+            if (allUVs) {
+                if (k == 0)
+                    mUVExtracted.resize(2, (std::ptrdiff_t) faces * rows);
+                const int r0 = (int) Fs[k].rows();
+                for (std::ptrdiff_t i = 0; i < Fs[k].cols(); ++i)
+                    for (int r = 0; r < rows; ++r)
+                        mUVExtracted.col(((std::ptrdiff_t) f0 + i) * rows + r) = UVs[k].col(i * r0 + std::min(r, r0 - 1));
+            }
             f0 += (size_t) Fs[k].cols();
             v0 += (size_t) Vs[k].cols();
         }
@@ -4645,6 +4791,7 @@ void Viewer::clearViewport() {
     mFilename.clear();
     mInputPolygons = 0;
     mF_extracted.resize(0, 0);
+    mUVExtracted.resize(2, 0);
     mV_extracted.resize(0, 0);
     mStrokes.clear();
     mInputInfoLabel->setCaption("No mesh loaded");
@@ -5074,7 +5221,8 @@ void Viewer::openObject(int index) {
     mProcessEvents = false;
     glfwMakeContextCurrent(nullptr);
     try {
-        mProject->scene().load(o.mesh.path, F, V, &polygons);
+        mPendingUVs.clear();
+        mProject->scene().load(o.mesh.path, F, V, &polygons, &mPendingUVs);
     } catch (const std::exception &e) {
         glfwMakeContextCurrent(mGLFWWindow);
         mProcessEvents = true;
@@ -5099,6 +5247,107 @@ void Viewer::openWholeScene() {
     loadInput(mProject->source, std::numeric_limits<Float>::infinity(), -1, -1, -1, mOptimizer.rosy(),
               mOptimizer.posy());
     refreshOutliner();
+}
+
+/* The UV checker's options: on the input only when it has UVs */
+void Viewer::refreshUVChecker() {
+    if (!mInputUVBox)
+        return;
+    const bool has = !mInputUVs.empty();
+    mInputUVBox->setEnabled(has);
+    if (!has)
+        mInputUVBox->setChecked(false);
+    mInputUVBox->setTooltip(has ? "UV set \"" + mInputUVs[0].name + "\" of the input"
+                                : "The input has no UVs");
+}
+
+/* The input's triangles as loaded, each corner with its position, its
+   smooth normal and its UV (the first set) */
+void Viewer::uploadInputUVs() {
+    mInputUVFaces = 0;
+    if (mInputUVs.empty() || !mInputUVBox || !mInputUVBox->checked())
+        return;
+    const UVSet &set = mInputUVs[0];
+    const MatrixXu &F = mInputF0;
+    const MatrixXf &V = mInputV0;
+    if (set.corners.size() != (size_t) F.size())
+        return;
+    MatrixXf N = MatrixXf::Zero(3, V.cols());
+    for (std::ptrdiff_t f = 0; f < F.cols(); ++f) {
+        const Vector3f a = V.col(F(0, f)), b = V.col(F(1, f)), c = V.col(F(2, f));
+        const Vector3f n = (b - a).cross(c - a);   /* area weighted */
+        for (int k = 0; k < 3; ++k)
+            N.col(F(k, f)) += n;
+    }
+    MatrixXf P(3, F.size()), Nc(3, F.size()), T(2, F.size());
+    MatrixXu I(3, F.cols());
+    for (std::ptrdiff_t f = 0; f < F.cols(); ++f)
+        for (int k = 0; k < 3; ++k) {
+            const std::ptrdiff_t c = f * 3 + k;
+            P.col(c) = V.col(F(k, f));
+            const Float len = N.col(F(k, f)).norm();
+            Nc.col(c) = len > 0 ? Vector3f(N.col(F(k, f)) / len) : Vector3f(0, 0, 1);
+            T.col(c) = set.values.col(set.corners[(size_t) c]);
+            I(k, f) = (uint32_t) c;
+        }
+    mInputUVShader.bind();
+    mInputUVShader.uploadAttrib("position", P);
+    mInputUVShader.uploadAttrib("normal", Nc);
+    mInputUVShader.uploadAttrib("texcoord", T);
+    mInputUVShader.uploadIndices(I);
+    mInputUVFaces = (uint32_t) F.cols();
+}
+
+/* The output's UVs for the checker, as Export mesh > UVs makes them (None:
+   transfer when the input has UVs, else unwrap; the choice is shown) */
+bool Viewer::computeOutputUVs() {
+    mUVExtracted.resize(2, 0);
+    if (mF_extracted.size() == 0)
+        return false;
+    RemeshParams::UVMode mode = (RemeshParams::UVMode) mExportUVBox->selectedIndex();
+    if (mode == RemeshParams::UVNone || (mode == RemeshParams::UVTransfer && mInputUVs.empty())) {
+        mode = mInputUVs.empty() ? RemeshParams::UVUnwrap : RemeshParams::UVTransfer;
+        mExportUVBox->setSelectedIndex((int) mode);
+    }
+    try {
+        cout << "UV checker: " << (mode == RemeshParams::UVTransfer ? "transferring" : "unwrapping")
+             << " the UVs of the output .." << endl;
+        const std::vector<CornerUVs> uvs = new_mesh_uvs(mInputF0, mInputV0, mInputUVs, mF_extracted, mV_extracted,
+                                                        mode, base_name(mFilename));
+        if (!uvs.empty() && uvs[0].corners.cols() == mF_extracted.size())
+            mUVExtracted = uvs[0].corners;
+    } catch (const std::exception &e) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "UV checker", e.what());
+    }
+    return mUVExtracted.cols() > 0;
+}
+
+/* The checker (or the image loaded) on texture unit 0, repeating */
+void Viewer::bindUVImage(SerializableGLShader &shader) {
+    if (mUVImage < 0)
+        mUVImage = nvgCreateImageMem(mNVGContext, NVG_IMAGE_REPEATX | NVG_IMAGE_REPEATY | NVG_IMAGE_GENERATE_MIPMAPS,
+                                     uvchecker_png, (int) uvchecker_png_size);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, mUVImage >= 0 ? nvglImageHandleGL3(mNVGContext, mUVImage) : 0);
+    shader.setUniform("tex", 0);
+    shader.setUniform("textured", mUVImage >= 0 ? 1.0f : 0.0f);
+    shader.setUniform("tiling", mUVTiling);
+}
+
+/* An image of the user's for the checker; empty: the checker */
+void Viewer::loadUVImage(const std::string &file) {
+    const int flags = NVG_IMAGE_REPEATX | NVG_IMAGE_REPEATY | NVG_IMAGE_GENERATE_MIPMAPS;
+    const int image = file.empty() ? nvgCreateImageMem(mNVGContext, flags, uvchecker_png, (int) uvchecker_png_size)
+                                   : nvgCreateImage(mNVGContext, file.c_str(), flags);
+    if (image < 0) {
+        new MessageDialog(this, MessageDialog::Type::Warning, "UV checker", "Cannot read \"" + file + "\".");
+        return;
+    }
+    if (mUVImage >= 0)
+        nvgDeleteImage(mNVGContext, mUVImage);
+    mUVImage = image;
+    mUVImageFile = file;
+    repaint();
 }
 
 namespace {

@@ -199,6 +199,13 @@ protected:
     void loadPreferences();
     void savePreferences() const;
 
+    /* UV checker */
+    void refreshUVChecker();
+    void uploadInputUVs();
+    bool computeOutputUVs();
+    void bindUVImage(SerializableGLShader &shader);
+    void loadUVImage(const std::string &file);
+
 protected:
     struct CameraParameters {
         Arcball arcball;
@@ -237,6 +244,22 @@ protected:
     /* Keep border in the viewport: the open border of the input, before
        its subdivision */
     BorderCurves mInputBorder;
+
+    /* UV checker: the input as loaded (before its subdivision) when it has
+       UVs, its UV sets; the output's UVs per corner (2 x faces * rows of
+       mF_extracted; empty: none); a texture repeated mUVTiling times */
+    MatrixXu mInputF0;
+    MatrixXf mInputV0;
+    std::vector<UVSet> mInputUVs, mPendingUVs;
+    MatrixXf mUVExtracted;
+    SerializableGLShader mInputUVShader;
+    uint32_t mInputUVFaces = 0;
+    bool mInputUVStale = true;
+    CheckBox *mInputUVBox = nullptr, *mOutputUVBox = nullptr;
+    Button *mTilingBtn[5] = {};
+    float mUVTiling = 1;
+    int mUVImage = -1;                 /* nanovg image: the checker, or the image loaded */
+    std::string mUVImageFile;          /* empty: the checker */
 
     /* Extraction result */
     MatrixXu mF_extracted;

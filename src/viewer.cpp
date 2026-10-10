@@ -3169,9 +3169,15 @@ void Viewer::drawOverlay() {
     Eigen::Matrix4f model, view, proj;
     computeCameraMatrices(model, view, proj);
 
-    if (mHighlightStale) {
+    /* after a selection change, the highlight waits longer than a double
+       click: the first time, finding the mesh of each face can hold the
+       interface a moment, and the second click of a double click (open
+       the mesh alone, no highlight needed) would come too late */
+    if (mHighlightStale && glfwGetTime() - mHighlightAsked >= 0.4) {
         mHighlightStale = false;
         uploadHighlight();
+    } else if (mHighlightStale) {
+        repaint();
     }
     if (mHighlightFaces > 0) {
         /* the selected meshes, orange over the surface */
@@ -5241,6 +5247,7 @@ bool Viewer::faceObjects() {
 
 void Viewer::refreshHighlight() {
     mHighlightStale = true;
+    mHighlightAsked = glfwGetTime();
     repaint();
 }
 

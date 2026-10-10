@@ -253,6 +253,7 @@ protected:
     /* Whole scene view: the mesh of each face, the selected ones highlighted */
     std::vector<int> mFaceObject;
     bool mHighlightStale = true;
+    double mHighlightAsked = 0;        /* when the selection changed (glfwGetTime) */
     uint32_t mHighlightFaces = 0;
     std::map<uint32_t, uint32_t> mOrientationSingularities;
     std::map<uint32_t, Vector2i> mPositionSingularities;
